@@ -1,0 +1,81 @@
+"""会場アダプターの共通インターフェース（SPEC 5.2章）。
+
+M1の追加指示に合わせて、SPEC の形から次を拡張している:
+- 読み取りは block（ブロック番号）を指定して行う。同じ回の値がすべて同じ時点のものになる。
+- 結果には RPC の生の応答（raw）を持たせ、DBに保存して後から再計算できるようにする。
+- プール全体の流動性と、ゲージにステークされた流動性を別の値として返す。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Any, Protocol
+
+
+@dataclass(frozen=True)
+class PoolInfo:
+    pool_id: str               # "<venue_id>:<pool address>"
+    venue_id: str
+    address: str
+    token0: str
+    token1: str
+    fee_tier: int | None = None
+    tick_spacing: int | None = None
+    gauge_address: str | None = None
+    created_block: int | None = None
+    is_stock_pair: bool | None = None
+    has_perp: bool | None = None
+
+
+@dataclass(frozen=True)
+class RawCall:
+    """RPC の生の要求と応答。"""
+    kind: str
+    request: Any
+    response: Any
+
+
+@dataclass(frozen=True)
+class PoolState:
+    pool_id: str
+    block_number: int
+    sqrt_price_x96: int
+    tick: int
+    price: float                        # token1 / token0（小数点調整済み）
+    fee: int | None
+    liquidity_total: int                # プール全体のレンジ内流動性
+    liquidity_staked_inrange: int | None  # ゲージにステークされたレンジ内流動性（取得できなければ None）
+    raw: tuple[RawCall, ...] = field(default=())
+
+
+@dataclass(frozen=True)
+class RewardInfo:
+    pool_id: str
+    block_number: int
+    reward_token: str | None
+    reward_rate_raw: int | None         # 最小単位/秒
+    reward_per_day: float | None        # トークン数/日
+    epoch_end: datetime | None
+    raw: tuple[RawCall, ...] = field(default=())
+
+
+@dataclass(frozen=True)
+class EpochInfo:
+    length_seconds: int
+    current_start: datetime
+    current_end: datetime
+
+
+class AdapterNotReady(Exception):
+    """仕組みやアドレスが未確認のため、アダプターがまだ動かせない。"""
+
+
+class VenueAdapter(Protocol):
+    venue_id: str
+    chain: str
+
+    def list_pools(self, block: int) -> list[PoolInfo]: ...
+    def pool_state(self, pool: PoolInfo, block: int) -> PoolState: ...
+    def gauge_rewards(self, pool: PoolInfo, block: int) -> RewardInfo: ...
+    def epoch_info(self, block: int) -> EpochInfo | None: ...

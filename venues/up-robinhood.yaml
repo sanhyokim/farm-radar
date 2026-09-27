@@ -1,0 +1,77 @@
+# 会場定義: up.（Robinhood Chain）
+# ルール: アドレスや仕組みは推測で埋めない。確認できたものだけ値を入れ、出典URLと確認日を書く。
+#         確認できていないものは unverified: true のまま。UIに警告が出ます。
+# 出典の優先順位: 1) Blockscout の検証済みコントラクトのソースコード 2) 公式ドキュメント / 公式GitHub
+#   ※ 第三者ツール（例: labrinyang/lp-terminal）は照合用の参考にとどめ、出典には使わない。
+
+id: up-robinhood
+name: "up."
+type: ve33            # ve(3,3)型（ロックした人がボーナスの配り先を投票で決める）
+website: https://up33.xyz/
+audited: null         # 未確認（DefiLlama に監査情報なし。2026-09-27 確認）
+launch_date: null     # 未確認
+
+chain:
+  id: robinhood
+  chain_id: 4663
+  native_token: ETH
+  public_rpc: https://rpc.mainnet.chain.robinhood.com
+  # Alchemy のURL。{API_KEY} は .env の ALCHEMY_API_KEY で置き換えます。
+  alchemy_rpc: https://robinhood-mainnet.g.alchemy.com/v2/{API_KEY}
+  explorer: https://robinhoodchain.blockscout.com
+  unverified: false
+  source_url: https://docs.robinhood.com/chain/connecting
+  checked_at: "2026-09-27"
+  note: "公開RPCは回数制限あり。公式は本番用途に Alchemy などを推奨。"
+
+# コントラクト（すべて未確認）
+contracts:
+  factory_v3:          # v3（集中流動性）プールを作るコントラクト。プール一覧はこの作成イベントから取る
+    address: null
+    unverified: true
+    source_url: null
+    checked_at: null
+    evidence: null     # 根拠にしたコントラクト名・関数名/イベント名
+  voter:               # ゲージの管理と投票を行うコントラクト
+    address: null
+    unverified: true
+    source_url: null
+    checked_at: null
+    evidence: null
+  reward_token:        # 報酬トークン（UP）
+    address: null
+    unverified: true
+    source_url: null
+    checked_at: null
+    evidence: null
+  multicall3:          # 読み取りをまとめるための汎用コントラクト。このチェーンに実在するか未確認
+    address: null
+    unverified: true
+    source_url: null
+    checked_at: null
+    evidence: null
+
+# 報酬と手数料の仕組み（すべて未確認。コントラクトのソースコードで確認する）
+mechanics:
+  staked_lp_receives_fees:        # ゲージにステークしたLPが取引手数料を受け取るか（false なら手数料は投票者へ）
+    value: null
+    unverified: true
+    evidence_contract: null
+    evidence_function: null
+    source_url: null
+    checked_at: null
+  reward_proportional_to_staked_inrange_liquidity:   # 報酬が「レンジ内でステークされた流動性」に比例するか
+    value: null
+    unverified: true
+    evidence_contract: null
+    evidence_function: null
+    source_url: null
+    checked_at: null
+  epoch:                          # ボーナス配分の切り替え周期
+    length_seconds: null
+    flip_time_utc: null
+    unverified: true
+    evidence_contract: null
+    evidence_function: null
+    source_url: null
+    checked_at: null

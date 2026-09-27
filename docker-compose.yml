@@ -1,0 +1,29 @@
+# Farm Radar（読み取り専用）。起動・停止の手順は README.md を見てください。
+services:
+  collector:            # 15分ごとにプールのデータを集める
+    build: { context: ., dockerfile: backend/Dockerfile }
+    command: python -m farm_radar.scheduler
+    env_file:
+      - path: .env
+        required: false   # .env がなくても起動できる
+    environment: { FARM_RADAR_ROOT: /app }
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./venues:/app/venues:ro
+      - ./data:/app/data
+    restart: unless-stopped
+
+  api:                  # 状態確認用（http://localhost:8000/api/health）
+    build: { context: ., dockerfile: backend/Dockerfile }
+    command: uvicorn farm_radar.api:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false   # .env がなくても起動できる
+    environment: { FARM_RADAR_ROOT: /app }
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./venues:/app/venues:ro
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    restart: unless-stopped

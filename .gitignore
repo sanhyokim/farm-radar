@@ -1,0 +1,20 @@
+# 秘密情報（APIキー・Webhook URL）はコミットしない
+.env
+.env.*
+!.env.example
+
+# データ
+data/*
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+build/
