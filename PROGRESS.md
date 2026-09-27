@@ -1,7 +1,7 @@
 # PROGRESS.md — 作業の現在地
 
 > 新しいセッションは、作業を始める前にこのファイルを読むこと（CLAUDE.md のルール）。作業のたびに更新する。
-> 最終更新: 2026-09-27 21:58 JST
+> 最終更新: 2026-09-27 22:13 JST
 
 ## いまの位置
 - **M1（up.アダプター + データ収集 + SQLite）の途中。**
@@ -43,8 +43,20 @@ Blockscout の検証済みコントラクトのソースコードを最優先で
 4. オーナーのパソコンで24時間動かしてもらい、欠けチェックで合格を確認する → M1の報告。
 
 ## 未解決の質問・環境の問題
-- **クラウドの作業環境から RPC / Blockscout / up33.xyz / GeckoTerminal / DefiLlama に接続できない**（2026-09-27 21:49 JST 時点でも403）。
-  オーナーは Project settings で許可済み。設定は新しいセッションにしか反映されない可能性がある。
+- **クラウドの作業環境から RPC / Blockscout / up33.xyz / GeckoTerminal / DefiLlama に接続できない**。
+  2026-09-27 22:11 JST に新しいセッションで再確認した結果（curl、作業環境の中継プロキシ経由）:
+  | 接続先 | 結果 |
+  |---|---|
+  | rpc.mainnet.chain.robinhood.com | ×（403: 環境のネットワーク設定で拒否） |
+  | robinhoodchain.blockscout.com | ×（403） |
+  | up33.xyz | ×（403） |
+  | api.geckoterminal.com | ×（403） |
+  | yields.llama.fi | ×（403） |
+  | github.com | ○ |
+  | raw.githubusercontent.com | ○ |
+  新しいセッションでも拒否されたので、「新しいセッションにだけ反映される」という仮説は外れ。
+  Project settings の環境（Network access）に、上の5つのホストが許可ドメインとして保存されているか、オーナーに確認してもらう必要がある。
+  中継プロキシの説明書どおり、拒否されたホストを別の経路で回り込んで取得することはしていない。
 - GitHub の既定のブランチを main に変える作業はオーナーが行う。
 
 ## 決まった方針
