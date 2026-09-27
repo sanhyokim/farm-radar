@@ -85,7 +85,9 @@ class RpcClient:
     ):
         self.endpoints = endpoints
         self.settings = settings
-        self._http = httpx.Client(timeout=settings.timeout_seconds, transport=transport)
+        # 公開RPCは User-Agent によっては 403 を返すので、名乗りを付ける
+        self._http = httpx.Client(timeout=settings.timeout_seconds, transport=transport,
+                                  headers={"User-Agent": "farm-radar/0.1 (read-only)"})
         self._sleep = sleep
         self._clock = clock
         self._cache: OrderedDict[str, tuple[float | None, Any, str]] = OrderedDict()

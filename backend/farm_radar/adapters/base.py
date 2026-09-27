@@ -26,6 +26,10 @@ class PoolInfo:
     created_block: int | None = None
     is_stock_pair: bool | None = None
     has_perp: bool | None = None
+    token0_symbol: str | None = None
+    token1_symbol: str | None = None
+    token0_decimals: int | None = None
+    token1_decimals: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,7 @@ class PoolState:
     liquidity_total: int                # プール全体のレンジ内流動性
     liquidity_staked_inrange: int | None  # ゲージにステークされたレンジ内流動性（取得できなければ None）
     raw: tuple[RawCall, ...] = field(default=())
+    unstaked_fee: int | None = None     # ステークしていないLPから取る手数料の割合（1e-6単位。100000 = 10%）
 
 
 @dataclass(frozen=True)
@@ -54,10 +59,16 @@ class RewardInfo:
     pool_id: str
     block_number: int
     reward_token: str | None
-    reward_rate_raw: int | None         # 最小単位/秒
-    reward_per_day: float | None        # トークン数/日
+    reward_rate_raw: int | None         # ゲージに設定された報酬レート（最小単位/秒）
+    reward_per_day: float | None        # 今実際に出ている量（トークン数/日）。配布期間が終わっていれば 0
     epoch_end: datetime | None
     raw: tuple[RawCall, ...] = field(default=())
+    # 以下は 2026-09-27 のオーナー指示で追加（報酬の毎秒量とエポックをスナップショットごとに保存する）
+    block_time: datetime | None = None
+    epoch_start: datetime | None = None
+    period_finish: datetime | None = None   # ゲージの今の配布期間の終わり
+    reward_rate_effective_raw: int | None = None  # period_finish を過ぎていれば 0
+    gauge_alive: bool | None = None
 
 
 @dataclass(frozen=True)

@@ -38,6 +38,8 @@ class Config:
     venues: tuple[str, ...]
     stale_after_minutes: int
     limits: dict[str, Any] = field(default_factory=dict)
+    epoch_fresh_minutes: int = 120          # エポック切り替えからこの分数までは「エポック更新直後」の印を付ける
+    reward_drop_alert_pct: float = 30.0     # エポックの途中で報酬の毎秒量がこの%以上減ったら通知
     root: Path = REPO_ROOT
 
 
@@ -80,6 +82,8 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         venues=tuple(raw.get("venues") or ()),
         stale_after_minutes=int(raw.get("stale_after_minutes", 45)),
         limits=dict(raw.get("limits") or {}),
+        epoch_fresh_minutes=int((raw.get("rewards") or {}).get("epoch_fresh_minutes", 120)),
+        reward_drop_alert_pct=float((raw.get("alerts") or {}).get("reward_rate_drop_pct", 30)),
         root=root,
     )
 

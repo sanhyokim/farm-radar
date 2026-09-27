@@ -27,7 +27,11 @@ CREATE TABLE IF NOT EXISTS pools (
   has_perp INTEGER,
   gauge_address TEXT,
   created_block INTEGER,              -- ファクトリーの作成イベントのブロック
-  discovered_at TEXT NOT NULL
+  discovered_at TEXT NOT NULL,
+  token0_symbol TEXT,
+  token1_symbol TEXT,
+  token0_decimals INTEGER,
+  token1_decimals INTEGER
 );
 
 -- 1回の収集（15分ごと）の記録。24時間の欠けチェックに使う。
@@ -84,6 +88,14 @@ CREATE TABLE IF NOT EXISTS pool_snapshots (
   reward_rate_raw TEXT,               -- ゲージの報酬レート（トークンの最小単位/秒）
   reward_token TEXT,
   epoch_end TEXT,
+  -- 2026-09-27 追加（オーナー指示: 報酬の毎秒量とエポックをスナップショットごとに保存）
+  block_time TEXT,                    -- 読み取ったブロックの時刻（UTC）
+  epoch_start TEXT,
+  period_finish TEXT,                 -- ゲージの今の配布期間の終わり
+  reward_rate_effective_raw TEXT,     -- 今実際に出ている報酬レート（配布期間外・ゲージ停止中は0）
+  gauge_alive INTEGER,
+  unstaked_fee INTEGER,               -- ステークしないLPから取る手数料の割合（1e-6単位）
+  epoch_just_flipped INTEGER,         -- 1 = エポック更新直後（報酬の値がまだ落ち着いていない可能性）
   tvl REAL,
   volume_24h REAL,
   R_usd_day REAL,
@@ -101,6 +113,21 @@ CREATE TABLE IF NOT EXISTS token_prices (
   block_number INTEGER,
   PRIMARY KEY (token, ts, source)
 );
+
+-- 通知すべき出来事（M4 で Discord / Telegram に送る。それまではAPIとログで確認する）
+CREATE TABLE IF NOT EXISTS alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  venue_id TEXT NOT NULL,
+  pool_id TEXT,
+  kind TEXT NOT NULL,                 -- 例: reward_rate_drop
+  level TEXT NOT NULL,                -- info / warning / major
+  message_ja TEXT NOT NULL,
+  data_json TEXT,
+  dedupe_key TEXT UNIQUE,             -- 同じ出来事を二重に記録しないための鍵
+  notified_at TEXT                    -- 通知を送った時刻（M4）
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
 
 -- 以下は M2 以降で使う（SPEC 6章）
 CREATE TABLE IF NOT EXISTS scores (

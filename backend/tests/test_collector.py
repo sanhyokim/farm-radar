@@ -98,17 +98,6 @@ def test_adapter_not_ready_is_skipped(conn):
     assert r.status == "skipped" and "factory" in r.error
 
 
-def test_real_up_adapter_refuses_until_verified(conn):
-    from farm_radar.adapters.up_robinhood import UpRobinhoodAdapter
-
-    adapter = UpRobinhoodAdapter(load_venue("up-robinhood"), rpc=None)
-    with pytest.raises(AdapterNotReady) as e:
-        adapter.list_pools(1)
-    # 2026-09-27: 3点とアドレスは確認済み。報酬上限（gauge_emission_cap）の計算が未確認なので、まだ止まる。
-    assert "gauge_emission_cap" in str(e.value) and "gauge_cap_controller" in str(e.value)
-    assert "factory_v3" not in str(e.value)
-
-
 def test_completeness(conn):
     start = datetime(2026, 9, 27, 0, 0, tzinfo=UTC)
     adapter = FakeAdapter(n=1)

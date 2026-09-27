@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -23,10 +23,27 @@ def connect(path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+# 古いデータベースに足りない列（CREATE TABLE IF NOT EXISTS では既存の表に列が増えないため）
+_ADDED_COLUMNS = {
+    "pools": {"token0_symbol": "TEXT", "token1_symbol": "TEXT", "token0_decimals": "INTEGER",
+              "token1_decimals": "INTEGER"},
+    "pool_snapshots": {"block_time": "TEXT", "epoch_start": "TEXT", "period_finish": "TEXT",
+                       "reward_rate_effective_raw": "TEXT", "gauge_alive": "INTEGER",
+                       "unstaked_fee": "INTEGER", "epoch_just_flipped": "INTEGER"},
+}
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    for table, cols in _ADDED_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, typ in cols.items():
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
     if conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
         conn.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
+    else:
+        conn.execute("UPDATE schema_version SET version=?", (SCHEMA_VERSION,))
     conn.commit()
 
 
@@ -61,13 +78,21 @@ def venue_is_verified(venue: dict[str, Any]) -> bool:
 def upsert_pool(conn: sqlite3.Connection, pool: Any, now: datetime) -> None:
     conn.execute(
         """INSERT INTO pools(id, venue_id, address, token0, token1, fee_tier, tick_spacing,
-             is_stock_pair, has_perp, gauge_address, created_block, discovered_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(id) DO UPDATE SET gauge_address=COALESCE(excluded.gauge_address, pools.gauge_address)""",
+             is_stock_pair, has_perp, gauge_address, created_block, discovered_at,
+             token0_symbol, token1_symbol, token0_decimals, token1_decimals)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+             gauge_address=COALESCE(excluded.gauge_address, pools.gauge_address),
+             token0_symbol=COALESCE(excluded.token0_symbol, pools.token0_symbol),
+             token1_symbol=COALESCE(excluded.token1_symbol, pools.token1_symbol),
+             token0_decimals=COALESCE(excluded.token0_decimals, pools.token0_decimals),
+             token1_decimals=COALESCE(excluded.token1_decimals, pools.token1_decimals)""",
         (
             pool.pool_id, pool.venue_id, pool.address, pool.token0, pool.token1, pool.fee_tier,
             pool.tick_spacing, pool.is_stock_pair, pool.has_perp, pool.gauge_address,
             pool.created_block, _iso(now),
+            getattr(pool, "token0_symbol", None), getattr(pool, "token1_symbol", None),
+            getattr(pool, "token0_decimals", None), getattr(pool, "token1_decimals", None),
         ),
     )
 
@@ -149,3 +174,18 @@ def list_runs(conn: sqlite3.Connection, venue_id: str, since: datetime) -> list[
         "SELECT * FROM collection_runs WHERE venue_id=? AND slot>=? ORDER BY slot",
         (venue_id, _iso(since)),
     ).fetchall()
+
+
+def insert_alert(conn: sqlite3.Connection, *, ts: datetime, venue_id: str, pool_id: str | None, kind: str,
+                 level: str, message_ja: str, data: Any, dedupe_key: str) -> bool:
+    """通知すべき出来事を記録する。同じ dedupe_key がすでにあれば何もしない（False を返す）。"""
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO alerts(ts, venue_id, pool_id, kind, level, message_ja, data_json, dedupe_key)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (_iso(ts), venue_id, pool_id, kind, level, message_ja, json.dumps(data, default=str), dedupe_key),
+    )
+    return cur.rowcount > 0
+
+
+def list_alerts(conn: sqlite3.Connection, since: datetime) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM alerts WHERE ts>=? ORDER BY ts DESC", (_iso(since),)).fetchall()

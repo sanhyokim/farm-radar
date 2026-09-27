@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import FastAPI
 
 from .collectors.completeness import check
-from .config import load_config
+from .config import load_config, load_venue
 from .db import database as db
 
 app = FastAPI(title="Farm Radar")
@@ -42,5 +42,45 @@ def health() -> dict:
                 "gaps_7d": gaps,   # 収集が止まっていた期間（M3の画面で「欠損」として表示する）
             })
         return {"mode": config.mode, "venues": venues}
+    finally:
+        conn.close()
+
+
+@app.get("/api/venues")
+def venues() -> dict:
+    """会場ごとの確認状況と警告（C4 など）。M3 の会場画面はこれを表示する。"""
+    config = load_config()
+    out = []
+    for venue_id in config.venues:
+        v = load_venue(venue_id, config.root)
+        contracts = {
+            name: {
+                "address": c.get("address"),
+                "unverified": c.get("unverified", True),
+                "sourcify_match": c.get("sourcify_match"),
+                "checked_at": c.get("checked_at"),
+            }
+            for name, c in (v.get("contracts") or {}).items()
+        }
+        mechanics = {
+            name: {k: m.get(k) for k in ("value", "unverified", "owner_acknowledged", "evidence_function")}
+            for name, m in (v.get("mechanics") or {}).items()
+        }
+        out.append({
+            "venue_id": venue_id, "name": v.get("name"), "audited": v.get("audited"),
+            "launch_date": v.get("launch_date"), "warnings": v.get("warnings") or [],
+            "contracts": contracts, "mechanics": mechanics,
+        })
+    return {"venues": out}
+
+
+@app.get("/api/alerts")
+def alerts(days: int = 7) -> dict:
+    """記録された通知（報酬の毎秒量の急減など）。M4 で Discord / Telegram にも送る。"""
+    config = load_config()
+    conn = db.connect(config.database_path)
+    try:
+        rows = db.list_alerts(conn, datetime.now(UTC) - timedelta(days=days))
+        return {"alerts": [dict(r) for r in rows]}
     finally:
         conn.close()

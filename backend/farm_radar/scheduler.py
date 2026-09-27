@@ -31,7 +31,9 @@ def main() -> None:
                     # 失敗の記録を残して、欠けチェックに「failed」として出るようにする
                     record_failed_run(conn, v.adapter.venue_id, config.snapshot_minutes, f"チェーンの確認に失敗: {exc}")
                     continue
-                collect_venue(conn, v.adapter, v.rpc, snapshot_minutes=config.snapshot_minutes)
+                collect_venue(conn, v.adapter, v.rpc, snapshot_minutes=config.snapshot_minutes,
+                              epoch_fresh_minutes=config.epoch_fresh_minutes,
+                              reward_drop_alert_pct=config.reward_drop_alert_pct)
         finally:
             conn.close()
 
