@@ -56,7 +56,8 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
 - 第三者ツール labrinyang/lp-terminal は照合用の参考のみ。出典に使わない（今回は使っていない）。
 
 ## 次にやること
-1. **オーナーのパソコンで24時間動かしてもらい**、`python -m farm_radar.check` で合格を確認する → M1 完了の報告。
+1. **オーナーのパソコン（Windows）で 2026-09-27 23:33 JST に収集開始**（初回 ok、87プール）。2026-09-28 23:45 JST 以降に `docker compose exec collector python -m farm_radar.check` で合格を確認する → M1 完了の報告。
+   状態ページは http://localhost:18000/api/health（オーナーのPCでは 8000 番がほかのアプリと重なったため 18000 に変更）。
 2. M2（スコアリング）で、下の承認済みの式を実装する。
 
 ## 承認済みの計算方針（2026-09-27 オーナー承認。M2 で実装する）
