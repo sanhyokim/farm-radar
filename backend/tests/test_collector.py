@@ -104,7 +104,9 @@ def test_real_up_adapter_refuses_until_verified(conn):
     adapter = UpRobinhoodAdapter(load_venue("up-robinhood"), rpc=None)
     with pytest.raises(AdapterNotReady) as e:
         adapter.list_pools(1)
-    assert "factory_v3" in str(e.value) and "staked_lp_receives_fees" in str(e.value)
+    # 2026-09-27: 3点とアドレスは確認済み。報酬上限（gauge_emission_cap）の計算が未確認なので、まだ止まる。
+    assert "gauge_emission_cap" in str(e.value) and "gauge_cap_controller" in str(e.value)
+    assert "factory_v3" not in str(e.value)
 
 
 def test_completeness(conn):

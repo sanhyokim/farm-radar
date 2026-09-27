@@ -37,8 +37,14 @@ def test_extra_rpc_from_env(tmp_path):
 
 def test_unverified_address_is_never_returned():
     venue = load_venue("up-robinhood")
-    for name in venue["contracts"]:
-        assert contract_address(venue, name) is None
+    for name, entry in venue["contracts"].items():
+        if entry.get("unverified", True):
+            assert contract_address(venue, name) is None
+        else:
+            # 確認済みのアドレスには、確認日と根拠が必ず書かれていること
+            assert contract_address(venue, name) == entry["address"]
+            assert entry["checked_at"] and entry["evidence"]
+    assert contract_address(venue, "gauge_cap_controller") is None
     fake = {"contracts": {"x": {"address": "0xabc", "unverified": True}}}
     assert contract_address(fake, "x") is None
     fake["contracts"]["x"]["unverified"] = False

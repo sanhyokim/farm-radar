@@ -8,8 +8,8 @@ id: up-robinhood
 name: "up."
 type: ve33            # ve(3,3)型（ロックした人がボーナスの配り先を投票で決める）
 website: https://up33.xyz/
-audited: null         # 未確認（DefiLlama に監査情報なし。2026-09-27 確認）
-launch_date: null     # 未確認
+audited: null         # 未確認（DefiLlama に監査情報なし。検証済みソースにも監査の記載なし。2026-09-27 確認）
+launch_date: "2026-07-10"  # 主要コントラクトの作成日（UP トークン作成 block 6180888 = 2026-07-10 15:17 UTC）。取引開始日そのものは未確認
 
 chain:
   id: robinhood
@@ -24,54 +24,160 @@ chain:
   checked_at: "2026-09-27"
   note: "公開RPCは回数制限あり。公式は本番用途に Alchemy などを推奨。"
 
-# コントラクト（すべて未確認）
-contracts:
-  factory_v3:          # v3（集中流動性）プールを作るコントラクト。プール一覧はこの作成イベントから取る
-    address: null
-    unverified: true
-    source_url: null
-    checked_at: null
-    evidence: null     # 根拠にしたコントラクト名・関数名/イベント名
-  voter:               # ゲージの管理と投票を行うコントラクト
-    address: null
-    unverified: true
-    source_url: null
-    checked_at: null
-    evidence: null
-  reward_token:        # 報酬トークン（UP）
-    address: null
-    unverified: true
-    source_url: null
-    checked_at: null
-    evidence: null
-  multicall3:          # 読み取りをまとめるための汎用コントラクト。このチェーンに実在するか未確認
-    address: null
-    unverified: true
-    source_url: null
-    checked_at: null
-    evidence: null
+# ---------------------------------------------------------------------------
+# 確認方法（2026-09-27）
+#  1) アドレスの出どころ: up. 公式サイト https://up33.xyz/ が読み込むプログラム
+#     （/assets/index-Dv2RMzFm.js）の中の mainnet 設定（chainId 4663）。
+#  2) ソースコード: Sourcify（コントラクト検証の公開データベース）で「チェーン上のバイトコードと一致」
+#     と判定された検証済みソース。https://repo.sourcify.dev/4663/<アドレス>
+#     ※ Blockscout の画面/API は Cloudflare の自動アクセス防止で、この作業環境からは読めなかった。
+#       Blockscout の各アドレスのページで「verified」の表示をオーナーが目で確認できる（下の blockscout_url）。
+#  3) チェーン上の照合: 公開RPCで Voter.minter() / Voter.ve() / FactoryRegistry.factoriesToPoolFactory()
+#     / CLPool.gauge() / Voter.gauges() などを呼び、アドレス同士のつながりが公式サイトの設定と一致することを確認。
+# ---------------------------------------------------------------------------
+verification:
+  checked_at: "2026-09-27"
+  checked_block: 73990201
+  address_source_url: https://up33.xyz/assets/index-Dv2RMzFm.js
+  source_code_db: https://repo.sourcify.dev/4663/
+  explorer_base: https://robinhoodchain.blockscout.com/address/
 
-# 報酬と手数料の仕組み（すべて未確認。コントラクトのソースコードで確認する）
+contracts:
+  factory_v3:          # v3（集中流動性=CL）プールを作るコントラクト。プール一覧はこの作成イベントから取る
+    address: "0x1ac9dB4a2608ba45D6127B1737949b51Bb54B7F3"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x1ac9dB4a2608ba45D6127B1737949b51Bb54B7F3
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0x1ac9dB4a2608ba45D6127B1737949b51Bb54B7F3
+    checked_at: "2026-09-27"
+    deploy_block: 6184096
+    evidence: "CLFactory（contracts/core/CLFactory.sol, Sourcify match）。公式サイト設定 clFactory。allPoolsLength()=1887。CLPool.factory() がこのアドレスを返す"
+  factory_v2:          # v2（従来型）プールを作るコントラクト
+    address: "0xFA5429AEBa338BEa2BFcc1b9a889862Ee395bc28"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0xFA5429AEBa338BEa2BFcc1b9a889862Ee395bc28
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0xFA5429AEBa338BEa2BFcc1b9a889862Ee395bc28
+    checked_at: "2026-09-27"
+    evidence: "PoolFactory（contracts/factories/PoolFactory.sol, exact_match）。公式サイト設定 poolFactory"
+  voter:               # ゲージの管理と投票、報酬の配分を行うコントラクト
+    address: "0x7F749fDD351C1Ceed82d76d7699CB631Eb8332a7"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x7F749fDD351C1Ceed82d76d7699CB631Eb8332a7
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0x7F749fDD351C1Ceed82d76d7699CB631Eb8332a7
+    checked_at: "2026-09-27"
+    evidence: "Voter（contracts/Voter.sol, exact_match）。公式サイト設定 voter。CLFactory.voter() がこのアドレスを返す。ゲージ数 length()=93（CL 87 / v2 6）"
+  reward_token:        # 報酬トークン（UP）
+    address: "0x57C0E45cB534413D1C20A4240955d6bB250BB4F1"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x57C0E45cB534413D1C20A4240955d6bB250BB4F1
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0x57C0E45cB534413D1C20A4240955d6bB250BB4F1
+    checked_at: "2026-09-27"
+    evidence: "Up（contracts/Up.sol, exact_match）。公式サイト設定 token。CLGauge.rewardToken() がこのアドレスを返す"
+  voting_escrow:       # UP をロックして投票権（veNFT）にするコントラクト
+    address: "0x5d321dE36F0bf98D92b291280514F3878582B7B6"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x5d321dE36F0bf98D92b291280514F3878582B7B6
+    checked_at: "2026-09-27"
+    evidence: "VotingEscrow（contracts/VotingEscrow.sol, exact_match）。Voter.ve() がこのアドレスを返す"
+  minter:              # 毎週の UP 発行量を決めて Voter に渡すコントラクト
+    address: "0x912EC7A90e8C9829eE0e0f6a4Db5270776Fc3Da5"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x912EC7A90e8C9829eE0e0f6a4Db5270776Fc3Da5
+    checked_at: "2026-09-27"
+    evidence: "Minter（contracts/Minter.sol, exact_match）。Voter.minter() がこのアドレスを返す。activePeriod()=1790208000, epochCount()=11, weekly()≈13,842,338 UP（2026-09-27 時点）"
+  factory_registry:    # どのプール工場にどのゲージ工場が対応するかの登録簿
+    address: "0xbbb4fbd1e6dbb39caf24d724132876cac1a53c8e"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0xbbb4fbd1e6dbb39caf24d724132876cac1a53c8e
+    checked_at: "2026-09-27"
+    evidence: "FactoryRegistry（exact_match）。Voter.factoryRegistry() が返す"
+  gauge_factory_cl:    # CLプール用のゲージを作るコントラクト
+    address: "0x6bdf3b9a782c28d6259356d0cb7ae22ab1368863"
+    unverified: false
+    source_url: null
+    checked_at: "2026-09-27"
+    evidence: "FactoryRegistry.factoriesToPoolFactory(CLFactory) の2番目の戻り値。このアドレス自体のソースは Sourcify 未登録"
+  cl_gauge_implementation:   # 各CLゲージの中身（各ゲージは最小プロキシ=この実装を呼ぶだけの小さな殻）
+    address: "0xb6eec6dceefa7063b130211e1d5e7e15adcfccad"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0xb6eec6dceefa7063b130211e1d5e7e15adcfccad
+    checked_at: "2026-09-27"
+    evidence: "CLGauge（contracts/gauge/CLGauge.sol, match, Aerodrome Slipstream 派生と明記）。ゲージ 0x889d…66a7 の eth_getCode が EIP-1167 最小プロキシでこの実装を指す"
+  cl_pool_implementation:    # 各CLプールの中身（同じく最小プロキシ）
+    address: "0x11725976bf1f38c4ab78d1f480bc5883d70d9dc3"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x11725976bf1f38c4ab78d1f480bc5883d70d9dc3
+    checked_at: "2026-09-27"
+    evidence: "CLPool（contracts/core/CLPool.sol, match）。プール 0x23d6…c4ba の eth_getCode がこの実装を指す"
+  position_manager:    # CLの流動性ポジション（NFT）を管理するコントラクト
+    address: "0x07F44c47743A2f36414A82b9F558ECFCf0EEdCEf"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x07F44c47743A2f36414A82b9F558ECFCf0EEdCEf
+    checked_at: "2026-09-27"
+    evidence: "NonfungiblePositionManager（match）。公式サイト設定 positionManager"
+  gauge_cap_controller:  # ゲージごとの報酬に上限をかける独自のコントラクト（下の gauge_emission_cap を参照）
+    address: "0x5739b0fcf359df7a386c0fdd27464dd15ee1687d"
+    unverified: true     # アドレスは Voter.gaugeCapController() で確認済み。ただしソースが Sourcify 未登録で中身（上限の計算）が読めない
+    source_url: null
+    checked_at: "2026-09-27"
+    evidence: "Voter.gaugeCapController() が返すアドレス。Blockscout での検証状況は未確認"
+  multicall3:          # 読み取りをまとめるための汎用コントラクト
+    address: "0xcA11bde05977b3631167028862bE2a173976CA11"
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0xcA11bde05977b3631167028862bE2a173976CA11
+    checked_at: "2026-09-27"
+    evidence: "Sourcify runtime exact_match。up. 公式サイト設定 multicall3 も同じアドレス。実際に aggregate3 で読み取りできた"
+
+# ---------------------------------------------------------------------------
+# 報酬と手数料の仕組み（検証済みソースと、チェーン上の値で確認）
+# ---------------------------------------------------------------------------
 mechanics:
-  staked_lp_receives_fees:        # ゲージにステークしたLPが取引手数料を受け取るか（false なら手数料は投票者へ）
-    value: null
-    unverified: true
-    evidence_contract: null
-    evidence_function: null
-    source_url: null
-    checked_at: null
+  staked_lp_receives_fees:        # ゲージにステークしたLPが取引手数料を受け取るか
+    value: false                  # 受け取らない。ステーク分の手数料は投票者（veUP保有者）へ行く
+    unverified: false
+    evidence_contract: "CLPool (0x1172…9dc3) / CLGauge (0xb6ee…ccad)"
+    evidence_function: >-
+      CLPool.swap() → calculateFees()/splitFees(): 手数料のうちステーク分（stakedLiquidity/liquidity の割合）は
+      gaugeFees に積まれ、LPの手数料（feeGrowthGlobal）には入らない。
+      CLPool.collectFees()（onlyGauge）→ CLGauge._claimFees() → IReward(feesVotingReward).notifyRewardAmount():
+      ゲージが集めた手数料は FeesVotingReward（投票者向けの報酬箱）へ送られる。CLGauge._notifyRewardAmount の前に毎回呼ばれる。
+    unstaked_fee: 0.10            # ステークしていないLPも、自分の手数料の10%を取られてゲージ→投票者へ
+    unstaked_fee_evidence: >-
+      CLPool.applyUnstakedFees() と CLFactory.getUnstakedFee()（defaultUnstakedFee=100000 = 10%）。
+      上位5プールで unstakedFee()=100000 をチェーン上で確認（ゲージが死んでいるプールは0%）
+    source_url: https://repo.sourcify.dev/4663/0x11725976bf1f38c4ab78d1f480bc5883d70d9dc3
+    checked_at: "2026-09-27"
   reward_proportional_to_staked_inrange_liquidity:   # 報酬が「レンジ内でステークされた流動性」に比例するか
-    value: null
-    unverified: true
-    evidence_contract: null
-    evidence_function: null
-    source_url: null
-    checked_at: null
+    value: true
+    unverified: false
+    evidence_contract: "CLPool (0x1172…9dc3) / CLGauge (0xb6ee…ccad)"
+    evidence_function: >-
+      CLPool._updateRewardsGrowthGlobal(): 毎秒 rewardRate 分の報酬を stakedLiquidity（今の価格帯でステーク中の流動性）で割って
+      rewardGrowthGlobalX128 に足す。stakedLiquidity は swap() で価格帯をまたぐたびに stakedLiquidityNet で増減する。
+      CLGauge._earned(): (getRewardGrowthInside(tickLower,tickUpper) の増分) × 自分の liquidity。
+      → 自分のレンジが今の価格を含む時間だけ、(自分の流動性 / レンジ内ステーク流動性の合計) の割合で受け取る。
+    note_rollover: "レンジ内のステーク流動性が0の時間の報酬は rollover に貯まり、次のエポックに持ち越し（CLPool._updateRewardsGrowthGlobal, CLGauge._notifyRewardAmount）"
+    source_url: https://repo.sourcify.dev/4663/0x11725976bf1f38c4ab78d1f480bc5883d70d9dc3
+    checked_at: "2026-09-27"
   epoch:                          # ボーナス配分の切り替え周期
-    length_seconds: null
-    flip_time_utc: null
-    unverified: true
-    evidence_contract: null
-    evidence_function: null
-    source_url: null
-    checked_at: null
+    length_seconds: 604800        # 7日
+    flip_time_utc: "木曜 00:00 UTC（日本時間 木曜 09:00）"
+    unverified: false
+    evidence_contract: "ProtocolTimeLibrary（Voter と CLGauge の両方に同じ定数）"
+    evidence_function: >-
+      EPOCH_DURATION = 7 days, EPOCH_OFFSET = 0, epochStart(t) = t - (t % 7 days)（Unix時刻0は木曜 00:00 UTC）。
+      VOTE_WINDOW = 1 hours（切り替え直後1時間は投票不可）。CLGauge._notifyRewardAmount: 次の切り替えまでの秒数で割って rewardRate を決める。
+      チェーン上で Voter.epochStart(now)=1790208000（2026-09-24 木 00:00 UTC）、epochNext=1790812800 を確認
+    source_url: https://repo.sourcify.dev/4663/0x7F749fDD351C1Ceed82d76d7699CB631Eb8332a7
+    checked_at: "2026-09-27"
+  gauge_emission_cap:             # 【独自の仕組み】ゲージごとの報酬に上限がかかり、超えた分は燃やされる
+    value: true                   # capMode = Enforced（2）で有効
+    unverified: true              # 上限の計算式が、ソース非公開の GaugeCapController にあるため
+    evidence_contract: "Voter (0x7F74…32a7)"
+    evidence_function: >-
+      Voter._distribute() → _distributeEnforced(): 投票で決まる本来の配分（nominal）のうち、
+      GaugeCapController.quote（WETH建ての価格などを使う）や管理者設定の上限で許された分だけゲージに渡す。
+      残り（withheld）は Voter._settleExpiredEpochs() でエポック終了時に burnFrom（焼却）。
+      今エポック（2026-09-24〜）の GaugeCapAccounted イベント77件の合計: 本来 約13,439,163 UP → 実際に配布 約1,308,540 UP（約9.7%）。
+    formula_impact: "票の割合 × 週の発行量 では実際の報酬を大きく過大評価する。実際にゲージへ渡った量（CLGauge.rewardRate）を使う必要がある"
+    source_url: https://repo.sourcify.dev/4663/0x7F749fDD351C1Ceed82d76d7699CB631Eb8332a7
+    checked_at: "2026-09-27"

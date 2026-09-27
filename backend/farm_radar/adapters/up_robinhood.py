@@ -1,8 +1,8 @@
 """up.（Robinhood Chain）のアダプター。
 
-報酬と手数料の仕組み、ファクトリーやゲージのアドレスは、まだ確認できていない。
-確認できるまでは推測で読み取りを書かず、AdapterNotReady を出して収集を「skipped」として記録する。
-確認後、venues/up-robinhood.yaml に出典を書いてから、ここに読み取り処理を実装する。
+2026-09-27: アドレスと3点（手数料の行き先・レンジ内ステーク比例・エポック）は確認済み（venues/up-robinhood.yaml）。
+ただし独自の「ゲージ報酬の上限」（gauge_emission_cap）の計算が未確認で、純日利の式にも関わるため、
+オーナーの確認が済むまで AdapterNotReady を出して収集を「skipped」として記録する。
 """
 
 from __future__ import annotations
