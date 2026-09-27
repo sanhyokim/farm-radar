@@ -21,7 +21,9 @@
 ## 必要なもの
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)（Mac / Windows）。アプリを入れて起動しておきます。
-- このリポジトリをパソコンにダウンロードしたもの（`git clone https://github.com/sanhyokim/farm-radar.git`）
+- このリポジトリをパソコンにダウンロードしたもの。M1 の間はコードが作業ブランチにあるので、ブランチを指定します。
+  `git clone -b claude/farm-radar-m1-jvp4sm https://github.com/sanhyokim/farm-radar.git`
+  （git がなければ https://github.com/sanhyokim/farm-radar/archive/refs/heads/claude/farm-radar-m1-jvp4sm.zip をダウンロードして展開）
 
 ## 準備（最初の1回だけ）
 
