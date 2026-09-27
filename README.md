@@ -59,15 +59,15 @@ docker compose logs -f collector
 
 **状態をブラウザで見る**
 
-http://localhost:8000/api/health を開きます。
+http://localhost:18000/api/health を開きます。
 
 - `last_ok_at`: 最後に収集が成功した時刻（UTC＝日本時間 − 9時間）
 - `stale`: `true` なら「データが古い」（しばらく成功していない）
 - `last_24h`: 直近24時間の予定回数（expected）と成功回数（ok）
 
-http://localhost:8000/api/venues では会場の警告（例: C4「報酬の上限を決める仕組みのソースが非公開」）と、
+http://localhost:18000/api/venues では会場の警告（例: C4「報酬の上限を決める仕組みのソースが非公開」）と、
 コントラクトごとの確認状況（Sourcify の照合が full / partial か）を見られます。
-http://localhost:8000/api/alerts では、記録された通知（報酬の急減など）を見られます。
+http://localhost:18000/api/alerts では、記録された通知（報酬の急減など）を見られます。
 
 **24時間の欠けチェック（M1の完了条件）**
 
@@ -98,7 +98,7 @@ docker compose down
 
 **止まっていた期間は「欠損」として記録されます**
 - スリープ中や電源オフの間は収集できません。その期間は `collection_gaps`（欠損の表）に記録され、
-  http://localhost:8000/api/health の `gaps_7d` と、欠けチェックの結果に表示されます。
+  http://localhost:18000/api/health の `gaps_7d` と、欠けチェックの結果に表示されます。
 - 将来のペーパートレード（M5）では、欠損期間中の損益を「推定」として扱い、評価の計算から分けます。
 
 **24時間の確認をするとき**は、スリープしないようにしてください。

@@ -13,7 +13,7 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 
-  api:                  # 状態確認用（http://localhost:8000/api/health）
+  api:                  # 状態確認用（http://localhost:18000/api/health）
     build: { context: ., dockerfile: backend/Dockerfile }
     command: uvicorn farm_radar.api:app --host 0.0.0.0 --port 8000
     env_file:
@@ -25,5 +25,5 @@ services:
       - ./venues:/app/venues:ro
       - ./data:/app/data
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${FARM_RADAR_PORT:-18000}:8000"   # 8000 はほかのアプリと重なりやすいので 18000 を使う
     restart: unless-stopped
