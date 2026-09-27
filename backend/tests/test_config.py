@@ -50,3 +50,12 @@ def test_venue_chain_facts_have_source():
     assert chain["chain_id"] == 4663
     assert chain["source_url"].startswith("https://docs.robinhood.com/")
     assert chain["checked_at"]
+
+
+def test_secrets_and_data_are_gitignored():
+    import subprocess
+    for path in [".env", ".env.local", "data/farm_radar.sqlite3", "data/farm_radar.sqlite3-wal"]:
+        r = subprocess.run(["git", "check-ignore", "-q", path], cwd=REPO_ROOT)
+        assert r.returncode == 0, f"{path} が .gitignore で除外されていません"
+    r = subprocess.run(["git", "check-ignore", "-q", ".env.example"], cwd=REPO_ROOT)
+    assert r.returncode == 1  # 見本は残す

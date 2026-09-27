@@ -45,6 +45,18 @@ CREATE TABLE IF NOT EXISTS collection_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_runs_venue_slot ON collection_runs(venue_id, slot);
 
+-- 収集が止まっていた期間（パソコンのスリープ・再起動・Docker停止など）。
+-- 画面に「欠損」として表示し、M5のペーパートレード評価ではこの期間の損益を推定扱いにして分ける。
+CREATE TABLE IF NOT EXISTS collection_gaps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  venue_id TEXT NOT NULL,
+  start_slot TEXT NOT NULL,           -- 欠けた最初の予定時刻（UTC）
+  end_slot TEXT NOT NULL,             -- 欠けた最後の予定時刻（UTC）
+  missed_slots INTEGER NOT NULL,
+  detected_at TEXT NOT NULL,
+  UNIQUE (venue_id, start_slot)
+);
+
 -- RPCの生の応答。計算式を変えたときに過去データで再計算するため。
 CREATE TABLE IF NOT EXISTS raw_rpc (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +115,9 @@ CREATE TABLE IF NOT EXISTS positions (
 );
 CREATE TABLE IF NOT EXISTS position_pnl (
   position_id INTEGER NOT NULL REFERENCES positions(id), ts TEXT NOT NULL, income REAL,
-  direction REAL, gamma REAL, hedge REAL, other REAL, net REAL, PRIMARY KEY (position_id, ts)
+  direction REAL, gamma REAL, hedge REAL, other REAL, net REAL,
+  is_estimated INTEGER NOT NULL DEFAULT 0,   -- 欠損期間中の値なら1（評価の計算から分ける）
+  PRIMARY KEY (position_id, ts)
 );
 CREATE TABLE IF NOT EXISTS ledger (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, is_paper INTEGER NOT NULL,

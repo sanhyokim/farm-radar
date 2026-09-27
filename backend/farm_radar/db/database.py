@@ -111,6 +111,39 @@ def insert_snapshot(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     conn.execute(f"INSERT OR REPLACE INTO pool_snapshots({cols}) VALUES ({marks})", tuple(row.values()))
 
 
+def last_slot_before(conn: sqlite3.Connection, venue_id: str, slot: datetime) -> datetime | None:
+    row = conn.execute(
+        "SELECT MAX(slot) FROM collection_runs WHERE venue_id=? AND slot<?", (venue_id, _iso(slot))
+    ).fetchone()
+    return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+
+def record_gap(conn: sqlite3.Connection, venue_id: str, start: datetime, end: datetime,
+               missed: int, now: datetime) -> None:
+    conn.execute(
+        """INSERT OR IGNORE INTO collection_gaps(venue_id, start_slot, end_slot, missed_slots, detected_at)
+           VALUES (?,?,?,?,?)""",
+        (venue_id, _iso(start), _iso(end), missed, _iso(now)),
+    )
+    conn.commit()
+
+
+def list_gaps(conn: sqlite3.Connection, venue_id: str, since: datetime) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM collection_gaps WHERE venue_id=? AND end_slot>=? ORDER BY start_slot",
+        (venue_id, _iso(since)),
+    ).fetchall()
+
+
+def in_gap(conn: sqlite3.Connection, venue_id: str, ts: datetime) -> bool:
+    """その時刻が欠損期間に入っているか（M5でペーパートレードの損益を推定扱いにするのに使う）。"""
+    row = conn.execute(
+        "SELECT 1 FROM collection_gaps WHERE venue_id=? AND start_slot<=? AND end_slot>=? LIMIT 1",
+        (venue_id, _iso(ts), _iso(ts)),
+    ).fetchone()
+    return row is not None
+
+
 def list_runs(conn: sqlite3.Connection, venue_id: str, since: datetime) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM collection_runs WHERE venue_id=? AND slot>=? ORDER BY slot",

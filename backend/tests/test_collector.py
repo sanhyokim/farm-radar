@@ -123,3 +123,32 @@ def test_completeness(conn):
     t = start + timedelta(minutes=150, seconds=30)
     collect_venue(conn, adapter, FakeRpc(), snapshot_minutes=15, now=lambda: t)
     assert check(conn, "fake", now=start + timedelta(hours=24, minutes=1)).passed
+
+
+def test_gap_is_recorded_after_sleep(conn):
+    adapter = FakeAdapter(n=1)
+    t0 = datetime(2026, 9, 27, 0, 0, 5, tzinfo=UTC)
+    collect_venue(conn, adapter, FakeRpc(), snapshot_minutes=15, now=lambda: t0)
+    collect_venue(conn, adapter, FakeRpc(), snapshot_minutes=15, now=lambda: t0 + timedelta(minutes=15))
+    assert conn.execute("SELECT COUNT(*) FROM collection_gaps").fetchone()[0] == 0
+
+    # 00:15 の後、パソコンがスリープして 01:37 に復帰した
+    wake = datetime(2026, 9, 27, 1, 37, tzinfo=UTC)
+    collect_venue(conn, adapter, FakeRpc(), snapshot_minutes=15, now=lambda: wake)
+    gaps = db.list_gaps(conn, "fake", t0 - timedelta(days=1))
+    assert len(gaps) == 1
+    g = gaps[0]
+    assert g["start_slot"] == "2026-09-27T00:30:00+00:00"
+    assert g["end_slot"] == "2026-09-27T01:15:00+00:00"
+    assert g["missed_slots"] == 4
+    assert db.in_gap(conn, "fake", datetime(2026, 9, 27, 1, 0, tzinfo=UTC))
+    assert not db.in_gap(conn, "fake", datetime(2026, 9, 27, 1, 30, tzinfo=UTC))
+
+
+def test_failed_run_before_collection_is_recorded(conn):
+    from farm_radar.collectors.snapshot import record_failed_run
+
+    t = datetime(2026, 9, 27, 3, 0, 1, tzinfo=UTC)
+    record_failed_run(conn, "fake", 15, "RPCにつながらない", now=lambda: t)
+    row = conn.execute("SELECT status, error FROM collection_runs").fetchone()
+    assert row["status"] == "failed" and "RPC" in row["error"]

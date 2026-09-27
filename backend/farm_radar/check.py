@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import UTC, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 from .collectors.completeness import check
 from .config import load_config
@@ -30,6 +30,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - 記録なし: {fmt(s)}")
         for s, status in r.not_ok[:20]:
             print(f"  - {status}: {fmt(s)}")
+        gaps = db.list_gaps(conn, venue_id, r.since)
+        for g in gaps:
+            print(f"  - 欠損（収集が止まっていた）: {fmt(datetime.fromisoformat(g['start_slot']))} 〜 "
+                  f"{fmt(datetime.fromisoformat(g['end_slot']))}（{g['missed_slots']} 回分）")
         snaps = conn.execute(
             "SELECT COUNT(*) FROM pool_snapshots s JOIN pools p ON p.id = s.pool_id "
             "WHERE p.venue_id = ? AND s.ts >= ?", (venue_id, r.since.isoformat(timespec="seconds"))).fetchone()[0]

@@ -44,7 +44,9 @@ def collect_venue(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> RunResult:
     started = now()
-    run_id = db.start_run(conn, adapter.venue_id, slot_for(started, snapshot_minutes), started)
+    slot = slot_for(started, snapshot_minutes)
+    _record_gap_if_any(conn, adapter.venue_id, slot, snapshot_minutes, started)
+    run_id = db.start_run(conn, adapter.venue_id, slot, started)
     block: int | None = None
     ok = failed = 0
     try:
@@ -108,6 +110,34 @@ def collect_venue(
         "pools_ok": result.pools_ok, "pools_failed": result.pools_failed, "error": result.error,
     }})
     return result
+
+
+def record_failed_run(conn: sqlite3.Connection, venue_id: str, snapshot_minutes: int, error: str,
+                      now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
+    """収集に入る前に失敗したとき（RPCにつながらないなど）の記録。"""
+    started = now()
+    slot = slot_for(started, snapshot_minutes)
+    _record_gap_if_any(conn, venue_id, slot, snapshot_minutes, started)
+    run_id = db.start_run(conn, venue_id, slot, started)
+    db.finish_run(conn, run_id, now=now(), status="failed", block_number=None, pools_ok=0, pools_failed=0, error=error)
+    log.error("collection failed before start", extra={"data": {"venue": venue_id, "error": error}})
+
+
+def _record_gap_if_any(conn: sqlite3.Connection, venue_id: str, slot: datetime, minutes: int,
+                       now: datetime) -> None:
+    """前回の収集から予定時刻が飛んでいたら、その間を「欠損」として記録する。"""
+    last = db.last_slot_before(conn, venue_id, slot)
+    if last is None:
+        return
+    step = timedelta(minutes=minutes)
+    missed = int((slot - last) / step) - 1
+    if missed <= 0:
+        return
+    start, end = last + step, slot - step
+    db.record_gap(conn, venue_id, start, end, missed, now)
+    log.warning("collection gap detected", extra={"data": {
+        "venue": venue_id, "start": start.isoformat(), "end": end.isoformat(), "missed_slots": missed,
+    }})
 
 
 def _save_raw(conn: sqlite3.Connection, run_id: int, ts: datetime, block: int, pool_id: str,
