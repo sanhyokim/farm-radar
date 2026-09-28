@@ -59,7 +59,8 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
 1. **M1 合格（2026-09-29 07:31 JST 確認）**: オーナーのパソコン（Windows）で 2026-09-27 23:33 JST から収集。
    直近24時間で予定96回・成功96回・欠け0・欠損期間なし、毎回87プールすべて成功（/api/health、最終 run id 129）。
    状態ページは http://localhost:18000/api/health（オーナーのPCでは 8000 番がほかのアプリと重なったため 18000 に変更）。
-2. M2（スコアリング）で、下の承認済みの式を実装する。
+2. M1 のPR: https://github.com/sanhyokim/farm-radar/pull/1 （2026-09-29 作成。オーナーの確認待ち）
+3. M2 開始（2026-09-29 オーナー承認）。まず in_range_ratio と direction_risk の計算案をオーナーに提示中（/mnt/project-files/farm-radar/m2-formula-proposal.md）。承認後に実装する。
 
 ## 承認済みの計算方針（2026-09-27 オーナー承認。M2 で実装する）
 1. up. で確認した式は「収入」の部分。純日利は SPEC 3.2 のとおり 収入 − ガンマ − リバランス − ヘッジ − 報酬トークンの値下がり。
