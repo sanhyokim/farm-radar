@@ -130,10 +130,25 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE INDEX IF NOT EXISTS idx_alerts_ts ON alerts(ts);
 
 -- 以下は M2 以降で使う（SPEC 6章）
+-- スコアと判定（M2。1時間ごと）。金額はドル/日、net_daily_pct は総資産あたりの%（判定に使う）。
 CREATE TABLE IF NOT EXISTS scores (
   pool_id TEXT NOT NULL, ts TEXT NOT NULL, best_r REAL, income REAL, gamma REAL,
   rebalance REAL, hedge REAL, haircut REAL, net_daily_pct REAL, signal TEXT,
-  reason_ja TEXT, warnings_json TEXT, PRIMARY KEY (pool_id, ts)
+  reason_ja TEXT, warnings_json TEXT,
+  venue_id TEXT,
+  block_number INTEGER,               -- 使ったスナップショットのブロック
+  direction_risk REAL,                -- ヘッジできないトークンの値下がりの損の見込み
+  net_daily_pct_lp REAL,              -- 建玉あたりの%（表示用。判定には使わない）
+  mode TEXT,                          -- staked（ボーナス）/ unstaked（手数料）
+  in_range_ratio REAL,                -- レンジ内の時間の割合（置き直す前提。判定に使う）
+  in_range_ratio_hold REAL,           -- 参考値（置きっぱなしの場合）
+  sigma_pair REAL, sigma_token0 REAL, sigma_token1 REAL,
+  vol_source TEXT,                    -- own（自分の記録）/ external（GeckoTerminal で補った）
+  has_perp INTEGER,                   -- 値動きのあるトークンがすべてヘッジできる
+  epoch_just_flipped INTEGER,
+  tvl_usd REAL,
+  details_json TEXT,                  -- レンジ幅ごとの計算結果と、使った入力
+  PRIMARY KEY (pool_id, ts)
 );
 CREATE TABLE IF NOT EXISTS positions (
   id INTEGER PRIMARY KEY AUTOINCREMENT, pool_id TEXT NOT NULL, is_paper INTEGER NOT NULL,

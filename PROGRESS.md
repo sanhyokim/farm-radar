@@ -1,11 +1,12 @@
 # PROGRESS.md — 作業の現在地
 
 > 新しいセッションは、作業を始める前にこのファイルを読むこと（CLAUDE.md のルール）。作業のたびに更新する。
-> 最終更新: 2026-09-29 07:35 JST
+> 最終更新: 2026-09-29 09:10 JST
 
 ## いまの位置
-- **M1（up.アダプター + データ収集 + SQLite）完了（2026-09-29）。オーナーの承認待ち。**
-- 作業ブランチ: `claude/farm-radar-m1-jvp4sm`。`main` には CLAUDE.md と SPEC.md だけが入っている。M1が終わったら main へのPRにする。
+- **M1 完了・main に取り込み済み**（PR #1、2026-09-29 オーナーがマージ）。
+- **M2（スコアリング + 判定 + 理由文）実装済み（2026-09-29）。オーナーの確認待ち。**
+- 作業ブランチ: `claude/project-thread-np18zb`（main から作成）。M2 の確認が済んだら main へのPRにする。
 - 付録A（Phase 3）は実装しない。オーナーが「Phase 3aを開始」と言うまで、送信・署名・秘密鍵のコードは書かない。
 
 ## M1 の進み具合
@@ -59,10 +60,36 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
 1. **M1 合格（2026-09-29 07:31 JST 確認）**: オーナーのパソコン（Windows）で 2026-09-27 23:33 JST から収集。
    直近24時間で予定96回・成功96回・欠け0・欠損期間なし、毎回87プールすべて成功（/api/health、最終 run id 129）。
    状態ページは http://localhost:18000/api/health（オーナーのPCでは 8000 番がほかのアプリと重なったため 18000 に変更）。
-2. M1 のPR: https://github.com/sanhyokim/farm-radar/pull/1 （2026-09-29 作成。オーナーの確認待ち）
-3. M2 開始（2026-09-29 オーナー承認）。まず in_range_ratio と direction_risk の計算案をオーナーに提示中（/mnt/project-files/farm-radar/m2-formula-proposal.md）。承認後に実装する。
+2. M1 のPR: https://github.com/sanhyokim/farm-radar/pull/1 （2026-09-29 マージ済み）
+3. M2: 計算案は 2026-09-29 に修正2点つきで承認（SPEC 反映済み）。実装・テスト済み。オーナーのパソコンで更新して /api/scores を確認してもらう。
+4. 次: M3（画面）。M2 の後、2週間の観察データで閾値をオーナーと見直す（SPEC 11章）。
 
-## 承認済みの計算方針（2026-09-27 オーナー承認。M2 で実装する）
+## M2 の実装メモ（2026-09-29）
+- 計算式は SPEC 3.1章・3.2章（2026-09-29 オーナー決定の修正2点を反映。変更した章: 3.1, 3.2, 7.3）。
+  - in_range_ratio = max(0, 1 − リバランス回数/日 × 待ち時間 ÷ 1440分)。待ち時間は config.yaml `scoring.rebalance_wait_minutes`（15分）
+  - 参考値 in_range_ratio_hold（置きっぱなし）は details_json に保存（7.3章の詳細欄で表示する）。オーナーに見せた表と一致することをテストで確認
+  - direction_risk = C_lp × 0.5 × 0.4 × (σ_d(A) + σ_d(B))。ステーブルは0。片方だけヘッジできるときは、できない方だけ入れる
+  - σ_pair（比率の値動き）は in_range_ratio・リバランス回数・ガンマに、σ_d(トークン)（ドル建て）は direction_risk に使う
+- コード: `backend/farm_radar/scoring/`（prices.py オンチェーンのドル価格、volatility.py、model.py 3.2章、judge.py 4章、run.py 1時間ごとの実行）、
+  `external/`（GeckoTerminal、Lighter）、`tokens.py`、`tools/refresh_tokens.py`。API `/api/scores`。スケジュールは毎時5分。
+- ドル価格: オンチェーンのプール価格から、USDG=$1 を起点に「深いプールから順に」たどる（SPEC 5.3章: オンチェーン優先）。
+- σ: 自分の記録が7日分あれば自分の記録、なければ GeckoTerminal の1時間足（そのトークンのいちばん大きいプール）。3時間ごとに取り直して token_prices 表にためる。
+  株トークンは米国市場の時間中/時間外の σ も details_json に保存。
+- 出来高（手数料収入の計算）と TVL（🟢の条件 $200K）は GeckoTerminal。取れないときは手数料収入なし・🟢にしない。
+- ヘッジ: `venues/tokens-robinhood.yaml` の perps.map にあるトークンだけ。資金調達率は Lighter の直近7日の平均（ショート側）。
+  単位は公式ドキュメント（毎時払い）と、履歴APIの rate（%/時）× 8 ÷ 100 = funding-rates の値（NVDA・ETH で一致）で確認。
+- トークンの分類（`venues/tokens-robinhood.yaml`、2026-09-28 UTC 作成）:
+  - ステーブル: USDG、WETH（公式 Token Contracts ページ https://docs.robinhood.com/chain/contracts ）
+  - 株トークン195個: Robinhood 公式 Stock Token API https://api.robinhood.com/rhj/assets のチェーン4663のアドレス（記号だけ同じ偽物は除外。例: プールの "NET"、"GME" の片方）
+  - ヘッジ先29個: WETH→ETH、株トークン→Lighter の RWA 仕様表（https://docs.lighter.xyz/trading/real-world-assets-rwas/market-specifications.md）に同じティッカーの株・ETFとして載っているもの
+  - 未確認で使っていない候補: AI、CASHCAT、PONS、VIRTUAL（記号が同じだけ）、GME・PLTR・TTWO（Lighter に perp はあるが RWA 仕様表に無い）
+- 私が決めた初期値（config.yaml で変更可）: ガス 60万/回、両替のずれ +0.1%（プール手数料に加えて）、両替する割合 50%、
+  perp 手数料 0%（Lighter 標準アカウント）、資金調達を受け取る側でも収入に数えない、報酬トークンの値下がり = ボーナス収入 × 7日の変化の1日換算（下がっているときだけ）
+- 2026-09-29 09:00 JST に実データ（1回分の記録 + GeckoTerminal）で試算: 87プールすべて🔴。
+  理由は UP が7日で −44%（0.53 → 0.29 ドル。GeckoTerminal の1時間足）で、4章の「報酬トークンが7日で−30%超 = 重大警告」に当たるため。
+  また警告C4（軽微）があるので、up. のプールは条件がそろっても最高🟡になる（4章「軽微な警告あり → 🟡」）。
+
+## 承認済みの計算方針（2026-09-27 オーナー承認。M2 で実装済み）
 1. up. で確認した式は「収入」の部分。純日利は SPEC 3.2 のとおり 収入 − ガンマ − リバランス − ヘッジ − 報酬トークンの値下がり。
 2. 自分の比率は L_mine / (レンジ内のステーク流動性 + L_mine)（分母に自分を含める）。
 3. 収入に、レンジ幅ごとの「レンジ内にいる時間の割合」を掛ける。**割合の求め方（どのモデルで見積もるか）は M2 の最初に案を出して確認する。**
@@ -75,7 +102,8 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
 - 報酬の毎秒量は、票の割合ではなくゲージの実際の rewardRate を使う（配布期間が切れていれば0）。
 
 ## 今後の要件（2026-09-28 オーナー追加。SPEC.md に反映済み）
-- M2: 総資産（既定 $1,000 を LP 55%・ヘッジ証拠金 40%・予備 5% に振り分け）に対する日利で計算・判定する。income に in_range_ratio を掛ける。ヘッジできないプールは direction_risk を引き、判定は最高でも🟡（SPEC 3.2章・4章）。in_range_ratio と direction_risk の計算式は M2 の最初に案を出して承認を得る
+- M2（実装済み）: 総資産（既定 $1,000 を LP 55%・ヘッジ証拠金 40%・予備 5% に振り分け）に対する日利で計算・判定する。income に in_range_ratio を掛ける。ヘッジできないプールは direction_risk を引き、判定は最高でも🟡（SPEC 3.2章・4章）
+- M3: プール詳細の詳細欄に、レンジ内の時間の割合を2つ（判定用 / 参考値の置きっぱなし）並べる。外部データで補っているときはその旨を表示（SPEC 7.3章）
 - M3・M5: 損益表示の要件（SPEC 7.6章）と、総資産・時間別の表示（SPEC 7.7章）を実装する
 - Phase 3（記録のみ・実装しない）: ウォレット候補の比較軸（SPEC 付録A A1.1）
 

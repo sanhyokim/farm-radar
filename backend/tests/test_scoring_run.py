@@ -1,0 +1,162 @@
+import json
+import math
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from farm_radar.config import ScoringSettings
+from farm_radar.db import database as db
+from farm_radar.external.geckoterminal import PoolMarket, TokenMarket
+from farm_radar.scoring.judge import NO_HEDGE_TEXT
+from farm_radar.scoring.prices import Q96
+from farm_radar.scoring.run import EXTERNAL_SOURCE, ScoreContext, score_venue
+from farm_radar.tokens import PerpRef, TokenBook
+
+USDG, WETH, UP, NVDA = "0x" + "11" * 20, "0x" + "22" * 20, "0x" + "33" * 20, "0x" + "44" * 20
+T0 = datetime(2026, 9, 20, 0, 0, tzinfo=UTC)
+
+VENUE = {
+    "id": "up-robinhood",
+    "contracts": {"reward_token": {"address": UP, "unverified": False}},
+    "warnings": [{"code": "C4", "level": "minor", "title_ja": "報酬の上限の仕組みが非公開"}],
+}
+TOKENS = TokenBook(
+    stablecoins=frozenset({USDG}), stock_tokens={NVDA: "NVDA"},
+    perps={WETH: PerpRef("lighter", "ETH", 0), NVDA: PerpRef("lighter", "NVDA", 110)},
+    wrapped_native=WETH,
+)
+# (プール, token0, token1, 桁0, 桁1, 基準の価格 token1/token0, 1時間ごとの揺れ)
+POOLS = [
+    ("p-weth", WETH, USDG, 18, 6, 2500.0, 0.004),
+    ("p-up", UP, WETH, 18, 18, 0.0001, 0.01),
+    ("p-nvda", USDG, NVDA, 6, 18, 1 / 200, 0.002),
+]
+
+
+class FakeLighter:
+    def short_funding_hourly(self, market_id, start, end):
+        return [(t, 0.00001) for t in range(start, end, 3600)]
+
+
+class FakeRpc:
+    def gas_price(self):
+        return 10 ** 8   # 0.1 gwei
+
+
+class FakeGT:
+    def __init__(self):
+        self.ohlcv_calls = 0
+
+    def pools(self, addresses):
+        return {a: PoolMarket(a, 500_000.0, 200_000.0, None, None) for a in addresses}
+
+    def tokens(self, addresses):
+        return {a: TokenMarket(a, None, 1_000_000.0, "0xtop" + a[-4:]) for a in addresses}
+
+    def hourly_usd(self, pool, token, limit=169):
+        self.ohlcv_calls += 1
+        end = int(T0.timestamp()) + 8 * 86400
+        base = {WETH: 2500.0, UP: 0.25, NVDA: 200.0}[token]
+        return [(end - i * 3600, base * math.exp(0.005 * (-1) ** i)) for i in range(limit)][::-1]
+
+
+def _fill(conn, hours):
+    conn.execute("INSERT INTO venues(id, name, chain) VALUES ('up-robinhood', 'up.', 'robinhood')")
+    for pid, t0, t1, d0, d1, _p, _w in POOLS:
+        conn.execute(
+            """INSERT INTO pools(id, venue_id, address, token0, token1, discovered_at, token0_symbol, token1_symbol,
+                 token0_decimals, token1_decimals) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (f"up-robinhood:{pid}", "up-robinhood", pid, t0, t1, T0.isoformat(),
+             {USDG: "USDG", WETH: "WETH", UP: "UP", NVDA: "NVDA"}[t0],
+             {USDG: "USDG", WETH: "WETH", UP: "UP", NVDA: "NVDA"}[t1], d0, d1),
+        )
+    start = T0 + timedelta(days=8) - timedelta(hours=hours)
+    for h in range(hours + 1):
+        ts = start + timedelta(hours=h)
+        run_id = db.start_run(conn, "up-robinhood", ts, ts)
+        for pid, t0, t1, d0, d1, p, wig in POOLS:
+            price = p * math.exp(wig * (-1) ** h)
+            sp = math.sqrt(price * 10 ** (d1 - d0))
+            db.insert_snapshot(conn, {
+                "pool_id": f"up-robinhood:{pid}", "ts": ts.isoformat(timespec="seconds"), "block_number": 1000 + h,
+                "run_id": run_id, "price": price, "tick": 0, "sqrt_price_x96": str(int(sp * Q96)), "fee": 3000,
+                "liquidity_total": str(10 ** 18), "liquidity_staked_inrange": str(5 * 10 ** 17),
+                "reward_rate_raw": str(10 ** 18), "reward_rate_effective_raw": str(10 ** 18),
+                "reward_token": UP, "gauge_alive": 1, "unstaked_fee": 100000, "epoch_just_flipped": 0,
+                "block_time": ts.isoformat(timespec="seconds"), "source": "test",
+            })
+        db.finish_run(conn, run_id, now=ts, status="ok", block_number=1000 + h, pools_ok=3, pools_failed=0)
+    conn.commit()
+
+
+def _ctx(gt=None, **kw):
+    return ScoreContext(venue=VENUE, tokens=TOKENS, settings=ScoringSettings(**kw), stale_after_minutes=45,
+                        rpc=FakeRpc(), gt=gt, lighter=FakeLighter())
+
+
+NOW = T0 + timedelta(days=8, minutes=10)
+
+
+def test_scores_every_pool_with_own_data():
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    rows = {r["pool_id"].split(":")[1]: r for r in score_venue(conn, _ctx(), now=NOW)}
+    assert set(rows) == {"p-weth", "p-up", "p-nvda"}
+    for r in rows.values():
+        assert r["signal"] in ("green", "yellow", "red")
+        assert r["reason_ja"] and len(r["reason_ja"].splitlines()) <= 3
+        assert r["vol_source"] == "own"
+        assert r["net_daily_pct"] is not None
+    # 揺れの大きさから σ が出る（1時間 ±0.4% → 1日 約 0.4% × √24 × 2 の往復）
+    assert rows["p-weth"]["sigma_pair"] == pytest.approx(0.008 * math.sqrt(24), rel=0.02)
+    # ステーブルの σ は0
+    assert rows["p-weth"]["sigma_token1"] == 0.0
+    # UP はヘッジ先がない → 値動きの損を引き、判定は最高でも🟡、理由に必ず書く
+    assert rows["p-up"]["has_perp"] == 0
+    assert rows["p-up"]["direction_risk"] > 0 and rows["p-up"]["signal"] != "green"
+    assert NO_HEDGE_TEXT in rows["p-up"]["reason_ja"]
+    # WETH/USDG はヘッジできる → 値動きの損は0、ヘッジ費用を引く
+    assert rows["p-weth"]["has_perp"] == 1 and rows["p-weth"]["direction_risk"] == 0
+    assert rows["p-weth"]["hedge"] > 0
+    # 軽微な警告（C4）があるので、どのプールも🟢にはならない
+    assert all(r["signal"] != "green" for r in rows.values())
+    # 詳細にはレンジ幅ごとの結果と、参考値（置きっぱなし）が入る
+    det = json.loads(rows["p-weth"]["details_json"])
+    assert len(det["ranges"]) == 7
+    assert all("in_range_ratio_hold" in x for x in det["ranges"])
+    # 株トークンのペアは、市場時間中と時間外の σ も記録する
+    assert "NVDA" in json.loads(rows["p-nvda"]["details_json"])["inputs"]["sigma_stock_split"]
+    assert conn.execute("SELECT is_stock_pair FROM pools WHERE id='up-robinhood:p-nvda'").fetchone()[0] == 1
+    assert len(db.latest_scores(conn)) == 3
+
+
+def test_short_history_uses_external_data_and_says_so():
+    conn = db.connect(":memory:")
+    _fill(conn, 24)            # まだ1日分しかない
+    gt = FakeGT()
+    rows = score_venue(conn, _ctx(gt), now=NOW)
+    assert all(r["vol_source"] == "external" for r in rows)
+    assert all("外部データ" in r["reason_ja"] for r in rows)
+    assert gt.ohlcv_calls == 3   # WETH, UP, NVDA
+    assert conn.execute("SELECT COUNT(*) FROM token_prices WHERE source=?", (EXTERNAL_SOURCE,)).fetchone()[0] > 0
+    # 取り直す間隔の中なら、ためた足を使って外部サイトには聞かない
+    score_venue(conn, _ctx(gt), now=NOW + timedelta(minutes=30))
+    assert gt.ohlcv_calls == 3
+
+
+def test_stale_data_is_red():
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    rows = score_venue(conn, _ctx(), now=NOW + timedelta(hours=3))
+    assert all(r["signal"] == "red" and "古い" in r["reason_ja"] for r in rows)
+
+
+def test_reward_token_crash_is_major():
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    # UP が7日で半分になった形にする（UP/WETH の価格を途中から下げる）
+    conn.execute("""UPDATE pool_snapshots SET price = price * 0.5
+                    WHERE pool_id='up-robinhood:p-up' AND ts >= ?""", ((T0 + timedelta(days=4)).isoformat(),))
+    rows = {r["pool_id"].split(":")[1]: r for r in score_venue(conn, _ctx(), now=NOW)}
+    assert rows["p-weth"]["signal"] == "red"
+    assert "報酬トークンが7日で" in rows["p-weth"]["reason_ja"]

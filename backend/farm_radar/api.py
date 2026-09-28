@@ -84,3 +84,25 @@ def alerts(days: int = 7) -> dict:
         return {"alerts": [dict(r) for r in rows]}
     finally:
         conn.close()
+
+
+@app.get("/api/scores")
+def scores(venue: str | None = None) -> dict:
+    """プールごとの最新の判定（M2）。net_daily_pct は総資産あたりの%で、判定に使う値。"""
+    import json
+
+    config = load_config()
+    conn = db.connect(config.database_path)
+    try:
+        rows = db.latest_scores(conn, venue)
+        out, counts = [], {"green": 0, "yellow": 0, "red": 0}
+        for r in rows:
+            d = dict(r)
+            d["warnings"] = json.loads(d.pop("warnings_json") or "[]")
+            d["details"] = json.loads(d.pop("details_json") or "{}")
+            d["pair"] = f"{d.get('token0_symbol')}/{d.get('token1_symbol')}"
+            counts[d["signal"]] = counts.get(d["signal"], 0) + 1
+            out.append(d)
+        return {"counts": counts, "judge_basis": "総資産あたりの純日利（%）", "scores": out}
+    finally:
+        conn.close()

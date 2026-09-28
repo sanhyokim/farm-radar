@@ -172,6 +172,10 @@ class RpcClient:
     def chain_id(self) -> int:
         return int(self.request("eth_chainId", []), 16)
 
+    def gas_price(self) -> int:
+        """今のガス価格（wei）。"""
+        return int(self.request("eth_gasPrice", []), 16)
+
     def block_number(self) -> int:
         return int(self.request("eth_blockNumber", []), 16)
 

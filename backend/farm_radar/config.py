@@ -30,6 +30,63 @@ class RpcSettings:
 
 
 @dataclass(frozen=True)
+class ScoringSettings:
+    """スコア計算と判定の設定（SPEC 3.2章・4章）。config.yaml の scoring / signal から読む。"""
+    every_minutes: int = 60
+    total_capital_usd: float = 1000.0
+    allocation_lp: float = 0.55
+    allocation_hedge_margin: float = 0.40
+    allocation_reserve: float = 0.05
+    ranges_pct: tuple[float, ...] = (0.5, 1, 2, 3, 5, 10, 15)
+    rebalance_wait_minutes: float = 15.0
+    gas_units_per_tx: int = 600_000
+    swap_ratio: float = 0.5
+    slippage_extra_pct: float = 0.1
+    hedge_taker_fee_pct: float = 0.0
+    count_funding_income: bool = False
+    volatility_days: float = 7.0
+    external_refresh_hours: float = 3.0
+    green_min_pct: float = 0.30
+    yellow_min_pct: float = 0.10
+    green_min_tvl_usd: float = 200_000.0
+    reward_token_7d_major_pct: float = -30.0
+
+
+def _scoring(raw: dict[str, Any]) -> ScoringSettings:
+    sc = raw.get("scoring") or {}
+    sig = raw.get("signal") or {}
+    alloc = sc.get("allocation") or {}
+    hedge = sc.get("hedge") or {}
+    d = ScoringSettings()
+    out = ScoringSettings(
+        every_minutes=int(sc.get("every_minutes", d.every_minutes)),
+        total_capital_usd=float(sc.get("total_capital_usd", d.total_capital_usd)),
+        allocation_lp=float(alloc.get("lp", d.allocation_lp)),
+        allocation_hedge_margin=float(alloc.get("hedge_margin", d.allocation_hedge_margin)),
+        allocation_reserve=float(alloc.get("reserve", d.allocation_reserve)),
+        ranges_pct=tuple(float(x) for x in sc.get("ranges_pct", d.ranges_pct)),
+        rebalance_wait_minutes=float(sc.get("rebalance_wait_minutes", d.rebalance_wait_minutes)),
+        gas_units_per_tx=int(sc.get("gas_units_per_tx", d.gas_units_per_tx)),
+        swap_ratio=float(sc.get("swap_ratio", d.swap_ratio)),
+        slippage_extra_pct=float(sc.get("slippage_extra_pct", d.slippage_extra_pct)),
+        hedge_taker_fee_pct=float(hedge.get("taker_fee_pct", d.hedge_taker_fee_pct)),
+        count_funding_income=bool(hedge.get("count_funding_income", d.count_funding_income)),
+        volatility_days=float(sc.get("volatility_days", d.volatility_days)),
+        external_refresh_hours=float(sc.get("external_refresh_hours", d.external_refresh_hours)),
+        green_min_pct=float(sig.get("green_min_pct", d.green_min_pct)),
+        yellow_min_pct=float(sig.get("yellow_min_pct", d.yellow_min_pct)),
+        green_min_tvl_usd=float(sig.get("green_min_tvl_usd", d.green_min_tvl_usd)),
+        reward_token_7d_major_pct=float(sig.get("reward_token_7d_major_pct", d.reward_token_7d_major_pct)),
+    )
+    total = out.allocation_lp + out.allocation_hedge_margin + out.allocation_reserve
+    if abs(total - 1) > 1e-6:
+        raise ConfigError(f"scoring.allocation の合計が1になっていません（今は {total}）。")
+    if out.every_minutes <= 0 or not out.ranges_pct or min(out.ranges_pct) <= 0 or max(out.ranges_pct) >= 100:
+        raise ConfigError("scoring の every_minutes / ranges_pct を確認してください。")
+    return out
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -40,6 +97,7 @@ class Config:
     limits: dict[str, Any] = field(default_factory=dict)
     epoch_fresh_minutes: int = 120          # エポック切り替えからこの分数までは「エポック更新直後」の印を付ける
     reward_drop_alert_pct: float = 30.0     # エポックの途中で報酬の毎秒量がこの%以上減ったら通知
+    scoring: ScoringSettings = field(default_factory=ScoringSettings)
     root: Path = REPO_ROOT
 
 
@@ -84,6 +142,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         limits=dict(raw.get("limits") or {}),
         epoch_fresh_minutes=int((raw.get("rewards") or {}).get("epoch_fresh_minutes", 120)),
         reward_drop_alert_pct=float((raw.get("alerts") or {}).get("reward_rate_drop_pct", 30)),
+        scoring=_scoring(raw),
         root=root,
     )
 

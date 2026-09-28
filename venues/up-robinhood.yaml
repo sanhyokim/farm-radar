@@ -19,6 +19,7 @@ chain:
   # Alchemy のURL。{API_KEY} は .env の ALCHEMY_API_KEY で置き換えます。
   alchemy_rpc: https://robinhood-mainnet.g.alchemy.com/v2/{API_KEY}
   explorer: https://robinhoodchain.blockscout.com
+  geckoterminal_network: robinhood   # GeckoTerminal の API でのチェーン名（https://api.geckoterminal.com/api/v2/networks で確認 2026-09-29）
   unverified: false
   source_url: https://docs.robinhood.com/chain/connecting
   checked_at: "2026-09-27"
