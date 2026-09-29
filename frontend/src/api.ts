@@ -65,6 +65,10 @@ export interface PoolDetail {
     net_daily_pct: number | null; net_daily_pct_lp: number | null; judge_basis: string;
     apy_display: number | null; apy_net: number | null; apy_note: string; realized_note: string;
   };
+  sell_now: {
+    hours: number; best_r: number; net_daily_pct: number; net_usd: number; income: number; haircut: number;
+    mode: string; hold_net_daily_pct: number | null; hold_haircut: number | null; diff_pct: number | null; note: string;
+  } | null;
   today: Breakdown | null;
   since_start: Breakdown | null;
   hourly: { bars: Bar[]; best: Bar | null; worst: Bar | null };

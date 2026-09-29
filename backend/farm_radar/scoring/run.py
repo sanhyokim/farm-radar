@@ -53,6 +53,7 @@ def model_params(s: ScoringSettings, gas_usd_per_tx: float) -> ModelParams:
         ranges=tuple(x / 100 for x in s.ranges_pct), rebalance_wait_minutes=s.rebalance_wait_minutes,
         gas_usd_per_tx=gas_usd_per_tx, swap_ratio=s.swap_ratio,
         hedge_taker_fee=s.hedge_taker_fee_pct / 100, count_funding_income=s.count_funding_income,
+        reward_sell_hours=s.reward_sell_hours,
     )
 
 
@@ -423,6 +424,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             "reward_token_usd": reward_usd, "reward_token_change_7d": reward_change, "reward_token_trend_daily": reward_trend_daily,
             "emission_pressure": (reward_usd_day / reward_volume) if reward_volume else None,
             "gas_usd_per_tx": params.gas_usd_per_tx,
+            "reward_sell_hours": params.reward_sell_hours,
             "slippage": slip, "slippage_source": slip_src,
             "liquidity_total": str(l_total), "liquidity_staked_inrange": str(l_staked),
             "liquidity_latest": {"total": str(l_total_now), "staked": str(l_staked_now)},
@@ -438,9 +440,19 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
              "gamma": x.gamma, "rebalance": x.rebalance, "hedge": x.hedge, "haircut": x.haircut,
              "direction_risk": x.direction_risk, "in_range_ratio": x.in_range_ratio,
              "in_range_ratio_hold": x.in_range_ratio_hold, "rebalances_per_day": x.rebalances_per_day,
+             "mode_sell_now": x.mode_sell_now, "haircut_sell_now": x.haircut_sell_now,
+             "net_sell_now": x.net_sell_now, "net_sell_now_pct": x.net_sell_now / params.c_total * 100,
              **_depth(x, params, float(r["price"]), l_total, l_staked, s0, s1)}
             for x in (ev.rows if ev else ())
         ],
+        # 参考値（判定には使わない）: 報酬をすぐ売る前提（2026-09-29 オーナー指示）
+        "sell_now": ({
+            "hours": params.reward_sell_hours, "best_r": ev.best_sell_now.r * 100,
+            "net_daily_pct": ev.net_daily_pct_sell_now, "net_usd": ev.best_sell_now.net_sell_now,
+            "income": (ev.best_sell_now.income_unstaked if ev.best_sell_now.mode_sell_now == "unstaked"
+                       else ev.best_sell_now.income_staked),
+            "haircut": ev.best_sell_now.haircut_sell_now, "mode": ev.best_sell_now.mode_sell_now,
+        } if ev else None),
     }
     b = ev.best if ev else None
     return {

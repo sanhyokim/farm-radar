@@ -64,6 +64,7 @@ export default function PoolDetail() {
                 <div className="text-[10px] text-slate-500">表示用</div>
               </div>
             </div>
+            {data.sell_now && <SellNow sn={data.sell_now} />}
             <Note>{d.judge_basis}。総資産 {usd(data.capital.total, 0)}（うち LP {usd(data.capital.lp, 0)}）で計算。</Note>
 
             <BreakdownTable b={b} />
@@ -158,6 +159,27 @@ export default function PoolDetail() {
         {s.vol_source === "external" && <Note>値動きは外部データ（GeckoTerminal）で補っています。</Note>}
         <p className="mt-2 break-all text-[10px] text-slate-500">{s.address}</p>
       </Card>
+    </div>
+  );
+}
+
+function SellNow({ sn }: { sn: NonNullable<Detail["sell_now"]> }) {
+  return (
+    <div className="mt-2 rounded-xl border border-dashed border-slate-600 p-2">
+      <div className="text-xs text-slate-400"><Term k="すぐ売る前提">参考: 報酬をすぐ売る前提</Term></div>
+      <div className="mt-1 grid grid-cols-2 gap-2 text-center">
+        <div>
+          <div className="text-[10px] text-slate-400">持ち続ける前提（判定）</div>
+          <div className={`num text-lg font-bold ${tone(sn.hold_net_daily_pct)}`}>{pct(sn.hold_net_daily_pct)}</div>
+          <div className="text-[10px] text-slate-500">値下がり {signedUsd(sn.hold_haircut == null ? null : -sn.hold_haircut)}/日</div>
+        </div>
+        <div>
+          <div className="text-[10px] text-slate-400">{sn.hours}時間で売る前提（参考）</div>
+          <div className={`num text-lg font-bold ${tone(sn.net_daily_pct)}`}>{pct(sn.net_daily_pct)}</div>
+          <div className="text-[10px] text-slate-500">値下がり {signedUsd(-sn.haircut)}/日 ・ ±{sn.best_r}%</div>
+        </div>
+      </div>
+      <Note>{sn.note}</Note>
     </div>
   );
 }
