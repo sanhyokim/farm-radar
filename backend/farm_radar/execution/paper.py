@@ -202,12 +202,18 @@ class PaperExecutor:
         swap_cost = c_lp * s.swap_ratio * (fee + slip)
         hedges = []
         for tok, amt, usd, sym in ((t0, x0, u0, pool["token0_symbol"]), (t1, y0, u1, pool["token1_symbol"])):
+            # ヘッジ先: スコア計算が選んだ一番安いところ（SPEC 5.2.1章）。なければトークンの対応表の1つ目
+            chosen = ((inp.get("hedge") or {}).get(sym) or {})
             perp = self.tokens.perp_for(tok)
-            if self.tokens.is_stable(tok) or perp is None or amt <= 0:
+            if self.tokens.is_stable(tok) or amt <= 0 or (perp is None and not chosen):
                 continue
-            hedges.append({"token": tok, "symbol": sym, "perp": perp.symbol, "market_id": perp.market_id,
+            hedges.append({"token": tok, "symbol": sym,
+                           "hedge_id": chosen.get("hedge_id") or perp.venue,
+                           "hedge_name": chosen.get("name") or perp.venue.capitalize(),
+                           "perp": chosen.get("symbol") or perp.symbol,
+                           "market_id": int(chosen["market_id"]) if chosen.get("market_id") is not None else perp.market_id,
                            "size": amt, "entry": usd})
-        hedge_fee = sum(h["size"] * h["entry"] * self.taker_fee(h["market_id"]) for h in hedges)
+        hedge_fee = sum(h["size"] * h["entry"] * self.taker_fee(h["market_id"], h.get("hedge_id") or "lighter") for h in hedges)
         costs = swap_cost + 2 * gas + hedge_fee
 
         started_red = 1 if score["signal"] == "red" else 0
@@ -221,6 +227,13 @@ class PaperExecutor:
         mode = pred.get("mode") or score["mode"] or "staked"
         up_price = self._reward_price(prices)
         state = _new_state(snap, costs, up_price, gas)
+        # 始めた費用の内訳（2026-09-29 オーナー追加: 両替のずれがいくら含まれるかを画面に出す）
+        state["open_breakdown"] = {
+            "swap_usd": c_lp * s.swap_ratio, "fee_pct": fee * 100, "slippage_pct": slip * 100,
+            "slippage_source": inp.get("slippage_source"),
+            "swap_fee": c_lp * s.swap_ratio * fee, "slippage": c_lp * s.swap_ratio * slip,
+            "gas": 2 * gas, "hedge_fee": hedge_fee, "total": costs,
+        }
         ts = _iso(self.now)
         # 報酬などは「開いた時刻」から数える（最新の記録が少し前のものでも、その間の分は数えない）
         state["prev"]["ts"] = max(ts, snap["ts"])
@@ -310,7 +323,7 @@ class PaperExecutor:
                     self._ledger(snap["ts"], pos["id"], "claim", "UP", reward_amt, up, "報酬の受け取り（記録）")
             st["costs"] += float(st.get("gas", 0.0)) * dt / 86400        # 受け取りのガス代は1日1回分
             for h in hedges:
-                rate = self._funding(h["market_id"], _ts(prev["ts"]))
+                rate = self._funding(h["market_id"], _ts(prev["ts"]), h.get("hedge_id") or "lighter")
                 if rate is None:
                     st["funding_missing"] = True
                     rate = 0.0
@@ -346,10 +359,14 @@ class PaperExecutor:
         self.conn.commit()
         return n
 
-    def _funding(self, market_id: int, at: datetime) -> float | None:
+    def _funding(self, market_id: int, at: datetime, hedge_id: str = "lighter") -> float | None:
         hour = int(at.timestamp()) // 3600 * 3600
-        row = self.conn.execute("SELECT short_rate FROM funding_rates WHERE market_id=? AND ts<=? AND ts>? "
-                                "ORDER BY ts DESC LIMIT 1", (market_id, hour, hour - 3 * 3600)).fetchone()
+        row = self.conn.execute("SELECT short_rate FROM hedge_funding WHERE hedge_id=? AND market_id=? AND ts<=? AND ts>? "
+                                "ORDER BY ts DESC LIMIT 1", (hedge_id, market_id, hour, hour - 3 * 3600)).fetchone()
+        if row is None and hedge_id == "lighter":
+            # 前の版（M5c まで）の記録
+            row = self.conn.execute("SELECT short_rate FROM funding_rates WHERE market_id=? AND ts<=? AND ts>? "
+                                    "ORDER BY ts DESC LIMIT 1", (market_id, hour, hour - 3 * 3600)).fetchone()
         return float(row[0]) if row else None
 
     def claim(self, ref: PositionRef) -> ClaimResult:
@@ -369,15 +386,18 @@ class PaperExecutor:
 
     # --- 置き直し（M5b） ------------------------------------------------------------------------
 
-    def taker_fee(self, market_id: int | None) -> float:
+    def taker_fee(self, market_id: int | None, hedge_id: str = "lighter") -> float:
         """perp の取引手数料（割合）。Lighter から取った市場ごとの今の値（2日以内）を使い、なければ config の値。
 
         開く・置き直す・閉じる時の費用に必ず入れる（2026-09-29 オーナー指示。今は0%でも、変わったら自動で反映）。
         """
         if market_id is not None:
             since = _iso(self.now - timedelta(days=2))
-            row = self.conn.execute("SELECT taker_pct FROM perp_fees WHERE market_id=? AND ts>=?",
-                                    (int(market_id), since)).fetchone()
+            row = self.conn.execute("SELECT taker_pct FROM hedge_fees WHERE hedge_id=? AND market_id=? AND ts>=? "
+                                    "AND taker_pct IS NOT NULL", (hedge_id, int(market_id), since)).fetchone()
+            if row is None and hedge_id == "lighter":
+                row = self.conn.execute("SELECT taker_pct FROM perp_fees WHERE market_id=? AND ts>=?",
+                                        (int(market_id), since)).fetchone()
             if row is not None:
                 return float(row[0]) / 100
         return self.config.scoring.hedge_taker_fee_pct / 100
@@ -426,7 +446,7 @@ class PaperExecutor:
         for h in hedges:
             hp = prices.get(h["token"], h["entry"])
             size = a0 if h["token"] == t0 else a1
-            hedge_fee += abs(size - h["size"]) * hp * self.taker_fee(h["market_id"])
+            hedge_fee += abs(size - h["size"]) * hp * self.taker_fee(h["market_id"], h.get("hedge_id") or "lighter")
             new_hedges.append({**h, "size": size, "entry": hp})
         cost = swap_cost + 2 * gas + hedge_fee
         cum = _cumulative(pos, st, hedges, price, u0, u1, up, prices, d0, d1)
@@ -436,6 +456,7 @@ class PaperExecutor:
         st["costs"] += cost
         st["rebalances"] = int(st.get("rebalances", 0)) + 1
         st["rebalance_cost"] = float(st.get("rebalance_cost", 0.0)) + cost
+        st["rebalance_slippage"] = float(st.get("rebalance_slippage", 0.0)) + v_lp * s.swap_ratio * slip
         st.pop("out_since", None)
         ts = _iso(self.now)
         row_ts = max(ts, _iso(_ts(pos["last_ts"]) + timedelta(seconds=1)))
@@ -501,7 +522,7 @@ class PaperExecutor:
         parts = max(1, math.ceil(slip / max_slip)) if max_slip > 0 and slip > max_slip else 1
         swap_cost = volatile * (fee + slip / parts)
         swap_gas = gas * parts
-        hedge_fee = sum(h["size"] * prices.get(h["token"], h["entry"]) * self.taker_fee(h["market_id"]) for h in hedges)
+        hedge_fee = sum(h["size"] * prices.get(h["token"], h["entry"]) * self.taker_fee(h["market_id"], h.get("hedge_id") or "lighter") for h in hedges)
         close_cost = swap_cost + gas + swap_gas + hedge_fee
         st["costs"] += close_cost
         st["close_cost"] = close_cost

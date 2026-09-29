@@ -2,7 +2,9 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { postApi, useApi, type Breakdown, type Paper, type PoolDetail as Detail, type RangeRow } from "../api";
 import { AssetsLine, HourlyBars, RangeNet, Series, Waterfall } from "../charts";
-import { bigUsd, jst, pct, ratioPct, signedUsd, tone, usd } from "../format";
+import { bigUsd, jst, pct, rangeText, ratioPct, signedUsd, tone, usd } from "../format";
+import { HedgeBadge } from "./Home";
+import type { SwapCosts } from "../api";
 import { Badge, Card, Loading, Note, SignalBadge, Term } from "../ui";
 
 const ROWS: [keyof Breakdown, string, string][] = [
@@ -33,6 +35,7 @@ export default function PoolDetail() {
           <SignalBadge s={s.signal} />
         </div>
         <div className="text-xs text-slate-400">{s.venue_id} ・ 計算 {jst(s.ts)}{stock && " ・ 株ペア"}</div>
+        <div className="mt-1"><Term k="保険（ヘッジ）"><HedgeBadge h={s.hedge_info} /></Term></div>
       </div>
 
       <Card title="なぜこの判定か">
@@ -123,11 +126,18 @@ export default function PoolDetail() {
         <Note>原資 {usd(data.assets.capital, 0)} から、この48時間の予測どおりに増減した場合の数字です。実際の建玉は「練習」（M5）で表示します。</Note>
       </Card>
 
-      <Card title={<Term k="レンジ">レンジ</Term>}>
+      <Card title={<Term k="範囲（レンジ）">レンジ</Term>}>
+        {s.range_prices && (
+          <div className="mb-2 rounded-lg bg-amber-500/10 px-2 py-1 text-sm text-amber-100">
+            最適レンジ ±{s.best_r}% ＝ <span className="num">{rangeText(s.range_prices)}</span>
+          </div>
+        )}
         <RangeBar price={data.price?.price ?? null} ranges={ranges} best={s.best_r} />
         <div className="mt-3 text-xs text-slate-400">レンジ幅ごとの純日利（総資産あたり。黄色が最適）</div>
         <RangeNet rows={ranges} best={s.best_r} />
       </Card>
+
+      {data.swap && <SwapCard w={data.swap} />}
 
       <Card title="推移（7日）">
         <div className="space-y-3">
@@ -300,5 +310,37 @@ function RangeBar({ price, ranges, best }: { price: number | null; ranges: Range
       </div>
       <Note>青い線が今の価格、帯が各レンジ（上から ±{ranges[0].r_pct}% 〜 ±{max}%）。黄色が最適レンジ（±{best}%）。</Note>
     </div>
+  );
+}
+
+/** 両替のずれと、それが費用にいくら含まれるか（2026-09-29 オーナー追加） */
+function SwapCard({ w }: { w: SwapCosts }) {
+  const row = (k: string, v: number, strong = false) => (
+    <div className="flex justify-between"><span className="text-slate-400">{k}</span>
+      <span className={`num ${strong ? "text-rose-300" : "text-slate-200"}`}>{usd(v)}</span></div>
+  );
+  return (
+    <Card title={<Term k="スリッページ">両替のずれ</Term>}>
+      <div className="mb-2 text-sm text-slate-200">
+        ${w.trade_usd.toFixed(0)} を両替したときの値段のずれ <span className="num font-bold">{w.slippage_pct.toFixed(2)}%</span>
+        <span className="ml-1 text-xs text-slate-500">（{w.source === "fallback" ? "初期値" : "プールの流動性から計算"}）</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3 text-xs">
+        <div className="space-y-1 rounded-lg bg-slate-800/40 p-2">
+          <div className="text-slate-300">始めた費用 {usd(w.open_total)}</div>
+          {row("うち 両替のずれ", w.slippage, true)}
+          {row("両替の手数料", w.swap_fee)}
+          {row("ガス代（2回）", w.gas)}
+          {row("ヘッジの手数料", w.hedge_fee)}
+        </div>
+        <div className="space-y-1 rounded-lg bg-slate-800/40 p-2">
+          <div className="text-slate-300">置き直し1回 {usd(w.rebalance_total)}</div>
+          {row("うち 両替のずれ", w.slippage, true)}
+          {row("両替の手数料", w.swap_fee)}
+          {row("ガス代（2回）", w.gas)}
+        </div>
+      </div>
+      <Note>両替するのは LP に置く額の半分（{usd(w.swap_usd, 0)}）。ずれは ${w.trade_usd.toFixed(0)} で見積もっているので、少し多めです。置き直しのヘッジの手数料は、量を調整した分だけかかります。</Note>
+    </Card>
   );
 }

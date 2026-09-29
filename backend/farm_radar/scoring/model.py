@@ -44,6 +44,7 @@ class TokenSide:
     stable: bool = False
     hedgeable: bool = False         # 確認済みの perp があり、資金調達率も取れている
     funding_cost_daily: float = 0.0 # ショートを持ったときの1日の資金調達の支払い（割合。マイナスは受け取り）
+    taker_fee: float | None = None  # 選んだヘッジ先の取引手数料（割合）。None なら ModelParams.hedge_taker_fee
 
 
 @dataclass(frozen=True)
@@ -229,7 +230,8 @@ def evaluate(inp: PoolInputs, params: ModelParams) -> Evaluation:
         hedge = 0.0
         for t in hedged:
             cost = t.funding_cost_daily if params.count_funding_income else max(0.0, t.funding_cost_daily)
-            hedge += notional * cost + n * notional * params.hedge_taker_fee
+            taker = t.taker_fee if t.taker_fee is not None else params.hedge_taker_fee
+            hedge += notional * cost + n * notional * taker
         net = income - g - reb - hedge - haircut - dir_risk
         # 参考値: 報酬をすぐ売る前提。値下がりは売るまでの時間の分だけ引き、ステークするかどうかも選び直す
         haircut_sell = income_staked * sell_now_drop(inp.reward_trend_daily, params.reward_sell_hours)

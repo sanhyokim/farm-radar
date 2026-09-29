@@ -15,6 +15,19 @@ export interface PoolRow {
   net_daily_pct: number | null; net_daily_pct_lp: number | null; best_r: number | null;
   reason_ja: string; is_stock_pair?: number; has_perp: number | null; tvl_usd: number | null;
   warnings?: Warn[]; mode?: string | null;
+  hedge_info?: HedgeInfo; range_prices?: RangePrices | null;
+}
+
+/** 保険あり/なしと、使うヘッジ先の名前（2026-09-29 オーナー追加） */
+export interface HedgeInfo { has: boolean; venues: string[]; tokens: Record<string, string | null>; label: string }
+
+/** 最適レンジの実際の値段の範囲 */
+export interface RangePrices { kind: "usd" | "ratio"; symbol: string; quote?: string; now: number; low: number; high: number }
+
+/** 両替のずれと、費用に含まれる額 */
+export interface SwapCosts {
+  trade_usd: number; slippage_pct: number; source: string | null; fee_pct: number; swap_usd: number;
+  swap_fee: number; slippage: number; gas: number; hedge_fee: number; open_total: number; rebalance_total: number;
 }
 
 export interface Home {
@@ -74,6 +87,7 @@ export interface PoolDetail {
     net_daily_pct: number | null; net_daily_pct_lp: number | null; judge_basis: string;
     apy_display: number | null; apy_net: number | null; apy_note: string; realized_note: string;
   };
+  swap?: SwapCosts | null;
   sell_now: {
     hours: number; best_r: number; net_daily_pct: number; net_usd: number; income: number; haircut: number;
     mode: string; hold_net_daily_pct: number | null; hold_haircut: number | null; diff_pct: number | null; note: string;
@@ -104,7 +118,10 @@ export interface PaperCard {
   compare_enabled: boolean; compare_min_hours: number;
   payback_total_hours: number | null; payback_left_hours: number | null;
   rebalances: number; cautions: string[]; skipped: string[];
-  rebalance_cost: number; close_cost_usd: number | null;
+  rebalance_cost: number;
+  swap?: { slippage_pct_now: number | null; rebalance_slippage_total: number; rebalance_slippage_next: number | null;
+    open: { swap_usd: number; slippage_pct: number; slippage: number; swap_fee?: number; gas?: number; hedge_fee?: number;
+      total?: number; estimated?: boolean } | null }; close_cost_usd: number | null;
 }
 
 export interface Watch {

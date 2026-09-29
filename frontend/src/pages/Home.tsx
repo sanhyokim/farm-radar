@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useApi, type Home as HomeData, type PoolRow } from "../api";
-import { SIGNAL, jst, pct, usd } from "../format";
+import { useApi, type HedgeInfo, type Home as HomeData, type PoolRow } from "../api";
+import { SIGNAL, jst, pct, rangeText, usd } from "../format";
 import { Badge, Card, Loading, Note, SignalBadge, Term } from "../ui";
 
 export default function Home() {
@@ -100,16 +100,31 @@ export function PoolCard({ p }: { p: PoolRow }) {
         <Link to={`/pools/${encodeURIComponent(p.pool_id)}`} className="min-w-0">
           <div className="truncate font-semibold text-slate-50">{p.pair}</div>
           <div className="text-xs text-slate-400">{p.venue_id}{p.best_r != null && ` ・ 最適レンジ ±${p.best_r}%`}</div>
+          {p.range_prices && <div className="num text-xs text-slate-300">{rangeText(p.range_prices)}</div>}
         </Link>
         <div className="shrink-0 text-right">
           <SignalBadge s={p.signal} />
           <div className="num text-lg font-bold text-slate-50">{pct(p.net_daily_pct)}</div>
         </div>
       </div>
+      <div className="mt-1 flex items-center gap-2 text-xs">
+        <HedgeBadge h={p.hedge_info} />
+        {p.range_prices && <Term k="範囲（レンジ）"><span className="text-slate-500">範囲とは</span></Term>}
+      </div>
       <button className="mt-1 text-xs text-sky-300" onClick={() => setOpen(!open)}>
         {open ? "閉じる" : "なぜ?"}
       </button>
       {open && <p className="mt-1 whitespace-pre-line text-sm leading-relaxed text-slate-300">{p.reason_ja}</p>}
     </div>
+  );
+}
+
+/** 「保険あり（Lighter）」/「保険なし」の印（2026-09-29 オーナー追加） */
+export function HedgeBadge({ h }: { h?: HedgeInfo }) {
+  if (!h) return null;
+  return (
+    <span className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs ${h.has ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-700 text-slate-300"}`}>
+      {h.has ? `🛡 ${h.label}` : h.label}
+    </span>
   );
 }

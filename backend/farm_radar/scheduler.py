@@ -15,7 +15,7 @@ from .collectors.snapshot import collect_venue, record_failed_run
 from .db import database as db
 from .execution.review import make_review
 from .external.geckoterminal import GeckoTerminal
-from .external.lighter import Lighter
+from . import hedges as hedge_mod
 from .logging_setup import setup_logging
 from .execution.jobs import run_paper
 from .notify.events import detect_signal_changes
@@ -71,7 +71,7 @@ def main() -> None:
             # 練習（M5a・M5b）: 新しい記録の分だけ損益を計算し、見張りのルールで調べる（mode が paper のときだけ）
             try:
                 v0 = venues[0]
-                run_paper(conn, config, paper_tokens, lighter=lighter, rpc=v0.rpc, venue=v0.venue,
+                run_paper(conn, config, paper_tokens, hedges=hedges, rpc=v0.rpc, venue=v0.venue,
                           gt=contexts[0].gt if contexts else None, fast=fast)
             except Exception as exc:
                 log.exception("paper job failed")
@@ -92,12 +92,13 @@ def main() -> None:
         if n:
             snapshot_job(fast=True)
 
-    lighter = Lighter()
+    # ヘッジ先（SPEC 5.2.1章。config.yaml の hedge_venues。読み取りだけ）
+    hedges = hedge_mod.build([h.hedge_id for h in config.hedge_venues])
     paper_tokens = load_tokens(venues[0].venue["chain"]["id"], config.root) if venues else None
     contexts = [
         ScoreContext(
             venue=v.venue, tokens=load_tokens(v.venue["chain"]["id"], config.root), settings=config.scoring,
-            stale_after_minutes=config.stale_after_minutes, rpc=v.rpc, lighter=lighter,
+            stale_after_minutes=config.stale_after_minutes, rpc=v.rpc, hedges=hedges,
             gt=GeckoTerminal(v.venue["chain"]["geckoterminal_network"])
             if v.venue["chain"].get("geckoterminal_network") else None,
         )

@@ -224,6 +224,32 @@ def _review(raw: dict[str, Any]) -> ReviewSettings:
 
 
 @dataclass(frozen=True)
+class HedgeVenueSettings:
+    """ヘッジ先（SPEC 5.2.1章）。config.yaml の hedge_venues。読み取りだけに使う。"""
+    hedge_id: str
+    account_address: str | None = None      # 担保の残高を読むアドレス（公開情報。秘密鍵ではない）
+
+
+def _hedge_venues(raw: dict[str, Any]) -> tuple[HedgeVenueSettings, ...]:
+    hv = raw.get("hedge_venues")
+    if hv is None:
+        hv = {"lighter": {}}
+    out = []
+    for hid, v in (hv or {}).items():
+        v = v or {}
+        if v.get("enabled", True) is False:
+            continue
+        # .env の <ID>_ACCOUNT_ADDRESS（例: LIGHTER_ACCOUNT_ADDRESS）があればそちらを使う
+        addr = os.environ.get(f"{hid.upper()}_ACCOUNT_ADDRESS") or v.get("account_address") or None
+        if addr is not None:
+            addr = str(addr).strip() or None
+        if addr and not (addr.startswith("0x") and len(addr) == 42):
+            raise ConfigError(f"hedge_venues.{hid}.account_address は 0x で始まる42文字のアドレスにしてください。")
+        out.append(HedgeVenueSettings(str(hid), addr))
+    return tuple(out)
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -239,6 +265,7 @@ class Config:
     risk: RiskSettings = field(default_factory=RiskSettings)
     review: ReviewSettings = field(default_factory=ReviewSettings)
     evaluation: EvaluationSettings = field(default_factory=EvaluationSettings)
+    hedge_venues: tuple[HedgeVenueSettings, ...] = (HedgeVenueSettings("lighter"),)
     root: Path = REPO_ROOT
 
 
@@ -288,6 +315,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         risk=_risk(raw),
         review=_review(raw),
         evaluation=_evaluation(raw),
+        hedge_venues=_hedge_venues(raw),
         root=root,
     )
 

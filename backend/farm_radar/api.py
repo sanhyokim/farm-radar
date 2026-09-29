@@ -213,10 +213,7 @@ def scores(venue: str | None = None) -> dict:
         rows = db.latest_scores(conn, venue)
         out, counts = [], {"green": 0, "yellow": 0, "red": 0}
         for r in rows:
-            d = dict(r)
-            d["warnings"] = json.loads(d.pop("warnings_json") or "[]")
-            d["details"] = json.loads(d.pop("details_json") or "{}")
-            d["pair"] = f"{d.get('token0_symbol')}/{d.get('token1_symbol')}"
+            d = _score_dict(r)
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
             out.append(d)
         return {"counts": counts, "judge_basis": "総資産あたりの純日利（%）", "scores": out}
@@ -231,6 +228,9 @@ def _score_dict(r) -> dict:
     d["warnings"] = json.loads(d.pop("warnings_json") or "[]")
     d["details"] = json.loads(d.pop("details_json") or "{}")
     d["pair"] = f"{d.get('token0_symbol')}/{d.get('token1_symbol')}"
+    # カードの表示（2026-09-29 オーナー追加）: 保険あり/なしとヘッジ先の名前、最適レンジの値段の範囲
+    d["hedge_info"] = views.hedge_label(d["details"], d.get("has_perp"))
+    d["range_prices"] = views.range_prices(d["details"], d.get("best_r"), d.get("token0_symbol"), d.get("token1_symbol"))
     return d
 
 
@@ -270,7 +270,7 @@ def home() -> dict:
         for d in rows:
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
         slim = ["pool_id", "pair", "venue_id", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
-                "is_stock_pair", "has_perp", "tvl_usd"]
+                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices"]
         greens = [{k: d.get(k) for k in slim} for d in rows if d["signal"] == "green"]
         # 🟢がないときの参考: 判定できたプールを純日利の高い順に3件
         near = [{k: d.get(k) for k in slim} for d in rows
@@ -342,6 +342,7 @@ def pool(pool_id: str) -> dict:
             "realized_note": "今は予測だけです。実現損益と未実現損益は「練習」（M5）で表示します。",
         },
         "sell_now": _sell_now(d, b),
+        "swap": _swap(d, config),
         "today": views.today_breakdown(history, now),
         "since_start": views.daily_average_since_start(all_hist),
         "hourly": views.hourly_bars(history, now),
@@ -349,6 +350,19 @@ def pool(pool_id: str) -> dict:
                                      history, now),
         "history": history,
     }
+
+
+def _swap(d: dict, config) -> dict | None:
+    """$550 を両替したときのずれと、始めた費用・置き直し1回の費用に含まれる額（2026-09-29 オーナー追加）。"""
+    s = config.scoring
+    c_lp = s.total_capital_usd * s.allocation_lp
+    trade = s.slippage_trade_usd if s.slippage_trade_usd is not None else c_lp
+    hedged = [ch for ch in (d["hedge_info"].get("tokens") or {}).values() if ch]
+    taker = max((float((c or {}).get("taker_pct") or 0.0)
+                 for c in ((d["details"].get("inputs") or {}).get("hedge") or {}).values() if c), default=0.0)
+    # ヘッジする量: 値動きするトークン1つにつき、LPに置く額の約半分
+    return views.swap_costs(d["details"], c_lp, s.swap_ratio, trade, c_lp * 0.5 * len(hedged),
+                            taker if hedged else 0.0)
 
 
 def _sell_now(d: dict, b: dict | None) -> dict | None:

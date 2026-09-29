@@ -22,7 +22,9 @@ from typing import Any
 from ..config import ScoringSettings, contract_address
 from ..db import database as db
 from ..external.geckoterminal import GeckoTerminal, PoolMarket
+from .. import hedges as hedge_mod
 from ..external.lighter import Lighter
+from ..hedges import base as hedge_base
 from ..tokens import TokenBook
 from . import volatility as vol
 from .judge import Judgement, SignalParams, Warn, judge
@@ -44,7 +46,8 @@ class ScoreContext:
     stale_after_minutes: int
     rpc: Any = None                        # RpcClient（ガス価格の読み取りだけに使う）
     gt: GeckoTerminal | None = None
-    lighter: Lighter | None = None
+    lighter: Lighter | None = None         # 古い呼び方（hedges がなければ Lighter のアダプターに包む）
+    hedges: dict[str, Any] | None = None   # ヘッジ先アダプター（SPEC 5.2.1章）。hedge_id → アダプター
 
 
 def model_params(s: ScoringSettings, gas_usd_per_tx: float) -> ModelParams:
@@ -175,21 +178,52 @@ def _change(grid: list[tuple[int, float]]) -> float | None:
     return grid[-1][1] / grid[0][1] - 1 if len(grid) >= 2 and grid[0][1] > 0 else None
 
 
-def funding_daily(lighter: Lighter | None, market_ids: set[int], now: datetime, days: float) -> dict[int, float]:
-    """perp の市場ごとの、ショートの1日あたりの資金調達の支払い（直近 days 日の平均。割合）。"""
-    out: dict[int, float] = {}
-    if lighter is None:
-        return out
+def choose_hedges(hedges: dict[str, Any], tokens: TokenBook, token_addrs: set[str], now: datetime, days: float,
+                  default_taker_pct: float) -> dict[str, dict[str, Any]]:
+    """トークンごとに、使えるヘッジ先を比べて一番安いところを選ぶ（SPEC 5.2.1章。2026-09-29 オーナー追加）。
+
+    比べるのは「開く＋閉じるの取引手数料 + 1日の資金調達料」（hedges.base.round_trip_cost）。
+    資金調達が取れなかったヘッジ先は選ばない。返り値: トークンのアドレス → 選んだヘッジ先（候補の一覧つき）。
+    """
     end = int(now.timestamp())
     start = end - int(days * 86400)
-    for mid in sorted(market_ids):
+    fees: dict[str, dict[int, float | None]] = {}
+    for hid, a in hedges.items():
         try:
-            rows = lighter.short_funding_hourly(mid, start, end)
+            fees[hid] = {m.market_id: m.taker_pct for m in a.markets().values()}
         except Exception as exc:
-            log.warning("lighter funding failed", extra={"data": {"market_id": mid, "error": str(exc)}})
+            log.warning("hedge markets failed", extra={"data": {"hedge": hid, "error": str(exc)}})
+            fees[hid] = {}
+    funding: dict[tuple[str, int], float | None] = {}
+    out: dict[str, dict[str, Any]] = {}
+    for t in sorted(token_addrs):
+        if tokens.is_stable(t):
             continue
-        if rows:
-            out[mid] = sum(r for _, r in rows) / len(rows) * 24
+        cands = []
+        for ref in tokens.perp_candidates(t):
+            a = hedges.get(ref.venue)
+            if a is None:
+                continue
+            key = (ref.venue, ref.market_id)
+            if key not in funding:
+                try:
+                    funding[key] = hedge_base.funding_daily(a, ref.market_id, start, end)
+                except Exception as exc:
+                    log.warning("funding failed", extra={"data": {"hedge": ref.venue, "market_id": ref.market_id,
+                                                                  "error": str(exc)}})
+                    funding[key] = None
+            taker = fees.get(ref.venue, {}).get(ref.market_id)
+            cost = hedge_base.round_trip_cost(taker, funding[key], default_taker_pct)
+            cands.append({"hedge_id": ref.venue, "name": getattr(a, "name", ref.venue), "symbol": ref.symbol,
+                          "market_id": ref.market_id,
+                          "taker_pct": taker if taker is not None else default_taker_pct,
+                          "funding_daily": funding[key], "cost": cost})
+        usable = [c for c in cands if c["cost"] is not None]
+        if usable:
+            best = min(usable, key=lambda c: c["cost"])
+            out[t] = {**best, "candidates": cands}
+        elif cands:
+            out[t] = {"hedge_id": None, "candidates": cands}
     return out
 
 
@@ -263,10 +297,11 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
         except Exception as exc:
             log.warning("geckoterminal pools failed", extra={"data": {"error": str(exc)}})
 
-    # ヘッジの資金調達率（Lighter）
-    perp_ids = {ctx.tokens.perp_for(t).market_id for r in latest for t in (r["token0"], r["token1"])
-                if ctx.tokens.perp_for(t) and not ctx.tokens.is_stable(t)}
-    funding = funding_daily(ctx.lighter, perp_ids, now, days)
+    # ヘッジ先を選ぶ（トークンごとに一番安いところ。SPEC 5.2.1章）
+    hedges = ctx.hedges if ctx.hedges is not None else (
+        {a.hedge_id: a} if (a := hedge_mod.wrap(ctx.lighter)) is not None else {})
+    token_addrs = {t.lower() for r in latest for t in (r["token0"], r["token1"])}
+    funding = choose_hedges(hedges, ctx.tokens, token_addrs, now, days, s.hedge_taker_fee_pct)
 
     # ガス代
     gas_usd = 0.0
@@ -352,10 +387,12 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         usd = prices.get(t)
         if usd is None or sig is None or dec is None:
             return None
-        perp = tokens.perp_for(t)
-        fund = funding.get(perp.market_id) if perp else None
+        ch = funding.get(t) or {}
+        fund = ch.get("funding_daily") if ch.get("hedge_id") else None
+        taker = ch.get("taker_pct")
         return TokenSide(usd=usd, decimals=int(dec), sigma_usd=sig, stable=tokens.is_stable(t),
-                         hedgeable=fund is not None, funding_cost_daily=fund or 0.0)
+                         hedgeable=fund is not None, funding_cost_daily=fund or 0.0,
+                         taker_fee=taker / 100 if fund is not None and taker is not None else None)
 
     s0, s1 = side(t0, sig0, r["token0_decimals"]), side(t1, sig1, r["token1_decimals"])
     market = markets.get((r["address"] or "").lower())
@@ -431,8 +468,11 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             "liquidity_latest": {"total": str(l_total_now), "staked": str(l_staked_now)},
             "liquidity_median_24h": ({"total": str(liq_med[0]), "staked": str(liq_med[1])} if liq_med else None),
             "volume_used_usd": volume_used,
-            "perp": {sym: (tokens.perp_for(t).symbol if tokens.perp_for(t) else None)
+            "perp": {sym: ((funding.get(t) or {}).get("symbol") if (funding.get(t) or {}).get("hedge_id") else None)
                      for sym, t in ((r["token0_symbol"], t0), (r["token1_symbol"], t1))},
+            # 選んだヘッジ先と、比べた候補（SPEC 5.2.1章）。ステーブルコインとヘッジできないトークンは None
+            "hedge": {sym: funding.get(t) for sym, t in ((r["token0_symbol"], t0), (r["token1_symbol"], t1))
+                      if not tokens.is_stable(t)},
             "notes": notes,
         },
         "ranges": [

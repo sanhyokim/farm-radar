@@ -121,6 +121,30 @@ export function PositionCard({ c, link = true }: { c: PaperCard; link?: boolean 
         <span className="text-slate-400"><Term k="置き直し">置き直し</Term>の回数と費用</span>
         <span className="num text-slate-200">{c.rebalances}回・合計 <span className={c.rebalance_cost > 0 ? "text-rose-300" : ""}>{usd(c.rebalance_cost)}</span></span>
       </div>
+      {c.swap && (c.swap.slippage_pct_now != null || c.swap.open) && (
+        <div className="mt-2 rounded-xl bg-slate-800/40 px-3 py-2 text-xs text-slate-300">
+          <div className="flex justify-between">
+            <span className="text-slate-400"><Term k="スリッページ">両替のずれ</Term>（$550 を両替した場合）</span>
+            <span className="num">{c.swap.slippage_pct_now == null ? "—" : `${c.swap.slippage_pct_now.toFixed(2)}%`}</span>
+          </div>
+          {c.swap.open && (
+            <div className="flex justify-between">
+              <span className="text-slate-400">始めた費用のうち、ずれの分{c.swap.open.estimated ? "（今のプールで見積もり）" : ""}</span>
+              <span className="num text-rose-300">{usd(c.swap.open.slippage)}</span>
+            </div>
+          )}
+          <div className="flex justify-between">
+            <span className="text-slate-400">置き直しの費用のうち、ずれの分（これまで）</span>
+            <span className="num">{usd(c.swap.rebalance_slippage_total)}</span>
+          </div>
+          {c.swap.rebalance_slippage_next != null && (
+            <div className="flex justify-between">
+              <span className="text-slate-400">次に置き直すときのずれの見込み</span>
+              <span className="num">{usd(c.swap.rebalance_slippage_next)}</span>
+            </div>
+          )}
+        </div>
+      )}
       {c.close_cost_usd != null && (
         <div className="mt-2 flex items-center justify-between rounded-xl bg-slate-800/40 px-3 py-2 text-sm">
           <span className="text-slate-400">閉じる費用（両替・ガス・ヘッジの手数料）</span>
