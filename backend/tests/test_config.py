@@ -58,6 +58,15 @@ def test_venue_chain_facts_have_source():
     assert chain["checked_at"]
 
 
+def test_perp_fee_in_config_matches_recorded_source():
+    import yaml
+    lighter = yaml.safe_load((REPO_ROOT / "venues" / "lighter.yaml").read_text(encoding="utf-8"))
+    fees = lighter["fees"]
+    assert all(x["url"].startswith("https://") and x["checked_at"] for x in fees["sources"])
+    s = load_config(REPO_ROOT / "config.yaml", env={}).scoring
+    assert s.hedge_taker_fee_pct == fees["standard_account"]["taker_pct"]
+
+
 def test_secrets_and_data_are_gitignored():
     import subprocess
     for path in [".env", ".env.local", "data/farm_radar.sqlite3", "data/farm_radar.sqlite3-wal"]:
@@ -73,6 +82,10 @@ def test_scoring_settings_from_repo_config():
     assert (s.allocation_lp, s.allocation_hedge_margin, s.allocation_reserve) == (0.55, 0.40, 0.05)
     assert s.ranges_pct == (0.5, 1, 2, 3, 5, 10, 15)
     assert (s.green_min_pct, s.yellow_min_pct) == (0.30, 0.10)
+    # 2026-09-29 オーナー指示: 両替のずれの初期値、高すぎる日利の警告
+    assert s.slippage_trade_usd is None
+    assert (s.slippage_fallback_stable_stock_pct, s.slippage_fallback_other_pct) == (0.1, 1.0)
+    assert s.too_high_pct == 5.0
 
 
 def test_allocation_must_sum_to_one(tmp_path):

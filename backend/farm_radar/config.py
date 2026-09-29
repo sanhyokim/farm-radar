@@ -41,7 +41,9 @@ class ScoringSettings:
     rebalance_wait_minutes: float = 15.0
     gas_units_per_tx: int = 600_000
     swap_ratio: float = 0.5
-    slippage_extra_pct: float = 0.1
+    slippage_trade_usd: float | None = None      # 両替のずれを見積もる金額（None = LPに置く額）
+    slippage_fallback_stable_stock_pct: float = 0.1
+    slippage_fallback_other_pct: float = 1.0
     hedge_taker_fee_pct: float = 0.0
     count_funding_income: bool = False
     volatility_days: float = 7.0
@@ -50,6 +52,8 @@ class ScoringSettings:
     yellow_min_pct: float = 0.10
     green_min_tvl_usd: float = 200_000.0
     reward_token_7d_major_pct: float = -30.0
+    too_high_pct: float = 5.0
+
 
 
 def _scoring(raw: dict[str, Any]) -> ScoringSettings:
@@ -57,6 +61,7 @@ def _scoring(raw: dict[str, Any]) -> ScoringSettings:
     sig = raw.get("signal") or {}
     alloc = sc.get("allocation") or {}
     hedge = sc.get("hedge") or {}
+    slip = sc.get("slippage") or {}
     d = ScoringSettings()
     out = ScoringSettings(
         every_minutes=int(sc.get("every_minutes", d.every_minutes)),
@@ -68,7 +73,10 @@ def _scoring(raw: dict[str, Any]) -> ScoringSettings:
         rebalance_wait_minutes=float(sc.get("rebalance_wait_minutes", d.rebalance_wait_minutes)),
         gas_units_per_tx=int(sc.get("gas_units_per_tx", d.gas_units_per_tx)),
         swap_ratio=float(sc.get("swap_ratio", d.swap_ratio)),
-        slippage_extra_pct=float(sc.get("slippage_extra_pct", d.slippage_extra_pct)),
+        slippage_trade_usd=(float(slip["trade_usd"]) if slip.get("trade_usd") is not None else None),
+        slippage_fallback_stable_stock_pct=float(
+            slip.get("fallback_stable_stock_pct", d.slippage_fallback_stable_stock_pct)),
+        slippage_fallback_other_pct=float(slip.get("fallback_other_pct", d.slippage_fallback_other_pct)),
         hedge_taker_fee_pct=float(hedge.get("taker_fee_pct", d.hedge_taker_fee_pct)),
         count_funding_income=bool(hedge.get("count_funding_income", d.count_funding_income)),
         volatility_days=float(sc.get("volatility_days", d.volatility_days)),
@@ -77,6 +85,7 @@ def _scoring(raw: dict[str, Any]) -> ScoringSettings:
         yellow_min_pct=float(sig.get("yellow_min_pct", d.yellow_min_pct)),
         green_min_tvl_usd=float(sig.get("green_min_tvl_usd", d.green_min_tvl_usd)),
         reward_token_7d_major_pct=float(sig.get("reward_token_7d_major_pct", d.reward_token_7d_major_pct)),
+        too_high_pct=float(sig.get("too_high_pct", d.too_high_pct)),
     )
     total = out.allocation_lp + out.allocation_hedge_margin + out.allocation_reserve
     if abs(total - 1) > 1e-6:

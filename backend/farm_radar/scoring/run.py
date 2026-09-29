@@ -25,7 +25,7 @@ from ..external.lighter import Lighter
 from ..tokens import TokenBook
 from . import volatility as vol
 from .judge import Judgement, SignalParams, Warn, judge
-from .model import Evaluation, ModelParams, PoolInputs, TokenSide, evaluate
+from .model import Evaluation, ModelParams, PoolInputs, TokenSide, evaluate, swap_price_impact
 from .prices import PoolPrice, usd_prices
 
 log = logging.getLogger(__name__)
@@ -49,13 +49,14 @@ def model_params(s: ScoringSettings, gas_usd_per_tx: float) -> ModelParams:
     return ModelParams(
         c_total=s.total_capital_usd, lp_share=s.allocation_lp,
         ranges=tuple(x / 100 for x in s.ranges_pct), rebalance_wait_minutes=s.rebalance_wait_minutes,
-        gas_usd_per_tx=gas_usd_per_tx, swap_ratio=s.swap_ratio, slippage_extra=s.slippage_extra_pct / 100,
+        gas_usd_per_tx=gas_usd_per_tx, swap_ratio=s.swap_ratio,
         hedge_taker_fee=s.hedge_taker_fee_pct / 100, count_funding_income=s.count_funding_income,
     )
 
 
 def signal_params(s: ScoringSettings) -> SignalParams:
-    return SignalParams(s.green_min_pct, s.yellow_min_pct, s.green_min_tvl_usd, s.reward_token_7d_major_pct)
+    return SignalParams(s.green_min_pct, s.yellow_min_pct, s.green_min_tvl_usd, s.reward_token_7d_major_pct,
+                        s.too_high_pct)
 
 
 def _ts(v: str) -> int:
@@ -358,14 +359,16 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         notes.append("値動きは外部データ（GeckoTerminal）で補っています。")
 
     ev: Evaluation | None = None
+    slip = slip_src = None
+    l_total, l_staked = int(r["liquidity_total"] or 0), int(r["liquidity_staked_inrange"] or 0)
     if missing is None:
+        slip, slip_src = _slippage(ctx.settings, params, float(r["price"]), l_total, s0, s1, tokens, t0, t1)
         inp = PoolInputs(
             price=float(r["price"]), token0=s0, token1=s1, fee=fee,
             unstaked_fee=(r["unstaked_fee"] or 0) / 1e6,
-            liquidity_total=int(r["liquidity_total"] or 0),
-            liquidity_staked=int(r["liquidity_staked_inrange"] or 0),
+            liquidity_total=l_total, liquidity_staked=l_staked,
             reward_usd_day=reward_usd_day, fees_usd_day=fees_day, sigma_pair=sig_pair,
-            reward_trend_daily=reward_trend_daily,
+            reward_trend_daily=reward_trend_daily, slippage=slip,
         )
         ev = evaluate(inp, params)
     j: Judgement = judge(ev, sparams, warnings=list(base_warns), tvl_usd=tvl, missing=missing, notes=notes)
@@ -380,6 +383,8 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             "reward_token_change_7d": reward_change, "reward_token_trend_daily": reward_trend_daily,
             "emission_pressure": (reward_usd_day / reward_volume) if reward_volume else None,
             "gas_usd_per_tx": params.gas_usd_per_tx,
+            "slippage": slip, "slippage_source": slip_src,
+            "liquidity_total": str(l_total), "liquidity_staked_inrange": str(l_staked),
             "perp": {sym: (tokens.perp_for(t).symbol if tokens.perp_for(t) else None)
                      for sym, t in ((r["token0_symbol"], t0), (r["token1_symbol"], t1))},
             "notes": notes,
@@ -389,7 +394,8 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
              "mode": x.mode, "income_staked": x.income_staked, "income_unstaked": x.income_unstaked,
              "gamma": x.gamma, "rebalance": x.rebalance, "hedge": x.hedge, "haircut": x.haircut,
              "direction_risk": x.direction_risk, "in_range_ratio": x.in_range_ratio,
-             "in_range_ratio_hold": x.in_range_ratio_hold, "rebalances_per_day": x.rebalances_per_day}
+             "in_range_ratio_hold": x.in_range_ratio_hold, "rebalances_per_day": x.rebalances_per_day,
+             **_depth(x, params, float(r["price"]), l_total, l_staked, s0, s1)}
             for x in (ev.rows if ev else ())
         ],
     }
@@ -411,4 +417,30 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         "warnings_json": json.dumps([w.__dict__ for w in j.warnings], ensure_ascii=False),
         "details_json": json.dumps(details, ensure_ascii=False, default=str),
         "_is_stock": int(is_stock),
+    }
+
+
+def _slippage(s: ScoringSettings, params: ModelParams, price: float, l_total: int, t0: TokenSide, t1: TokenSide,
+              tokens: TokenBook, a0: str, a1: str) -> tuple[float, str]:
+    """両替のずれ（割合）と、その出どころ（"pool" = プールの流動性から計算 / "fallback" = 初期値）。"""
+    trade = s.slippage_trade_usd if s.slippage_trade_usd is not None else params.c_lp
+    impact = swap_price_impact(trade, l_total, price, t0, t1)
+    if impact is not None:
+        return impact, "pool"
+    calm = all(tokens.is_stable(a) or tokens.is_stock(a) for a in (a0, a1))
+    pct = s.slippage_fallback_stable_stock_pct if calm else s.slippage_fallback_other_pct
+    return pct / 100, "fallback"
+
+
+def _depth(x, params: ModelParams, price: float, l_total: int, l_staked: int, t0: TokenSide, t1: TokenSide
+           ) -> dict[str, float | None]:
+    """そのレンジ幅の中にある、プール全体とステーク分の流動性のドル換算と、自分の取り分（確認用）。"""
+    per_usd = x.liquidity_mine / params.c_lp if params.c_lp > 0 else 0.0   # 1ドルあたりの L
+    if per_usd <= 0:
+        return {"pool_inrange_usd": None, "staked_inrange_usd": None, "share_staked": None, "share_total": None}
+    return {
+        "pool_inrange_usd": l_total / per_usd,
+        "staked_inrange_usd": l_staked / per_usd,
+        "share_staked": x.liquidity_mine / (l_staked + x.liquidity_mine),
+        "share_total": x.liquidity_mine / (l_total + x.liquidity_mine),
     }

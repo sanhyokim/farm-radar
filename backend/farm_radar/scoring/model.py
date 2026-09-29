@@ -4,6 +4,7 @@
 式の出どころ:
 - in_range_ratio（置き直す前提）と参考値（置きっぱなし）: 2026-09-29 オーナー決定（SPEC 3.2章 2.）
 - direction_risk = C_lp × 0.5 × 0.4 × (σ_d(A) + σ_d(B)): 2026-09-29 オーナー決定（SPEC 3.2章 5.）
+- 両替のずれ（スリッページ）はプールの今の流動性から見積もる: 2026-09-29 オーナー指示（SPEC 3.2章 4.）
 - 報酬はレンジ内のステーク流動性に比例、ステークすると手数料は0、ステークしないと手数料の一部を取られる:
   up. で確認済み（venues/up-robinhood.yaml の mechanics）
 """
@@ -24,7 +25,6 @@ class ModelParams:
     rebalance_wait_minutes: float = 15.0  # レンジを外れてから置き直すまでの待ち時間
     gas_usd_per_tx: float = 0.0           # 1回の取引のガス代（ドル）
     swap_ratio: float = 0.5               # 置き直すときに両替する割合
-    slippage_extra: float = 0.001         # 両替のときにプールの手数料に加えてかかる価格のずれ（割合）
     hedge_taker_fee: float = 0.0          # perp の取引手数料（割合）
     count_funding_income: bool = False    # 資金調達を「受け取る」側のとき、それを収入に数えるか
 
@@ -56,6 +56,7 @@ class PoolInputs:
     fees_usd_day: float | None      # プール全体の1日の手数料（出来高 × 手数料率）。分からなければ None
     sigma_pair: float               # 2つのトークンの比率の日次ボラ
     reward_trend_daily: float | None = None   # 報酬トークンの7日の変化を1日あたりに直したもの（-0.02 = 1日 -2%）
+    slippage: float = 0.0           # 両替のときにプールの手数料に加えてかかる価格のずれ（割合。swap_price_impact で見積もる）
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,25 @@ def liquidity_for_usd(c_lp: float, price: float, r: float, t0: TokenSide, t1: To
     y_raw = sp - sa                  # L=1 あたりの token1（最小単位）
     usd_per_l = x_raw / 10 ** t0.decimals * t0.usd + y_raw / 10 ** t1.decimals * t1.usd
     return c_lp / usd_per_l if usd_per_l > 0 else 0.0
+
+
+def swap_price_impact(amount_usd: float, liquidity: int, price: float, t0: TokenSide, t1: TokenSide) -> float | None:
+    """amount_usd ドル分を両替したときに、プールの価格がどれだけ動くか（割合。0.01 = 1%）。
+
+    今の価格のところの流動性 L が、動く範囲でずっと同じだとして計算する（v3 の式）。
+    - token1 を入れる: √P が amount1 / L だけ上がる
+    - token0 を入れる: 1/√P が amount0 / L だけ上がる
+    向きで結果が少し違うので、大きい方を使う（安全側）。1（100%）を上限にする。
+    実際は途中で流動性が変わる（ティックをまたぐ）ことがあるので、目安の値。
+    """
+    if liquidity <= 0 or amount_usd <= 0 or t0.usd <= 0 or t1.usd <= 0 or price <= 0:
+        return None
+    sp = math.sqrt(price * 10 ** (t1.decimals - t0.decimals))
+    y = amount_usd / t1.usd * 10 ** t1.decimals
+    x = amount_usd / t0.usd * 10 ** t0.decimals
+    up = (1 + y / liquidity / sp) ** 2 - 1
+    down = 1 - 1 / (1 + x * sp / liquidity) ** 2
+    return min(1.0, max(up, down))
 
 
 def rebalances_per_day(sigma_pair: float, r: float) -> float:
@@ -177,7 +197,7 @@ def evaluate(inp: PoolInputs, params: ModelParams) -> Evaluation:
             haircut = income_staked * -trend if trend is not None and trend < 0 else 0.0
 
         g = gamma(c_lp, inp.sigma_pair, r)
-        reb = n * (params.gas_usd_per_tx * 2 + c_lp * params.swap_ratio * (inp.fee + params.slippage_extra))
+        reb = n * (params.gas_usd_per_tx * 2 + c_lp * params.swap_ratio * (inp.fee + inp.slippage))
         hedge = 0.0
         for t in hedged:
             cost = t.funding_cost_daily if params.count_funding_income else max(0.0, t.funding_cost_daily)

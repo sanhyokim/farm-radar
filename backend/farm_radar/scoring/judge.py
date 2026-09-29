@@ -3,6 +3,7 @@
 - 判定に使うのは総資産あたりの純日利（net_daily_pct）。
 - 重大な警告（major）があれば🔴、軽微な警告（minor）があれば最高でも🟡。
 - ヘッジできないプールは最高でも🟡で、「ヘッジ不可：値動きの損をそのまま受けます」と必ず書く。
+- 純日利が too_high_pct（初期値5%）を超えたら「数字が高すぎます」の軽微な警告を付ける（2026-09-29 オーナー指示）。
 - 理由文は日本語3行以内。
 """
 
@@ -14,6 +15,7 @@ from .model import Evaluation
 
 EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 NO_HEDGE_TEXT = "ヘッジ不可：値動きの損をそのまま受けます"
+TOO_HIGH_TEXT = "数字が高すぎます。データや計算を確認してください"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,7 @@ class SignalParams:
     yellow_min_pct: float = 0.10
     green_min_tvl_usd: float = 200_000
     reward_token_7d_major_pct: float = -30.0
+    too_high_pct: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -56,9 +59,14 @@ def judge(
     notes: list[str] | None = None,
 ) -> Judgement:
     notes = list(notes or [])
-    warns = tuple(warnings)
+    warnings = list(warnings)
     if ev is None or missing:
-        return Judgement("red", f"データが足りないため判定できません（{missing or '計算できませんでした'}）。", warns)
+        return Judgement("red", f"データが足りないため判定できません（{missing or '計算できませんでした'}）。",
+                         tuple(warnings))
+    if ev.net_daily_pct > params.too_high_pct:
+        warnings.append(Warn("HIGH", "minor", f"{TOO_HIGH_TEXT}（{params.too_high_pct:g}% 超え）"))
+        notes.insert(0, TOO_HIGH_TEXT + "。")
+    warns = tuple(warnings)
 
     best, c_total = ev.best, ev.params.c_total
     income_pct = best.income / c_total * 100
@@ -82,8 +90,10 @@ def judge(
         signal = "green"
         if not ev.has_perp:
             caps.append("ヘッジできない")
-        if minors:
-            caps.append("軽微な警告あり（" + " / ".join(w.message_ja for w in minors) + "）")
+        if [w for w in minors if w.code != "HIGH"]:
+            caps.append("軽微な警告あり（" + " / ".join(w.message_ja for w in minors if w.code != "HIGH") + "）")
+        if any(w.code == "HIGH" for w in minors):
+            caps.append("数字が高すぎる")
         if tvl_usd is None:
             caps.append("プールの大きさが分からない")
         elif tvl_usd < params.green_min_tvl_usd:
@@ -93,7 +103,7 @@ def judge(
             signal = "yellow"
 
     if not ev.has_perp:
-        notes.insert(0, NO_HEDGE_TEXT + "。")
+        notes.insert(1 if notes and notes[0].startswith(TOO_HIGH_TEXT) else 0, NO_HEDGE_TEXT + "。")
     line3 = "".join(notes)
     reason = "\n".join(x for x in (line1, line2, line3) if x)
     return Judgement(signal, reason, warns)

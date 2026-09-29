@@ -124,6 +124,10 @@ def test_scores_every_pool_with_own_data():
     det = json.loads(rows["p-weth"]["details_json"])
     assert len(det["ranges"]) == 7
     assert all("in_range_ratio_hold" in x for x in det["ranges"])
+    # 両替のずれはプールの流動性から計算し、レンジごとにプールの流動性と自分の取り分を残す
+    assert det["inputs"]["slippage_source"] == "pool" and det["inputs"]["slippage"] > 0
+    assert det["ranges"][0]["pool_inrange_usd"] > det["ranges"][0]["staked_inrange_usd"] > 0
+    assert 0 < det["ranges"][0]["share_staked"] < 1
     # 株トークンのペアは、市場時間中と時間外の σ も記録する
     assert "NVDA" in json.loads(rows["p-nvda"]["details_json"])["inputs"]["sigma_stock_split"]
     assert conn.execute("SELECT is_stock_pair FROM pools WHERE id='up-robinhood:p-nvda'").fetchone()[0] == 1
@@ -179,3 +183,15 @@ def test_external_data_fetched_once_then_own_data_takes_over():
     # 次の回では、ためた足と自分の記録で7日分がそろっているので、外部サイトには聞き直さない
     score_venue(conn, _ctx(gt), now=NOW + timedelta(minutes=10))
     assert gt.ohlcv_calls == 3
+
+
+def test_slippage_falls_back_when_it_cannot_be_computed(monkeypatch):
+    from farm_radar.scoring import run
+    monkeypatch.setattr(run, "swap_price_impact", lambda *a: None)
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    rows = {r["pool_id"].split(":")[1]: json.loads(r["details_json"])["inputs"]
+            for r in score_venue(conn, _ctx(), now=NOW)}
+    # ステーブルと株トークンだけのプールは 0.1%、それ以外は 1%
+    assert rows["p-nvda"]["slippage_source"] == "fallback" and rows["p-nvda"]["slippage"] == pytest.approx(0.001)
+    assert rows["p-weth"]["slippage"] == pytest.approx(0.01)

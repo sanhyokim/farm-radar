@@ -199,3 +199,44 @@ def test_small_or_unknown_pool_is_not_green():
 def test_missing_data_is_red_with_reason():
     j = judge(None, SP, warnings=[], tvl_usd=None, missing="最新のデータが古い")
     assert j.signal == "red" and "最新のデータが古い" in j.reason_ja
+
+
+# --- 両替のずれ（スリッページ） ----------------------------------------------------------
+
+def test_swap_price_impact_from_pool_liquidity():
+    from farm_radar.scoring.model import swap_price_impact
+    t0, t1 = TokenSide(2500.0, 18, 0.0), TokenSide(1.0, 6, 0.0, stable=True)
+    price = 2500.0
+    sp = math.sqrt(price * 10 ** (6 - 18))
+    # 今の価格のところの「見かけの在庫」が USDG 側 $100,000 になる L
+    L = int(100_000 * 10 ** 6 / sp)
+    got = swap_price_impact(550, L, price, t0, t1)
+    # USDG $550 を入れると価格は (1 + 550/100000)^2 − 1 ≈ 1.1% 上がる
+    assert got == pytest.approx((1 + 550 / 100_000) ** 2 - 1, rel=1e-3)
+    # 流動性が10倍なら、ずれはおよそ1/10
+    assert swap_price_impact(550, L * 10, price, t0, t1) == pytest.approx(got / 10, rel=0.02)
+    # 流動性がない・価格が分からないときは計算しない（初期値を使う）
+    assert swap_price_impact(550, 0, price, t0, t1) is None
+    # とても薄いプールでも100%が上限
+    assert swap_price_impact(550, 1, price, t0, t1) == 1.0
+
+
+def test_rebalance_cost_uses_pool_slippage():
+    p = ModelParams(ranges=(0.01,))
+    lo = evaluate(_inputs(slippage=0.001), p).rows[0]
+    hi = evaluate(_inputs(slippage=0.02), p).rows[0]
+    per = lo.rebalances_per_day * 550 * 0.5
+    assert hi.rebalance - lo.rebalance == pytest.approx(per * 0.019)
+
+
+def test_too_high_net_gets_warning_and_is_not_green():
+    from farm_radar.scoring.judge import TOO_HIGH_TEXT
+    j = judge(_ev(6.0), SP, warnings=[], tvl_usd=300_000)
+    assert j.signal == "yellow"
+    assert any(w.code == "HIGH" for w in j.warnings)
+    assert TOO_HIGH_TEXT in j.reason_ja and len(j.reason_ja.splitlines()) <= 3
+    # しきい値は設定で変えられる
+    assert judge(_ev(6.0), SignalParams(too_high_pct=10.0), warnings=[], tvl_usd=300_000).signal == "green"
+    # ヘッジできないプールでも両方書く
+    j2 = judge(_ev(6.0, has_perp=False), SP, warnings=[], tvl_usd=300_000)
+    assert TOO_HIGH_TEXT in j2.reason_ja and NO_HEDGE_TEXT in j2.reason_ja
