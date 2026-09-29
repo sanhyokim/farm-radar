@@ -78,10 +78,15 @@ def test_daily_loss_emergency():
     assert check_portfolio(dataclasses.replace(PF, today_net_usd=-50.0), S)[0].level == "emergency"
 
 
-def test_fast_window_jst():
-    assert in_fast_window(datetime(2026, 9, 29, 13, 5, tzinfo=UTC), ("22:00", "23:30"))
-    assert not in_fast_window(datetime(2026, 9, 29, 14, 45, tzinfo=UTC), ("22:00", "23:30"))
-    assert in_fast_window(datetime(2026, 9, 29, 15, 30, tzinfo=UTC), ("23:00", "01:00"))   # 日をまたぐ窓
+def test_fast_window_follows_new_york_time():
+    w = ("09:00", "10:30")
+    # 夏時間（9月）: NY 9:00 = 日本時間 22:00
+    assert in_fast_window(datetime(2026, 9, 29, 13, 5, tzinfo=UTC), w)           # 日本 22:05 / NY 9:05
+    assert not in_fast_window(datetime(2026, 9, 29, 14, 45, tzinfo=UTC), w)      # NY 10:45
+    # 冬時間（11月2日 月曜）: NY 9:00 = 日本時間 23:00。開いた1時間後の 10:30（日本 0:30）まで入る
+    assert not in_fast_window(datetime(2026, 11, 2, 13, 30, tzinfo=UTC), w)      # 日本 22:30 / NY 8:30
+    assert in_fast_window(datetime(2026, 11, 2, 15, 25, tzinfo=UTC), w)          # 日本 0:25 / NY 10:25
+    assert in_fast_window(datetime(2026, 9, 29, 3, 30, tzinfo=UTC), ("23:00", "01:00"))   # 日をまたぐ窓（NY 23:30）
 
 
 # --- 建玉を実際に動かす -------------------------------------------------------------------------

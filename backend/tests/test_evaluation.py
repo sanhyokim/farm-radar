@@ -32,7 +32,7 @@ def test_running_summary_compares_predicted_and_actual(world):  # noqa: F811
     s = evaluation.summary(conn, cfg, NOW + timedelta(hours=7))
     assert s["state"] == "running" and s["positions"] == 1
     assert 5 < s["observed_hours"] <= 6.0 and s["estimated_hours"] == 0
-    assert s["left_hours"] == pytest.approx(cfg.review.evaluation_days * 24 - 7)
+    assert s["left_hours"] == pytest.approx(cfg.evaluation.days * 24 - 7)
     # 実績は1時間ごとの行の合計（開いた時の1回きりの費用は入らない）を1日あたりにしたもの
     rows = conn.execute("SELECT * FROM position_pnl WHERE position_id=? ORDER BY ts", (ref.position_id,)).fetchall()[1:]
     act = sum(r["net"] for r in rows) / (s["observed_hours"] / 24)
@@ -64,3 +64,38 @@ def test_api_needs_confirm(client):  # noqa: F811
     assert c.get("/api/paper/evaluation").json()["state"] == "running"
     assert c.post("/api/paper/evaluation/stop", json={"confirm": True}).status_code == 200
     assert c.get("/api/paper/evaluation").json()["state"] == "stopped"
+
+
+def test_daily_judgement_and_verdict(world):  # noqa: F811
+    import dataclasses
+
+    path, conn = world
+    base = _config(path)
+    # 1日だけの評価。差の許容を総資産の100%にすると、記録のある日は必ず「満たす日」になる
+    loose = dataclasses.replace(base, evaluation=dataclasses.replace(base.evaluation, days=1, day_gap_capital_pct=100))
+    evaluation.start(conn, loose, NOW)
+    _open(conn, path)
+    _extend(conn, 26)
+    run_paper(conn, loose, TOKENS, lighter=FakeLighter(), fx=FakeFx(), now=NOW + timedelta(hours=26))
+    s = evaluation.summary(conn, loose, NOW + timedelta(hours=26))
+    assert s["state"] == "finished" and len(s["days"]) == 1
+    d = s["days"][0]
+    assert d["done"] and d["hold_ok"] and d["sell_ok"] and d["capital"] == pytest.approx(1000.0)
+    c = s["criteria"]
+    assert c["coverage_ok"] and c["hold"] == {"ok_days": 1, "need_days": 1, "result": "pass"}
+    assert c["sell"]["result"] == "pass"
+    assert "儲かるかの判定ではありません" in s["disclaimer"]
+    # 許容を0にすると、差がある日は満たさない → 不合格
+    strict = dataclasses.replace(loose, evaluation=dataclasses.replace(loose.evaluation, day_gap_pct=0, day_gap_capital_pct=0))
+    s2 = evaluation.summary(conn, strict, NOW + timedelta(hours=26))
+    assert s2["criteria"]["hold"]["result"] == "fail"
+
+
+def test_day_without_records_does_not_count(world):  # noqa: F811
+    path, conn = world
+    cfg = _config(path)
+    evaluation.start(conn, cfg, NOW)
+    s = evaluation.summary(conn, cfg, NOW + timedelta(hours=49))
+    assert [d["hold_ok"] for d in s["days"]][:2] == [False, False]
+    assert s["criteria"]["hold"]["ok_days"] == 0 and s["criteria"]["hold"]["result"] == "running"
+    assert s["criteria"]["hold"]["need_days"] == 10              # 14日 × 70% = 9.8 → 10日

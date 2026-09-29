@@ -33,11 +33,11 @@ def test_uncovered_year_falls_back_to_weekdays():
 
 
 def test_fast_window_skips_us_holidays_and_weekends():
-    w = ("22:00", "23:30")
-    assert in_fast_window(datetime(2026, 9, 29, 13, 5, tzinfo=UTC), w)          # 火曜 22:05 JST
-    assert not in_fast_window(datetime(2026, 11, 26, 13, 30, tzinfo=UTC), w)    # 感謝祭の日（NY 8:30）
+    w = ("09:00", "10:30")
+    assert in_fast_window(datetime(2026, 9, 29, 13, 5, tzinfo=UTC), w)          # 火曜 NY 9:05
+    assert not in_fast_window(datetime(2026, 11, 26, 14, 30, tzinfo=UTC), w)    # 感謝祭の日（NY 9:30）
     assert not in_fast_window(datetime(2026, 10, 3, 13, 30, tzinfo=UTC), w)     # 土曜
-    assert in_fast_window(datetime(2026, 11, 26, 13, 30, tzinfo=UTC), w, trading_days_only=False)
+    assert in_fast_window(datetime(2026, 11, 26, 14, 30, tzinfo=UTC), w, trading_days_only=False)
 
 
 def test_status_for_home_screen():

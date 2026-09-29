@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { postApi, useApi, type Evaluation, type Outlook, type PaperCalendar, type TimelineItem } from "../api";
+import { postApi, useApi, type EvalVerdict, type Evaluation, type Outlook, type PaperCalendar, type TimelineItem } from "../api";
 import { jst, pct, signedUsd, tone, usd } from "../format";
 import { Badge, Card, Loading, Note } from "../ui";
 
@@ -197,6 +197,7 @@ export function EvaluationCard() {
   const days = data.evaluation_days;
   return (
     <Card title="2週間の評価" right={<Badge tone={t}>{label}</Badge>}>
+      {data.disclaimer && <p className="mb-2 rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-200">{data.disclaimer}</p>}
       {data.state === "not_started" ? (
         <p className="text-sm leading-relaxed text-slate-300">
           {days}日間、練習の記録と「始める前の見込み（スコア）」を比べて、見込みがどれくらい当たるかを確かめます。
@@ -254,6 +255,8 @@ export function EvaluationCard() {
               </div>
             </>
           )}
+          {data.criteria && <Criteria c={data.criteria} />}
+          {data.days && data.days.length > 0 && <DayTable days={data.days} />}
           {data.events && data.events.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
               {data.events.map((e) => <Badge key={e.level} tone="slate">{e.level_ja} {e.n}件</Badge>)}
@@ -285,5 +288,63 @@ export function EvaluationCard() {
       {msg && <p className="mt-2 text-sm text-slate-200">{msg}</p>}
       {data.note && <Note>{data.note}</Note>}
     </Card>
+  );
+}
+
+const RESULT: Record<EvalVerdict["result"], [string, "slate" | "emerald" | "amber" | "rose" | "sky"]> = {
+  running: ["評価中", "sky"], stopped: ["途中でやめた", "amber"], pass: ["合格", "emerald"], fail: ["不合格", "rose"],
+};
+
+/** 合格の基準（2026-09-29 オーナー決定）と、持ち続ける前提・すぐ売る前提それぞれの判定 */
+function Criteria({ c }: { c: NonNullable<Evaluation["criteria"]> }) {
+  const col = (title: string, v: EvalVerdict) => (
+    <div className="rounded-lg bg-slate-800/40 p-2 text-center">
+      <div className="text-xs text-slate-400">{title}</div>
+      <div className="my-1"><Badge tone={RESULT[v.result][1]}>{RESULT[v.result][0]}</Badge></div>
+      <div className="num text-sm text-slate-100">{v.ok_days} / {v.need_days}日</div>
+      <div className="text-[10px] text-slate-500">満たした日 / 合格に必要な日</div>
+    </div>
+  );
+  return (
+    <div className="mt-3">
+      <div className="mb-1 text-xs text-slate-400">合格の基準で見ると（{c.done_days}/{c.days}日が終わりました）</div>
+      <div className="grid grid-cols-2 gap-2">
+        {col("報酬を持ち続ける前提", c.hold)}
+        {col("報酬をすぐ売る前提", c.sell)}
+      </div>
+      <div className={`mt-2 text-xs ${c.coverage_ok ? "text-emerald-300" : "text-rose-300"}`}>
+        データの集まり具合 {c.coverage_pct === null ? "—" : `${c.coverage_pct.toFixed(1)}%`}（{c.min_coverage_pct}%以上が必要）{c.coverage_ok ? " ✓" : " ✗"}
+      </div>
+      <Note>
+        基準: ① データの集まり具合が{c.min_coverage_pct}%以上 ② 1日（始めた時刻から24時間ずつ）の純損益の差が、予測の±{c.day_gap_pct}%以内か、
+        総資産の{c.day_gap_capital_pct}%以内の日が、{c.days}日の{c.pass_days_pct}%以上。数字は config.yaml の evaluation で変えられます。
+      </Note>
+    </div>
+  );
+}
+
+function DayTable({ days }: { days: NonNullable<Evaluation["days"]> }) {
+  const mark = (ok: boolean, v: number | null, done: boolean) =>
+    v === null ? <span className="text-slate-600">記録なし</span> : (
+      <span className={tone(v)}>{signedUsd(v)}{done ? (ok ? " ○" : " ×") : ""}</span>);
+  return (
+    <table className="mt-2 w-full text-xs">
+      <thead>
+        <tr className="text-slate-500">
+          <th className="text-left font-normal">日</th><th className="text-right font-normal">予測</th>
+          <th className="text-right font-normal">持ち続け</th><th className="text-right font-normal">すぐ売り</th>
+        </tr>
+      </thead>
+      <tbody>
+        {days.map((d) => (
+          <tr key={d.day} className="border-t border-slate-800">
+            <td className="py-1 text-slate-300">{d.day}日目{d.done ? "" : "（途中）"}</td>
+            <td className={`num text-right ${tone(d.predicted)}`}>{d.predicted === null ? "—" : signedUsd(d.predicted)}</td>
+            <td className="num text-right">{mark(d.hold_ok, d.hold, d.done)}</td>
+            <td className="num text-right">{mark(d.sell_ok, d.sell, d.done)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

@@ -63,7 +63,7 @@ export default function Practice() {
               </div>
             ))}
           </div>
-          <Note>15分ごとの記録のたびに調べます（米国市場が開く前後の 22:00〜23:30 は5分ごと）。数字は config.yaml の risk で変えられます。</Note>
+          <Note>15分ごとの記録のたびに調べます（米国市場が開く30分前〜開いた1時間後は5分ごと。日本時間では夏 22:00〜23:30、冬 23:00〜翌0:30）。数字は config.yaml の risk で変えられます。</Note>
         </Card>
       )}
 

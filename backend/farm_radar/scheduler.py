@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -28,11 +27,12 @@ log = logging.getLogger(__name__)
 
 
 def in_fast_window(now: datetime, window: tuple[str, str], trading_days_only: bool = True) -> bool:
-    """日本時間で window（"22:00", "23:30"）の中か。日をまたぐ窓（"23:00", "01:00"）にも対応する。
+    """ニューヨーク時間で window（"09:00", "10:30"）の中か。日をまたぐ窓（"23:00", "01:00"）にも対応する。
 
+    夏時間・冬時間はニューヨークの時計で数えるので自動で合う（2026-09-29 オーナー決定）。
     trading_days_only なら、米国市場が開く日（ニューヨークの日付で。土日・休日は除く。M5d）だけ True。
     """
-    local = now.astimezone(ZoneInfo("Asia/Tokyo"))
+    local = now.astimezone(market_calendar.NY)
     cur = local.hour * 60 + local.minute
     a, b = ((int(x.split(":")[0]) * 60 + int(x.split(":")[1])) for x in window)
     inside = a <= cur <= b if a <= b else (cur >= a or cur <= b)
@@ -81,8 +81,8 @@ def main() -> None:
             lock.release()
 
     def fast_job() -> None:
-        """米国市場の開場前後（config の risk.fast_window_jst）だけ、練習の建玉があれば短い間隔で記録して見張る（SPEC 5.1章）。"""
-        if config.mode != "paper" or not in_fast_window(datetime.now(UTC), config.risk.fast_window_jst):
+        """米国市場の開場前後（config の risk.fast_window_ny。ニューヨーク時間）だけ、練習の建玉があれば短い間隔で記録して見張る（SPEC 5.1章）。"""
+        if config.mode != "paper" or not in_fast_window(datetime.now(UTC), config.risk.fast_window_ny):
             return
         conn = db.connect(config.database_path)
         try:
@@ -166,10 +166,10 @@ def main() -> None:
     r = config.risk
     fast_minutes = [m for m in range(0, 60, r.fast_minutes) if m % minutes]
     if config.mode == "paper" and fast_minutes and 60 % minutes == 0:
-        h0, h1 = int(r.fast_window_jst[0].split(":")[0]), int(r.fast_window_jst[1].split(":")[0])
+        h0, h1 = int(r.fast_window_ny[0].split(":")[0]), int(r.fast_window_ny[1].split(":")[0])
         hours = f"{h0}-{h1}" if h0 <= h1 else f"{h0}-23,0-{h1}"
         sched.add_job(fast_job, CronTrigger(minute=",".join(map(str, fast_minutes)), hour=hours,
-                                            timezone="Asia/Tokyo"),
+                                            timezone="America/New_York"),
                       id="paper_fast", max_instances=1, coalesce=True, misfire_grace_time=60)
     # 定時レビュー（M5c）: 収集と練習の計算が終わったあと（毎時2分・32分など）に作る
     if config.mode == "paper":

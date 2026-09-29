@@ -5,7 +5,11 @@
 - 予測と実績の差（6区分・1日あたり）。推定の行（収集が止まっていた時間）と、開く・閉じる時の1回きりの費用は除く
 - 報酬を持ち続けた場合と、すぐ売った場合のどちらが予測に近いか
 - 見張りの記録の件数（置き直し・離脱など）
-合格の基準は SPEC に書かれていないので、ここでは数字を並べるだけにする（基準はオーナーが決める）。
+合格の基準（2026-09-29 オーナー決定。config.yaml の evaluation）:
+1. データの集まり具合が95%以上
+2. 1日ごとの純損益で、予測と実績の差が「±30%以内」または「総資産の0.1%以内」の日が、評価日数の70%以上
+3. 報酬を「持ち続ける前提」と「すぐ売る前提」の両方で判定して並べる
+「1日」は評価を始めた時刻から24時間ずつ区切る。記録のない日は「満たさない日」に数える。
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ def start(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str, 
     cur = current(conn)
     if cur is not None and cur["ends_at"] > _iso(now) and cur["status"] == "running":
         raise ValueError("評価はもう始まっています。")
-    ends = now + timedelta(days=config.review.evaluation_days)
+    ends = now + timedelta(days=config.evaluation.days)
     conn.execute("INSERT INTO evaluations(started_at, ends_at, status) VALUES (?,?, 'running')",
                  (_iso(now), _iso(ends)))
     conn.commit()
@@ -58,7 +62,7 @@ def stop(conn: sqlite3.Connection, now: datetime) -> None:
 
 def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str, Any]:
     cur = current(conn)
-    base = {"evaluation_days": config.review.evaluation_days, "mode": config.mode}
+    base = {"evaluation_days": config.evaluation.days, "mode": config.mode}
     if cur is None:
         return {**base, "state": "not_started"}
     start_t = datetime.fromisoformat(cur["started_at"])
@@ -80,13 +84,17 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
                          "missing_hours": len(r.missing) * config.snapshot_minutes / 60})
 
     # 予測と実績（期間の中の、推定でない行。開く・閉じる時の行は1回きりの費用なので除く）
-    rows = conn.execute("""SELECT n.*, p.predicted_json FROM position_pnl n JOIN positions p ON p.id=n.position_id
+    rows = conn.execute("""SELECT n.*, p.predicted_json, p.capital FROM position_pnl n JOIN positions p ON p.id=n.position_id
                            WHERE p.is_paper=1 AND n.ts>? AND n.ts<=?""", (_iso(start_t), _iso(until))).fetchall()
     actual = {c: 0.0 for c in CATS}
     predicted = {c: 0.0 for c in CATS}
     sell_haircut = 0.0
+    pred_sell_net = 0.0
     obs_hours = est_hours = 0.0
     per_pos: set[int] = set()
+    ev = config.evaluation
+    n_days = ev.days
+    daily = [{"pred": 0.0, "pred_sell": 0.0, "hold": 0.0, "sell": 0.0, "hours": 0.0, "capital": {}} for _ in range(n_days)]
     for r in rows:
         d = json.loads(r["detail_json"] or "{}")
         if d.get("event") in ("open", "close"):
@@ -96,13 +104,31 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
             est_hours += dt_h
             continue
         per_pos.add(r["position_id"])
+        net_row = sum(float(r[c] or 0.0) for c in CATS)
         for c in CATS:
             actual[c] += float(r[c] or 0.0)
+        sell_row = net_row - float(r["haircut"] or 0.0) + float(r["haircut_sell"] or 0.0)
         sell_haircut += float(r["haircut_sell"] or 0.0)
         obs_hours += dt_h
         pred = json.loads(r["predicted_json"] or "{}")
+        pred_row = 0.0
         for c, (key, sign) in PRED_KEYS.items():
-            predicted[c] += sign * float(pred.get(key) or 0.0) * dt_h / 24
+            v = sign * float(pred.get(key) or 0.0) * dt_h / 24
+            predicted[c] += v
+            pred_row += v
+        # すぐ売る前提の予測（スコアの参考値。なければ持ち続ける前提と同じ）
+        ns = pred.get("net_sell_now")
+        pred_sell_row = float(ns) * dt_h / 24 if ns is not None else pred_row
+        pred_sell_net += pred_sell_row
+        k = int((datetime.fromisoformat(r["ts"]) - start_t).total_seconds() // 86400)
+        if 0 <= k < n_days:
+            day = daily[k]
+            day["pred"] += pred_row
+            day["pred_sell"] += pred_sell_row
+            day["hold"] += net_row
+            day["sell"] += sell_row
+            day["hours"] += dt_h
+            day["capital"][r["position_id"]] = float(r["capital"] or 0.0)
     days = obs_hours / 24
     per_day = (lambda v: v / days) if days > 0 else (lambda v: None)
     compare = [{"key": c, "label": views.CATEGORY_JA[c], "predicted": per_day(predicted[c]), "actual": per_day(actual[c])}
@@ -112,6 +138,47 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
     events = [{"level": r["level"], "level_ja": LEVEL_JA.get(r["level"], r["level"]), "n": r["n"]}
               for r in conn.execute("SELECT level, COUNT(*) AS n FROM risk_events WHERE ts>? AND ts<=? "
                                     "GROUP BY level ORDER BY n DESC", (_iso(start_t), _iso(until)))]
+
+    # 1日ごとの判定（2026-09-29 オーナー決定）
+    done_days = min(n_days, int(hours // 24))           # 24時間が終わった日だけ判定する
+
+    def day_ok(pred: float, act: float, capital: float) -> bool:
+        gap = abs(act - pred)
+        return gap <= abs(pred) * ev.day_gap_pct / 100 or gap <= capital * ev.day_gap_capital_pct / 100
+
+    day_rows = []
+    for k, day in enumerate(daily[:max(done_days, min(n_days, int(math.ceil(hours / 24))))]):
+        cap = sum(day["capital"].values())
+        has = day["hours"] > 0
+        day_rows.append({
+            "day": k + 1, "start": _iso(start_t + timedelta(days=k)), "done": k < done_days,
+            "hours": day["hours"], "capital": cap, "predicted": day["pred"] if has else None,
+            "predicted_sell": day["pred_sell"] if has else None,
+            "hold": day["hold"] if has else None, "sell": day["sell"] if has else None,
+            "hold_ok": has and day_ok(day["pred"], day["hold"], cap),
+            "sell_ok": has and day_ok(day["pred_sell"], day["sell"], cap),
+        })
+    need = math.ceil(n_days * ev.pass_days_pct / 100)
+    cov_ratios = [c["ratio"] for c in coverage if c["ratio"] is not None]
+    cov = min(cov_ratios) if cov_ratios else None
+    cov_ok = cov is not None and cov * 100 >= ev.min_coverage_pct
+
+    def verdict(key: str) -> dict[str, Any]:
+        ok_days = sum(1 for d in day_rows if d["done"] and d[f"{key}_ok"])
+        if state == "finished":
+            result = "pass" if cov_ok and ok_days >= need else "fail"
+        elif state == "stopped":
+            result = "stopped"
+        else:
+            result = "running"
+        return {"ok_days": ok_days, "need_days": need, "result": result}
+
+    criteria = {
+        "min_coverage_pct": ev.min_coverage_pct, "coverage_pct": cov * 100 if cov is not None else None,
+        "coverage_ok": cov_ok, "day_gap_pct": ev.day_gap_pct, "day_gap_capital_pct": ev.day_gap_capital_pct,
+        "pass_days_pct": ev.pass_days_pct, "days": n_days, "done_days": done_days,
+        "hold": verdict("hold"), "sell": verdict("sell"),
+    }
     return {
         **base, "state": state, "started_at": cur["started_at"], "ends_at": cur["ends_at"],
         "elapsed_hours": hours, "left_hours": max(0.0, (end_t - now).total_seconds() / 3600) if state == "running" else 0,
@@ -121,10 +188,12 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         "predicted_net_day": per_day(pred_net), "actual_net_day": per_day(act_net),
         "gap_pct": (act_net / pred_net - 1) * 100 if pred_net else None,
         "hold_net_day": per_day(act_net), "sell_net_day": per_day(sell_net),
-        "closer": (None if not days or not pred_net else
-                   ("hold" if abs(act_net - pred_net) <= abs(sell_net - pred_net) else "sell")),
-        "events": events,
+        "predicted_sell_net_day": per_day(pred_sell_net),
+        "closer": (None if not days else
+                   ("hold" if abs(act_net - pred_net) <= abs(sell_net - pred_sell_net) else "sell")),
+        "events": events, "criteria": criteria, "days": day_rows,
+        "disclaimer": "この評価は予測が当たるかの確認で、儲かるかの判定ではありません。",
         "note": ("予測はスコア（始めた時の1日の見込み）を、実際に記録した時間の分だけ足したもの。実績は同じ時間の6区分の合計。"
                  "パソコンが止まっていた時間（推定）と、開く・閉じる時の1回きりの費用は比べる対象から外しています。"
-                 "合格の基準はまだ決まっていません。"),
+                 "1日は評価を始めた時刻から24時間ずつ区切ります。記録のない日は「満たさない日」に数えます。"),
     }

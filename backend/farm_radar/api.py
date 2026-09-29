@@ -463,7 +463,7 @@ def paper_evaluation_start(req: ConfirmRequest) -> dict:
             r = paper_evaluation_mod.start(conn, config, _now())
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        return {"message": f"評価を始めました（{config.review.evaluation_days}日間）。", **r}
+        return {"message": f"評価を始めました（{config.evaluation.days}日間）。", **r}
 
 
 @app.post("/api/paper/evaluation/stop")

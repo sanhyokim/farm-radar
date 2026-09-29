@@ -143,7 +143,17 @@ export interface Evaluation {
   predicted_net_day?: number | null; actual_net_day?: number | null; gap_pct?: number | null;
   hold_net_day?: number | null; sell_net_day?: number | null; closer?: "hold" | "sell" | null;
   events?: { level: string; level_ja: string; n: number }[]; note?: string;
+  predicted_sell_net_day?: number | null; disclaimer?: string;
+  criteria?: {
+    min_coverage_pct: number; coverage_pct: number | null; coverage_ok: boolean; day_gap_pct: number;
+    day_gap_capital_pct: number; pass_days_pct: number; days: number; done_days: number;
+    hold: EvalVerdict; sell: EvalVerdict;
+  };
+  days?: { day: number; start: string; done: boolean; hours: number; capital: number; predicted: number | null;
+    predicted_sell: number | null; hold: number | null; sell: number | null; hold_ok: boolean; sell_ok: boolean }[];
 }
+
+export interface EvalVerdict { ok_days: number; need_days: number; result: "running" | "stopped" | "pass" | "fail" }
 
 export interface Outlook {
   value_now: number; capital: number; daily_usd: number | null; daily_pct: number | null;
