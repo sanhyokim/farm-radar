@@ -14,12 +14,16 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from fastapi.responses import FileResponse
 
 from . import views
 from .collectors.completeness import check
 from .config import REPO_ROOT, contract_address, load_config, load_venue
 from .db import database as db
+from .execution import views as paper_views
+from .execution.paper import PaperError, PaperExecutor
+from .execution.base import PositionRef
 from .notify.telegram import settings_from_env
 from .scoring import volatility as vol
 from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
@@ -378,6 +382,85 @@ def reports(days: int = 30) -> dict:
         "telegram": {"configured": settings_from_env(os.environ) is not None, "last_alert_sent_at": sent},
         "schedule_jst": f"{n.daily_report_hour_jst:02d}:{n.daily_report_minute:02d}",
     }
+
+
+# --- 練習（ペーパートレード。M5a） ------------------------------------------------------------
+
+class OpenRequest(BaseModel):
+    pool_id: str
+
+
+def _paper_tokens(config, pool_venue: str):
+    return load_tokens(load_venue(pool_venue, config.root)["chain"]["id"], config.root)
+
+
+def _paper_status(config, conn) -> dict:
+    lim = config.limits
+    open_rows = conn.execute("SELECT venue_id, capital FROM positions WHERE is_paper=1 AND status='open'").fetchall()
+    st = conn.execute("SELECT stopped FROM paper_state WHERE id=1").fetchone()
+    venue_cap = (float(lim["total_usd"]) * float(lim["per_venue_share"])
+                 if "total_usd" in lim and "per_venue_share" in lim else None)
+    return {
+        "mode": config.mode, "enabled": config.mode == "paper", "stopped": bool(st and st["stopped"]),
+        "capital": config.scoring.total_capital_usd,
+        "limits": {k: lim.get(k) for k in ("position_usd", "total_usd", "per_venue_share", "trades_per_day")},
+        "venue_cap_usd": venue_cap, "open_total_usd": sum(r["capital"] for r in open_rows),
+        "how_to_enable": "config.yaml の mode を paper にして、アプリを起動し直してください。",
+    }
+
+
+@app.get("/api/paper")
+def paper() -> dict:
+    """練習タブ（SPEC 7.4章）: 状態、上限、建玉カードの一覧。"""
+    now = _now()
+    with _open() as (config, conn):
+        rows = conn.execute("SELECT * FROM positions WHERE is_paper=1 ORDER BY status='open' DESC, opened_at DESC"
+                            ).fetchall()
+        cards = [paper_views.card(conn, p, now) for p in rows]
+        return {**_paper_status(config, conn),
+                "open": [c for c in cards if c["status"] == "open"],
+                "closed": [c for c in cards if c["status"] != "open"][:20]}
+
+
+@app.get("/api/paper/positions/{position_id}")
+def paper_position(position_id: int) -> dict:
+    now = _now()
+    with _open() as (config, conn):
+        p = conn.execute("SELECT * FROM positions WHERE id=? AND is_paper=1", (position_id,)).fetchone()
+        if p is None:
+            raise HTTPException(404, "この建玉は見つかりません")
+        d = paper_views.detail(conn, p, now)
+        d["sell_now"]["hours"] = config.scoring.reward_sell_hours
+        return d
+
+
+@app.post("/api/paper/positions")
+def paper_open(req: OpenRequest) -> dict:
+    """「このプールで $1,000 を試す」（オーナーがボタンを押したときだけ。自動では入らない）。"""
+    with _open() as (config, conn):
+        pool_row = conn.execute("SELECT venue_id FROM pools WHERE id=?", (req.pool_id,)).fetchone()
+        if pool_row is None:
+            raise HTTPException(404, "このプールは見つかりません")
+        ex = PaperExecutor(conn, config, _paper_tokens(config, pool_row["venue_id"]), now=_now())
+        try:
+            ref = ex.open_position(req.pool_id, config.scoring.total_capital_usd)
+        except PaperError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {"position_id": ref.position_id}
+
+
+@app.post("/api/paper/positions/{position_id}/close")
+def paper_close(position_id: int) -> dict:
+    with _open() as (config, conn):
+        p = conn.execute("SELECT venue_id FROM positions WHERE id=? AND is_paper=1", (position_id,)).fetchone()
+        if p is None:
+            raise HTTPException(404, "この建玉は見つかりません")
+        ex = PaperExecutor(conn, config, _paper_tokens(config, p["venue_id"]), now=_now())
+        try:
+            res = ex.close_position(PositionRef(position_id))
+        except PaperError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return {"position_id": res.position_id, "net_usd": res.net_usd}
 
 
 # --- 画面のファイル（frontend/dist） ---------------------------------------------------------

@@ -173,6 +173,25 @@ CREATE TABLE IF NOT EXISTS learning_notes (
   ts TEXT NOT NULL, pool_id TEXT, title TEXT, body_ja TEXT,
   topic TEXT                          -- 学びの種類（同じ話題が続かないように使う。M4）
 );
+-- 円のレート（M5a。frankfurter.app = 欧州中央銀行の参照レート。SPEC 12.4章）
+-- day の日に使うレート。レートがない日（土日・祝日）は直前の営業日の値で、その日付を rate_date に入れる
+CREATE TABLE IF NOT EXISTS fx_rates (
+  day TEXT PRIMARY KEY,               -- 使う日（UTC の日付）
+  jpy_per_usd REAL NOT NULL,
+  rate_date TEXT NOT NULL,            -- レートの日付（営業日）
+  source TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+-- perp の資金調達率（M5a。Lighter の1時間ごとの実績。ショートの支払い。プラス = 払う）
+CREATE TABLE IF NOT EXISTS funding_rates (
+  market_id INTEGER NOT NULL, ts INTEGER NOT NULL, short_rate REAL NOT NULL,
+  PRIMARY KEY (market_id, ts)
+);
+-- 練習の状態（M5b の停止・再開で使う。1行だけ）
+CREATE TABLE IF NOT EXISTS paper_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1), stopped INTEGER NOT NULL DEFAULT 0, updated_at TEXT
+);
+
 -- 毎朝のレポート（M4。SPEC 8章）。1日1通。送れたら sent_at が入る
 CREATE TABLE IF NOT EXISTS daily_reports (
   day TEXT PRIMARY KEY,               -- 日本時間の日付（2026-09-30）

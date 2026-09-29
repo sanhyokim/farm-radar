@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -36,6 +36,14 @@ _ADDED_COLUMNS = {
                "sigma_token1": "REAL", "vol_source": "TEXT", "has_perp": "INTEGER",
                "epoch_just_flipped": "INTEGER", "tvl_usd": "REAL", "details_json": "TEXT"},
     "learning_notes": {"topic": "TEXT"},
+    # M5a: 練習の建玉。state_json は計算の途中の値（累計・報酬トークンの受け取り記録）
+    "positions": {"venue_id": "TEXT", "mode": "TEXT", "liquidity": "TEXT", "amount0": "REAL", "amount1": "REAL",
+                  "price_open": "REAL", "usd0_open": "REAL", "usd1_open": "REAL", "c_lp": "REAL",
+                  "hedges_json": "TEXT", "started_red": "INTEGER", "signal_open": "TEXT",
+                  "predicted_json": "TEXT", "last_ts": "TEXT", "state_json": "TEXT"},
+    "position_pnl": {"haircut": "REAL", "haircut_sell": "REAL", "in_range": "REAL", "reward_amount": "REAL",
+                     "value_usd": "REAL", "detail_json": "TEXT"},
+    "ledger": {"value_usd": "REAL", "fx_rate": "REAL", "fx_date": "TEXT"},
 }
 
 

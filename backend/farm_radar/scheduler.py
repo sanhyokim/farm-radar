@@ -16,6 +16,7 @@ from .db import database as db
 from .external.geckoterminal import GeckoTerminal
 from .external.lighter import Lighter
 from .logging_setup import setup_logging
+from .execution.jobs import run_paper
 from .notify.events import detect_signal_changes
 from .notify.service import Notifier
 from .scoring.run import ScoreContext, score_venue
@@ -46,10 +47,17 @@ def main() -> None:
                                     reward_drop_alert_pct=config.reward_drop_alert_pct)
                 if res.status == "failed":
                     notifier.error(v.adapter.venue_id, "データ収集の失敗", res.error or "全プールで読み取りに失敗")
+            # 練習（M5a）: 新しい記録の分だけ、練習の建玉の損益を計算する（mode が paper のときだけ）
+            try:
+                run_paper(conn, config, paper_tokens, lighter=lighter)
+            except Exception as exc:
+                log.exception("paper job failed")
+                notifier.error("-", "練習の損益の計算に失敗", f"{type(exc).__name__}: {exc}")
         finally:
             conn.close()
 
     lighter = Lighter()
+    paper_tokens = load_tokens(venues[0].venue["chain"]["id"], config.root) if venues else None
     contexts = [
         ScoreContext(
             venue=v.venue, tokens=load_tokens(v.venue["chain"]["id"], config.root), settings=config.scoring,
