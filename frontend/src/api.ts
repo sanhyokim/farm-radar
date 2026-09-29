@@ -96,6 +96,17 @@ export interface PaperCard {
   predicted_daily_pct: number | null; actual_daily_pct: number | null; days: number; open_cost_usd: number;
   started_red: boolean; signal_open: Signal; red_label: string | null;
   hedges: { symbol: string; perp: string; size: number; entry: number }[]; estimated_rows: number;
+  // M5b
+  close_reason_ja: string | null; reward_hours: number; hours: number;
+  actual_daily_pct_with_cost: number | null; actual_state: "short" | "ok"; actual_min_hours: number;
+  compare_enabled: boolean; compare_min_hours: number;
+  payback_total_hours: number | null; payback_left_hours: number | null;
+  rebalances: number; cautions: string[]; skipped: string[];
+}
+
+export interface RiskEvent {
+  id: number; ts: string; position_id: number | null; level: "caution" | "rebalance" | "exit" | "emergency" | "info";
+  level_ja: string; kind: string; message: string; action: string; action_ja: string;
 }
 
 export interface Paper {
@@ -103,6 +114,8 @@ export interface Paper {
   limits: { position_usd?: number; total_usd?: number; per_venue_share?: number; trades_per_day?: number };
   venue_cap_usd: number | null; open_total_usd: number; how_to_enable: string;
   open: PaperCard[]; closed: PaperCard[];
+  stopped_reason: string | null; stopped_since: string | null; events: RiskEvent[];
+  risk: { level: RiskEvent["level"]; level_ja: string; rule: string; action: string }[];
 }
 
 export interface PaperDetail extends PaperCard {
@@ -112,13 +125,14 @@ export interface PaperDetail extends PaperCard {
   compare: {
     rows: { key: keyof Breakdown; label: string; predicted: number; actual: number }[];
     predicted_net: number; actual_net: number; score_ts: string; short: boolean; note: string;
+    enabled: boolean; min_hours: number;
   } | null;
   sell_now: { hours: number; hold_haircut: number; sell_haircut: number; hold_net: number; sell_net: number;
     predicted_hold_pct: number | null; predicted_sell_pct: number | null };
   ledger: { ts: string; kind: string; token: string; amount: number; price_usd: number | null; value_usd: number | null;
     price_jpy: number | null; fx_rate: number | null; fx_date: string | null; note: string }[];
   labels: Record<string, string>; apy_note: string; apy_display: number; apy_net: number;
-  red_note: string | null; notes: string[];
+  red_note: string | null; notes: string[]; events: RiskEvent[];
 }
 
 /** POST して JSON を返す。失敗したらサーバーの日本語の理由を投げる。 */
