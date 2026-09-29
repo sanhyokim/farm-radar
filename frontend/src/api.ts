@@ -102,6 +102,13 @@ export interface PaperCard {
   compare_enabled: boolean; compare_min_hours: number;
   payback_total_hours: number | null; payback_left_hours: number | null;
   rebalances: number; cautions: string[]; skipped: string[];
+  rebalance_cost: number;
+}
+
+export interface Watch {
+  contracts: { address: string; label: string; checked_at: string | null; ok: string[]; unconfirmed: string[];
+    changed_at: string | null }[];
+  usdg: { ts: string; price: number; source: string } | null;
 }
 
 export interface RiskEvent {
@@ -116,6 +123,25 @@ export interface Paper {
   open: PaperCard[]; closed: PaperCard[];
   stopped_reason: string | null; stopped_since: string | null; events: RiskEvent[];
   risk: { level: RiskEvent["level"]; level_ja: string; rule: string; action: string }[];
+  watch: Watch;
+  timeline: TimelineItem[]; outlook: Outlook | null; ledger_months: string[];
+}
+
+export interface TimelineItem {
+  key: string; ts: string; type: "review" | "event" | "open" | "close"; level: string;
+  title: string; body: string; position_id?: number | null;
+}
+
+export interface Outlook {
+  value_now: number; capital: number; daily_usd: number; daily_pct: number; daily_low_usd: number; daily_low_pct: number;
+  rows: { label: string; days: number; value: number; low: number }[];
+  hours: number; short: boolean; conservative_pct: number; note: string;
+}
+
+export interface PaperCalendar {
+  month: string; first_weekday: number; days_in_month: number; today: string;
+  days: { day: string; net: number; income: number; estimated: boolean }[];
+  total: number; prev: string | null; next: string | null;
 }
 
 export interface PaperDetail extends PaperCard {
@@ -133,6 +159,7 @@ export interface PaperDetail extends PaperCard {
     price_jpy: number | null; fx_rate: number | null; fx_date: string | null; note: string }[];
   labels: Record<string, string>; apy_note: string; apy_display: number; apy_net: number;
   red_note: string | null; notes: string[]; events: RiskEvent[];
+  outlook: Outlook | null; timeline: TimelineItem[];
 }
 
 /** POST して JSON を返す。失敗したらサーバーの日本語の理由を投げる。 */

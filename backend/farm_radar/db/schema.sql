@@ -207,6 +207,21 @@ CREATE TABLE IF NOT EXISTS risk_events (
 );
 CREATE INDEX IF NOT EXISTS idx_risk_events_pos ON risk_events(position_id, ts);
 
+-- 会場プログラムの見張り（2026-09-29 オーナー決定。execution/contract_watch.py）。相手と項目ごとに最新の値
+-- value: 読めた値 / unreadable（その関数がない = 画面で「未確認」）
+CREATE TABLE IF NOT EXISTS contract_watch (
+  address TEXT NOT NULL, item TEXT NOT NULL, label TEXT, value TEXT NOT NULL,
+  first_seen TEXT NOT NULL, changed_at TEXT, checked_at TEXT,
+  PRIMARY KEY (address, item)
+);
+
+-- USDG の外部の価格（GeckoTerminal。2026-09-29 オーナー決定: 2回続けて $0.98 未満なら緊急離脱）
+CREATE TABLE IF NOT EXISTS stable_prices (
+  ts TEXT NOT NULL, token TEXT NOT NULL, price REAL NOT NULL, source TEXT NOT NULL,
+  PRIMARY KEY (token, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_ts ON reviews(ts);
+
 -- 毎朝のレポート（M4。SPEC 8章）。1日1通。送れたら sent_at が入る
 CREATE TABLE IF NOT EXISTS daily_reports (
   day TEXT PRIMARY KEY,               -- 日本時間の日付（2026-09-30）

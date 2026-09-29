@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { postApi, useApi, type Paper, type PaperCard, type RiskEvent } from "../api";
+import { postApi, useApi, type Paper, type PaperCard, type RiskEvent, type Watch } from "../api";
 import { jst, pct, signedUsd, tone, usd } from "../format";
 import { Badge, Card, Loading, Note, Term } from "../ui";
+import { CalendarCard, CsvCard, OutlookCard, TimelineList } from "./PaperExtras";
 
 export default function Practice() {
   const { data, error, reload } = useApi<Paper>("/api/paper");
@@ -37,13 +38,17 @@ export default function Practice() {
       )}
       {data.open.map((c) => <PositionCard key={c.id} c={c} />)}
 
+      {data.outlook && <OutlookCard o={data.outlook} />}
+
       {data.enabled && (
-        <Card title="見張りの記録（新しい順）">
-          {data.events.length ? <EventList events={data.events} /> : (
-            <p className="text-sm text-slate-400">まだ記録はありません。危ないことが起きたら、ここに理由と一緒に残ります。</p>
+        <Card title="タイムライン（新しい順）" right={<Link to="/practice/timeline" className="text-xs text-sky-300">すべて見る ›</Link>}>
+          {data.timeline.length ? <TimelineList items={data.timeline} /> : (
+            <p className="text-sm text-slate-400">まだ記録はありません。30分ごとの定時レビューと、見張りで起きたことがここに並びます。</p>
           )}
         </Card>
       )}
+
+      {data.enabled && <CalendarCard />}
 
       {data.enabled && (
         <Card title="見張りのルール">
@@ -59,6 +64,10 @@ export default function Practice() {
           <Note>15分ごとの記録のたびに調べます（米国市場が開く前後の 22:00〜23:30 は5分ごと）。数字は config.yaml の risk で変えられます。</Note>
         </Card>
       )}
+
+      {data.enabled && <WatchCard w={data.watch} />}
+
+      {data.enabled && <CsvCard months={data.ledger_months} />}
 
       {data.closed.length > 0 && (
         <Card title="閉じた練習">
@@ -105,6 +114,10 @@ export function PositionCard({ c, link = true }: { c: PaperCard; link?: boolean 
           <div className={`num text-xl font-bold ${tone(c.reward_24h_usd)}`}>{signedUsd(c.reward_24h_usd)}</div>
           <div className="text-xs text-slate-500">入れた額 {usd(c.capital, 0)}</div>
         </div>
+      </div>
+      <div className="mt-2 flex items-center justify-between rounded-xl bg-slate-800/40 px-3 py-2 text-sm">
+        <span className="text-slate-400"><Term k="置き直し">置き直し</Term>の回数と費用</span>
+        <span className="num text-slate-200">{c.rebalances}回・合計 <span className={c.rebalance_cost > 0 ? "text-rose-300" : ""}>{usd(c.rebalance_cost)}</span></span>
       </div>
       <ActualRates c={c} />
       <Note>{jst(c.opened_at)} に開始（{hoursJa(c.hours)}たちました）。最後の計算 {jst(c.last_ts)}。</Note>
@@ -249,3 +262,48 @@ function MiniRange({ c }: { c: PaperCard }) {
 }
 
 const edge = (v: number) => (v >= 0 ? `${v.toFixed(2)}%` : "外に出ています");
+
+/** 会場プログラムと USDG の見張り（2026-09-29 オーナー決定。読めない項目は「未確認」） */
+function WatchCard({ w }: { w: Watch }) {
+  const unconf = w.contracts.filter((c) => c.unconfirmed.length > 0).length;
+  const last = w.contracts.reduce<string | null>((m, c) => (c.checked_at && (!m || c.checked_at > m) ? c.checked_at : m), null);
+  const u = w.usdg;
+  return (
+    <Card title="会場プログラムと USDG の見張り">
+      <div className="space-y-1 text-sm text-slate-300">
+        <div>
+          USDG の外の値段（{u?.source === "geckoterminal" ? "GeckoTerminal" : "外部"}）:{" "}
+          {u ? <span className={`num ${u.price < 0.98 ? "text-rose-300" : "text-slate-100"}`}>${u.price.toFixed(4)}</span> : <span className="text-slate-500">まだ取れていません</span>}
+          {u && <span className="text-xs text-slate-500">（{jst(u.ts)}）</span>}
+        </div>
+        <div>
+          見張っている相手 <span className="num text-slate-100">{w.contracts.length}</span> 件
+          {last && <span className="text-xs text-slate-500">（最後の確認 {jst(last)}）</span>}
+          {unconf > 0 && <>。そのうち <span className="num text-amber-300">{unconf}</span> 件に「未確認」の項目があります</>}
+        </div>
+      </div>
+      {w.contracts.length > 0 && (
+        <details className="mt-2">
+          <summary className="cursor-pointer text-xs text-sky-300">相手ごとの内訳を見る</summary>
+          <div className="mt-2 space-y-2">
+            {w.contracts.map((c) => (
+              <div key={c.address} className="rounded-lg bg-slate-800/40 p-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-200">{c.label}</span>
+                  {c.changed_at && <Badge tone="rose">変化 {jst(c.changed_at)}</Badge>}
+                </div>
+                {c.ok.length > 0 && <div className="mt-1 text-slate-400">読めている: {c.ok.join("・")}</div>}
+                {c.unconfirmed.length > 0 && <div className="text-amber-300/90">未確認: {c.unconfirmed.join("・")}</div>}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      <Note>
+        15分ごとに読み取りだけで確かめ、停止・持ち主の変更・プログラムの入れ替えがあれば、全部閉じて止めます。
+        「未確認」は、そのプログラムにその項目を読む仕組みがなく、確かめられないという意味です。
+        USDG は外の値段が2回続けて $0.98 を下回ったら、全部閉じて止めます。
+      </Note>
+    </Card>
+  );
+}

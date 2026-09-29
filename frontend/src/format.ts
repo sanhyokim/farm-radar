@@ -33,3 +33,13 @@ export const SIGNAL = {
   yellow: { emoji: "🟡", ja: "様子見", cls: "text-amber-300" },
   red: { emoji: "🔴", ja: "見送り", cls: "text-rose-400" },
 } as const;
+
+/** 大きなドルの額を日本語の単位で（$1.2万、$3.4億）。見通しの大きな数字用 */
+export const jpUsd = (v: number | null | undefined) => {
+  if (v == null) return "—";
+  const a = Math.abs(v);
+  const s = a >= 1e12 ? `${(a / 1e12).toLocaleString("en-US", { maximumFractionDigits: 1 })}兆` :
+    a >= 1e8 ? `${(a / 1e8).toFixed(1)}億` : a >= 1e4 ? `${(a / 1e4).toFixed(1)}万` :
+    a.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  return `${v < 0 ? "−" : ""}$${s}`;
+};

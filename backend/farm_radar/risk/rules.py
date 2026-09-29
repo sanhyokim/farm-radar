@@ -10,11 +10,10 @@
 - rebalance（置き直し）: 新しいレンジに移す。置き直し先の純日利が低ければ離脱
 - caution（注意）: 記録するだけ
 
-まだ入れていないルール（オーナーに確認中。PROGRESS.md「M5b の実装メモ」）:
-- ミームペアの dumping 判定（決め方が SPEC に書かれていない）
-- コントラクトの pause・owner 変更・upgrade のイベント（イベントをまだ集めていない）
-- USDG が $0.98 未満（USDG のドル価格を、プール以外のどこから取るか未定）
-- ヘッジの証拠金維持率・資金調達率の急騰（基準の数字が SPEC に書かれていない）
+2026-09-29 オーナー決定で加えたルール（SPEC 12.2章）:
+- 投げ売り（離脱）、USDG の外部価格（緊急離脱）、ヘッジの費用（注意）、会場プログラムの変化（緊急離脱。
+  読み取りは execution/contract_watch.py、ここでは変化の一覧を受け取るだけ）
+- ヘッジの証拠金維持率・資金調達率の急騰は、Phase 3 で実際の perp を使うときに決める
 """
 
 from __future__ import annotations
@@ -56,6 +55,9 @@ class PositionInput:
     income_hours: float = 0.0                    # 実績の収入を数えた時間（時間）
     liquidity_now: float | None = None           # プールの流動性（今）
     liquidity_1h_ago: float | None = None        # プールの流動性（1時間前）
+    # 値動きする側のトークンの変化（記号, 1時間の変化, 24時間の変化。−0.15 = −15%。分からなければ None）
+    token_moves: tuple[tuple[str, float | None, float | None], ...] = ()
+    hedge_cost_day: float | None = None          # ヘッジの1日あたりの費用（資金調達料。ドル）
 
 
 @dataclass(frozen=True)
@@ -64,7 +66,9 @@ class PortfolioInput:
     reward_symbol: str = "報酬トークン"
     reward_change_24h: float | None = None       # 報酬トークンの24時間の変化（−0.2 = −20%）
     today_net_usd: float | None = None           # 今日（日本時間）の練習の純損益の合計（ドル）
-    open_capital_usd: float = 0.0                # 持っている建玉の合計額（ドル）
+    open_capital_usd: float = 0.0                # 総資産（持っている建玉の投入額の合計。ドル）
+    usdg_prices: tuple[float, ...] = ()          # USDG の外部の価格（新しい順。直近の数回）
+    contract_changes: tuple[str, ...] = ()       # 会場プログラムで前回から変わったこと（日本語の説明）
 
 
 def check_position(p: PositionInput, pf: PortfolioInput, s: RiskSettings) -> list[Finding]:
@@ -86,6 +90,18 @@ def check_position(p: PositionInput, pf: PortfolioInput, s: RiskSettings) -> lis
                            f"報酬の {pf.reward_symbol} が24時間で{pf.reward_change_24h * 100:.1f}%下がりました"
                            f"（基準は{s.exit_reward_token_24h_pct:g}%）。",
                            {"change_24h_pct": pf.reward_change_24h * 100}))
+
+    # 離脱: 値動きする側のトークンの投げ売り（2026-09-29 オーナー決定）
+    for sym, ch1, ch24 in p.token_moves:
+        hit = []
+        if ch1 is not None and ch1 * 100 <= s.exit_dump_1h_pct:
+            hit.append(f"1時間で{ch1 * 100:.1f}%（基準は{s.exit_dump_1h_pct:g}%）")
+        if ch24 is not None and ch24 * 100 <= s.exit_dump_24h_pct:
+            hit.append(f"24時間で{ch24 * 100:.1f}%（基準は{s.exit_dump_24h_pct:g}%）")
+        if hit:
+            out.append(Finding("exit", "dump", f"{sym} がプールの値段で大きく下がりました（{'、'.join(hit)}）。投げ売りの可能性があります。",
+                               {"symbol": sym, "change_1h_pct": None if ch1 is None else ch1 * 100,
+                                "change_24h_pct": None if ch24 is None else ch24 * 100}))
 
     # 離脱: プールの判定が🔴になった（🔴と分かって始めた練習には当てはめない。2026-09-29 オーナー決定）
     if p.signal == "red" and not p.started_red:
@@ -127,17 +143,37 @@ def check_position(p: PositionInput, pf: PortfolioInput, s: RiskSettings) -> lis
                                f"{p.pair} の報酬の実績（1日 ${p.actual_income_day:,.2f} 相当）が、予測（1日 "
                                f"${p.predicted_income_day:,.2f}）より{short:.0f}%少ないです（基準は{s.caution_reward_shortfall_pct:g}%）。",
                                {"shortfall_pct": short, "hours": p.income_hours}))
+    # 注意: ヘッジの費用が報酬に比べて大きい（2026-09-29 オーナー決定。記録だけ）
+    if (p.hedge_cost_day is not None and p.hedge_cost_day > 0 and p.actual_income_day
+            and p.actual_income_day > 0 and p.income_hours >= s.caution_min_hours):
+        ratio = p.hedge_cost_day / p.actual_income_day * 100
+        if ratio > s.caution_hedge_cost_pct:
+            out.append(Finding("caution", "hedge_cost",
+                               f"{p.pair} のヘッジの費用（1日 ${p.hedge_cost_day:,.2f} 相当）が、報酬（1日 "
+                               f"${p.actual_income_day:,.2f}）の{ratio:.0f}%です（基準は{s.caution_hedge_cost_pct:g}%超）。",
+                               {"hedge_cost_day": p.hedge_cost_day, "ratio_pct": ratio}))
     return sorted(out, key=lambda f: -f.rank)
 
 
 def check_portfolio(pf: PortfolioInput, s: RiskSettings) -> list[Finding]:
-    """全体の危険（今日の損の大きさ）。"""
-    if pf.today_net_usd is None or pf.open_capital_usd <= 0:
-        return []
-    loss_pct = -pf.today_net_usd / pf.open_capital_usd * 100
-    if loss_pct >= s.emergency_daily_loss_pct:
-        return [Finding("emergency", "daily_loss",
-                        f"今日の練習の損が ${-pf.today_net_usd:,.2f}（持っている額 ${pf.open_capital_usd:,.0f} の{loss_pct:.1f}%）"
-                        f"になりました（基準は{s.emergency_daily_loss_pct:g}%）。",
-                        {"loss_pct": loss_pct, "today_net_usd": pf.today_net_usd})]
-    return []
+    """全体の危険（会場プログラムの変化・USDG の値段・今日の損の大きさ）。強い順に返す（どれも緊急離脱）。"""
+    out: list[Finding] = []
+    if pf.contract_changes:
+        out.append(Finding("emergency", "contract_change",
+                           "会場のプログラムに変化がありました: " + " / ".join(pf.contract_changes),
+                           {"changes": list(pf.contract_changes)}))
+    n = s.emergency_usdg_times
+    recent = pf.usdg_prices[:n]
+    if n > 0 and len(recent) >= n and all(x < s.emergency_usdg_below for x in recent):
+        out.append(Finding("emergency", "usdg_depeg",
+                           f"USDG の外部の価格が{n}回続けて ${s.emergency_usdg_below:g} 未満です"
+                           f"（直近 ${recent[0]:.4f}）。ドルとの連動が崩れた可能性があります。",
+                           {"prices": list(recent)}))
+    if pf.today_net_usd is not None and pf.open_capital_usd > 0:
+        loss_pct = -pf.today_net_usd / pf.open_capital_usd * 100
+        if loss_pct >= s.emergency_daily_loss_pct:
+            out.append(Finding("emergency", "daily_loss",
+                               f"今日の練習の損が ${-pf.today_net_usd:,.2f}（総資産 ${pf.open_capital_usd:,.0f} の{loss_pct:.1f}%）"
+                               f"になりました（基準は{s.emergency_daily_loss_pct:g}%）。",
+                               {"loss_pct": loss_pct, "today_net_usd": pf.today_net_usd}))
+    return out

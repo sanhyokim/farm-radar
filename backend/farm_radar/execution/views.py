@@ -17,7 +17,8 @@ RED_START_NOTE = ("判定が🔴のプールで始めた練習です。「判定
                   "（ほかの離脱・緊急離脱のルールは当てはめます）。")
 ACTION_JA = {"none": "記録のみ", "rebalanced": "置き直した", "closed": "閉じた", "closed_all": "全部閉じた",
              "skipped_gas": "ガス代が高く見送り", "stopped": "停止", "resumed": "再開"}
-CAUTION_JA = {"edge_near": "レンジの端が近い", "reward_shortfall": "報酬が予測より少ない"}
+CAUTION_JA = {"edge_near": "レンジの端が近い", "reward_shortfall": "報酬が予測より少ない",
+              "hedge_cost": "ヘッジの費用が大きい"}
 ESTIMATE_NOTES = [
     "報酬は15分ごとの記録（実際の報酬の量・ステーク流動性・価格）から計算しています。",
     "perp の値段は、プールから出したドル価格で代用しています。",
@@ -94,6 +95,7 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
         "hedges": json.loads(pos["hedges_json"] or "[]"),
         "estimated_rows": sum(1 for r in rows if r["is_estimated"]),
         "rebalances": int(st.get("rebalances", 0)),
+        "rebalance_cost": round(float(st.get("rebalance_cost", 0.0)), 2),
         "cautions": [CAUTION_JA.get(k, k) for k in st.get("risk_active") or [] if not k.startswith("skip:")],
         "skipped": [k[5:] for k in st.get("risk_active") or [] if k.startswith("skip:")],
     }
@@ -130,17 +132,31 @@ def risk_rules(r: RiskSettings) -> list[dict[str, str]]:
     """画面の「見張りのルール」の一覧（config.yaml の risk の今の値）。"""
     return [
         {"level": "caution", "level_ja": "注意", "rule": f"レンジの端まで{r.caution_edge_pct:g}%未満 / "
-                                                       f"報酬の実績が予測より{r.caution_reward_shortfall_pct:g}%以上少ない"
-                                                       f"（{r.caution_min_hours:g}時間たってから）", "action": "記録する"},
+                                                       f"報酬の実績が予測より{r.caution_reward_shortfall_pct:g}%以上少ない / "
+                                                       f"ヘッジの1日の費用が報酬の{r.caution_hedge_cost_pct:g}%超"
+                                                       f"（報酬の比べっこは{r.caution_min_hours:g}時間たってから）",
+         "action": "記録する"},
         {"level": "rebalance", "level_ja": "置き直し", "rule": f"レンジの外に{r.rebalance_after_minutes:g}分いた",
          "action": f"今の価格を中心に置き直す（置き直し先の純日利が{r.rebalance_min_net_pct:+g}%以下なら閉じる）"},
         {"level": "exit", "level_ja": "離脱", "rule": f"報酬トークンが24時間で{r.exit_reward_token_24h_pct:g}% / "
+                                                    f"値動きする側のトークンが1時間で{r.exit_dump_1h_pct:g}%か"
+                                                    f"24時間で{r.exit_dump_24h_pct:g}%（投げ売り）/ "
                                                     "プールの判定が🔴になった（🔴で始めた練習は除く）", "action": "その建玉を閉じる"},
         {"level": "emergency", "level_ja": "緊急離脱",
          "rule": f"プールの流動性が1時間で−{r.emergency_liquidity_drop_1h_pct:g}% / "
-                 f"今日の損が持っている額の{r.emergency_daily_loss_pct:g}%",
+                 "会場プログラムの停止・持ち主の変更・入れ替え / "
+                 f"USDG の外部の価格が{r.emergency_usdg_times}回続けて ${r.emergency_usdg_below:g} 未満 / "
+                 f"今日の損が総資産の{r.emergency_daily_loss_pct:g}%",
          "action": "全部閉じて、新しく始めるのを止める"},
     ]
+
+
+def watch(conn: sqlite3.Connection) -> dict[str, Any]:
+    """画面の「会場プログラムと USDG の見張り」: 読めた項目・未確認の項目と、USDG の外部の価格。"""
+    from . import contract_watch
+    row = conn.execute("SELECT ts, price, source FROM stable_prices ORDER BY ts DESC LIMIT 1").fetchone()
+    return {"contracts": contract_watch.status(conn),
+            "usdg": dict(row) if row else None}
 
 
 def detail(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSettings | None = None,

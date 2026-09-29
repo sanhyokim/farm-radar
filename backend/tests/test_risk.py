@@ -324,3 +324,216 @@ def test_telegram_stop_and_exit_all_needs_button(world, calm):  # noqa: F811
     n.poll_once()
     assert _pos(conn, ref.position_id)["status"] == "closed"
     assert "全部閉じました" in tg.sent[-1]
+
+
+# --- 2026-09-29 オーナー決定で加えたルール --------------------------------------------------------
+
+def test_dump_exits_on_1h_or_24h_drop():
+    assert check_position(_p(token_moves=(("MEME", -0.10, -0.20),)), PF, S) == []
+    f = check_position(_p(token_moves=(("MEME", -0.16, None),)), PF, S)
+    assert f[0].level == "exit" and f[0].kind == "dump" and "1時間" in f[0].message_ja
+    f = check_position(_p(token_moves=(("MEME", 0.0, -0.31),), started_red=True), PF, S)
+    assert f[0].kind == "dump" and "24時間" in f[0].message_ja          # 🔴で始めた練習にも当てはめる
+
+
+def test_hedge_cost_caution():
+    kw = dict(actual_income_day=100.0, income_hours=3.0)
+    assert check_position(_p(**kw, hedge_cost_day=50.0), PF, S) == []
+    f = check_position(_p(**kw, hedge_cost_day=51.0), PF, S)
+    assert f[0].level == "caution" and f[0].kind == "hedge_cost"
+
+
+def test_usdg_needs_two_readings_below():
+    assert check_portfolio(dataclasses.replace(PF, usdg_prices=(0.97,)), S) == []
+    assert check_portfolio(dataclasses.replace(PF, usdg_prices=(0.97, 0.99)), S) == []
+    f = check_portfolio(dataclasses.replace(PF, usdg_prices=(0.97, 0.979)), S)
+    assert f[0].level == "emergency" and f[0].kind == "usdg_depeg"
+
+
+def test_contract_change_is_emergency_and_daily_loss_uses_total_assets():
+    f = check_portfolio(dataclasses.replace(PF, contract_changes=("up. voter: 持ち主の変更",)), S)
+    assert f[0].kind == "contract_change"
+    f = check_portfolio(dataclasses.replace(PF, today_net_usd=-60.0), S)
+    assert "総資産 $1,000" in f[0].message_ja
+
+
+class FakeRpc:
+    """読み取りだけの偽の RPC。values[(address, 関数)] を返す。無い関数は revert、fail=True なら通信の失敗。"""
+
+    def __init__(self):
+        from farm_radar.rpc.abi import selector
+        self.sel = {"0x" + selector(s).hex(): s for s in
+                    ("owner()", "paused()", "governor()", "emergencyCouncil()", "epochGovernor()")}
+        self.values: dict[tuple[str, str], str] = {}
+        self.code = "0x6000"
+        self.fail = False
+
+    def get_code(self, address, block="latest"):
+        if self.fail:
+            raise RuntimeError("timeout")
+        return self.code
+
+    def get_storage(self, address, slot, block="latest"):
+        if self.fail:
+            raise RuntimeError("timeout")
+        return "0x" + "0" * 64
+
+    def eth_call(self, to, data, block):
+        from farm_radar.rpc.client import RpcCallError
+        if self.fail:
+            raise RuntimeError("timeout")
+        v = self.values.get((to.lower(), self.sel.get(data, "?")))
+        if v is None:
+            raise RpcCallError(3, "execution reverted")
+        return v
+
+
+def _addr_word(a: str) -> str:
+    return "0x" + "0" * 24 + a.removeprefix("0x").rjust(40, "0")
+
+
+def test_contract_watch_baseline_change_and_unconfirmed(world):  # noqa: F811
+    from farm_radar.config import load_venue
+    from farm_radar.execution import contract_watch
+    path, conn = world
+    cfg = _config(path)
+    venue = load_venue("up-robinhood", cfg.root)
+    voter = venue["contracts"]["voter"]["address"].lower()
+    rpc = FakeRpc()
+    rpc.values[(voter, "governor()")] = _addr_word("0x1111")
+    assert contract_watch.check(conn, rpc, venue, TOKENS, NOW) == []       # 1回目は記録するだけ
+    st = {d["address"]: d for d in contract_watch.status(conn)}
+    assert "管理者（governor）" in st[voter]["ok"] and "持ち主（owner）" in st[voter]["unconfirmed"]
+    rpc.fail = True                                                        # 通信の失敗は比べない
+    assert contract_watch.check(conn, rpc, venue, TOKENS, NOW + timedelta(minutes=15)) == []
+    rpc.fail = False
+    rpc.values[(voter, "governor()")] = _addr_word("0x2222")
+    ch = contract_watch.check(conn, rpc, venue, TOKENS, NOW + timedelta(minutes=30))
+    assert len(ch) == 1 and "持ち主の変更" in ch[0]
+    assert contract_watch.check(conn, rpc, venue, TOKENS, NOW + timedelta(minutes=45)) == []   # 1回だけ
+    rpc.code = "0x6001"                                                    # プログラムの中身が変わった
+    ch = contract_watch.check(conn, rpc, venue, TOKENS, NOW + timedelta(hours=1))
+    assert ch and all("入れ替え" in c for c in ch)
+
+
+def test_contract_change_closes_all_and_stops(world, calm):  # noqa: F811
+    from farm_radar.config import load_venue
+    path, conn = world
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    cfg = _config(path)
+    venue = load_venue("up-robinhood", cfg.root)
+    rpc = FakeRpc()
+    usdg = next(iter(TOKENS.stablecoins))
+    rpc.values[(usdg, "paused()")] = "0x" + "0" * 64
+    _extend(conn, 1)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=2), rpc=rpc, venue=venue)
+    assert _pos(conn, ref.position_id)["status"] == "open"
+    rpc.values[(usdg, "paused()")] = "0x" + "0" * 63 + "1"                  # USDG が止められた
+    _extend(conn, 1)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=3), rpc=rpc, venue=venue)
+    assert _pos(conn, ref.position_id)["status"] == "closed"
+    ev = _events(conn)[-1]
+    assert ev["kind"] == "contract_change" and ev["action"] == "closed_all" and "停止" in ev["message_ja"]
+    assert risk_job.paper_state(conn)["stopped"]
+
+
+class FakeGT:
+    def __init__(self, price):
+        self.price = price
+
+    def tokens(self, addrs):
+        from farm_radar.external.geckoterminal import TokenMarket
+        return {a: TokenMarket(a, self.price, None, None) for a in addrs}
+
+
+def test_usdg_below_twice_closes_all(world, calm):  # noqa: F811
+    path, conn = world
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    cfg = _config(path)
+    _extend(conn, 1)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=2), gt=FakeGT(0.97))
+    assert _pos(conn, ref.position_id)["status"] == "open"                 # 1回目はまだ
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=2, minutes=15), gt=FakeGT(0.97))
+    assert _pos(conn, ref.position_id)["status"] == "closed"
+    assert _events(conn)[-1]["kind"] == "usdg_depeg"
+
+
+def test_card_shows_rebalance_count_and_cost(world, calm):  # noqa: F811
+    path, conn = world
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    res = ex.rebalance(ref, r_pct=3)
+    ex.rebalance(ref, r_pct=4)
+    c = pviews.card(conn, _pos(conn, ref.position_id), NOW)
+    assert c["rebalances"] == 2 and c["rebalance_cost"] > res["cost_usd"] > 0
+
+
+# --- M5c: 定時レビュー・タイムライン・カレンダー・資産の見通し・月次CSV ------------------------------
+
+def test_review_text_and_timeline(world, calm):  # noqa: F811
+    from farm_radar.execution import review
+    path, conn = world
+    cfg = _config(path)
+    assert review.make_review(conn, cfg, NOW) is None                 # 建玉がなく、何も起きていなければ作らない
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    _extend(conn, 3)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=4))
+    r = review.make_review(conn, cfg, NOW + timedelta(hours=3, minutes=2))
+    assert r and r["body"].startswith("1建玉すべてレンジ内。") and "直近30分" in r["body"]
+    assert "移動なし。" in r["body"] and r["positions"][0]["id"] == ref.position_id
+    assert review.make_review(conn, dataclasses.replace(cfg, mode="observe"), NOW) is None
+    ex.close_position(ref)
+    items = review.timeline(conn)
+    types = [i["type"] for i in items]
+    assert {"review", "open", "close"} <= set(types)
+    assert [i["ts"] for i in items] == sorted((i["ts"] for i in items), reverse=True)
+    assert all(i["type"] == "review" for i in review.timeline(conn, kinds={"review"}))
+    assert all(i.get("position_id") == ref.position_id for i in review.timeline(conn, position_id=ref.position_id))
+
+
+def test_calendar_and_outlook(world, calm):  # noqa: F811
+    from farm_radar.execution import review
+    path, conn = world
+    cfg = _config(path)
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    _extend(conn, 30)
+    now = NOW + timedelta(hours=31)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=now)
+    cal = review.calendar(conn, None, now)
+    total = conn.execute("SELECT SUM(net) FROM position_pnl").fetchone()[0]
+    assert cal["total"] == pytest.approx(total) and len(cal["days"]) >= 2
+    assert cal["next"] is None and cal["prev"] is None                # 最初の月・今月
+    o = review.outlook(conn, cfg, now)
+    assert [x["label"] for x in o["rows"]] == ["1週間後", "1か月後", "3か月後", "半年後", "1年後"]
+    assert all(x["low"] <= x["value"] for x in o["rows"])              # 下限は必ず低い
+    assert o["rows"][0]["value"] == pytest.approx(o["value_now"] * (1 + o["daily_pct"] / 100) ** 7)
+    assert not o["short"]
+
+
+def test_ledger_csv(world, calm):  # noqa: F811
+    from farm_radar.execution import review
+    path, conn = world
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    month = review.ledger_months(conn)[0]
+    body = review.ledger_csv(conn, month)
+    assert body.startswith("﻿日時（日本時間）,種類")
+    lines = body.strip().splitlines()
+    n = conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0]
+    assert len(lines) == n + 1 and "入れる" in body
+
+
+def test_api_timeline_calendar_csv(client):
+    client, _conn, _path = client
+    r = client.get("/api/paper/timeline?kind=review")
+    assert r.status_code == 200 and "items" in r.json()
+    assert client.get("/api/paper/calendar?month=2026-9x").status_code == 400
+    assert client.get("/api/paper/calendar").status_code == 200
+    r = client.get("/api/paper/ledger.csv?month=2026-09")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    d = client.get("/api/paper").json()
+    assert {"timeline", "outlook", "ledger_months", "watch"} <= set(d)

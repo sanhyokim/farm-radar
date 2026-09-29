@@ -15,7 +15,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from . import views
 from .collectors.completeness import check
@@ -24,6 +24,7 @@ from .db import database as db
 from .execution import views as paper_views
 from .execution.paper import PaperError, PaperExecutor
 from .execution.base import PositionRef
+from .execution import review as paper_review
 from .execution import risk_job
 from .notify.telegram import settings_from_env
 from .scoring import volatility as vol
@@ -423,7 +424,46 @@ def paper() -> dict:
                 "open": [c for c in cards if c["status"] == "open"],
                 "closed": [c for c in cards if c["status"] != "open"][:20],
                 "events": paper_views.events(conn, None, limit=20),
-                "risk": paper_views.risk_rules(config.risk)}
+                "risk": paper_views.risk_rules(config.risk),
+                "watch": paper_views.watch(conn),
+                "timeline": paper_review.timeline(conn, limit=8),
+                "outlook": paper_review.outlook(conn, config, now),
+                "ledger_months": paper_review.ledger_months(conn)}
+
+
+def _month(month: str | None) -> str | None:
+    if month is None:
+        return None
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        raise HTTPException(400, "month は 2026-09 のように書いてください")
+    return month
+
+
+@app.get("/api/paper/timeline")
+def paper_timeline(kind: str | None = None, limit: int = 200) -> dict:
+    """タイムライン（SPEC 7.4章）: 定時レビュー・見張りの記録・開始・終了を新しい順に。kind=review,event,open,close で絞れる。"""
+    kinds = {k for k in (kind or "").split(",") if k} or None
+    with _open() as (config, conn):
+        return {"items": paper_review.timeline(conn, limit=min(max(limit, 1), 500), kinds=kinds)}
+
+
+@app.get("/api/paper/calendar")
+def paper_calendar(month: str | None = None) -> dict:
+    """損益カレンダー（日本時間の1日ごとの純損益）。"""
+    with _open() as (config, conn):
+        return paper_review.calendar(conn, _month(month), _now())
+
+
+@app.get("/api/paper/ledger.csv")
+def paper_ledger_csv(month: str) -> Response:
+    """台帳の月次CSV（SPEC 12.4章）。"""
+    m = _month(month)
+    with _open() as (config, conn):
+        body = paper_review.ledger_csv(conn, m)
+    return Response(body.encode("utf-8"), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="farm-radar-ledger-{m}.csv"'})
 
 
 @app.get("/api/paper/positions/{position_id}")
@@ -435,6 +475,8 @@ def paper_position(position_id: int) -> dict:
             raise HTTPException(404, "この建玉は見つかりません")
         d = paper_views.detail(conn, p, now, config.risk)
         d["sell_now"]["hours"] = config.scoring.reward_sell_hours
+        d["outlook"] = paper_review.outlook(conn, config, now, [p]) if p["status"] == "open" else None
+        d["timeline"] = paper_review.timeline(conn, limit=50, position_id=position_id)
         return d
 
 

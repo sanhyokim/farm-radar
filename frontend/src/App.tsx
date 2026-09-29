@@ -6,6 +6,7 @@ import Pools from "./pages/Pools";
 import PoolDetail from "./pages/PoolDetail";
 import Practice from "./pages/Practice";
 import PracticeDetail from "./pages/PracticeDetail";
+import { TimelinePage } from "./pages/PaperExtras";
 import Learn from "./pages/Learn";
 
 const TABS = [
@@ -26,6 +27,7 @@ export default function App() {
           <Route path="/pools" element={<Pools />} />
           <Route path="/pools/:id" element={<PoolDetail />} />
           <Route path="/practice" element={<Practice />} />
+          <Route path="/practice/timeline" element={<TimelinePage />} />
           <Route path="/practice/:id" element={<PracticeDetail />} />
           <Route path="/learn" element={<Learn />} />
           <Route path="*" element={<Home />} />

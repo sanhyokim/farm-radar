@@ -424,6 +424,7 @@ class PaperExecutor:
         st["base"] = {"value": a0 * u0 + a1 * u1}
         st["costs"] += cost
         st["rebalances"] = int(st.get("rebalances", 0)) + 1
+        st["rebalance_cost"] = float(st.get("rebalance_cost", 0.0)) + cost
         st.pop("out_since", None)
         ts = _iso(self.now)
         row_ts = max(ts, _iso(_ts(pos["last_ts"]) + timedelta(seconds=1)))
