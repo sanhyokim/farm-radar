@@ -185,13 +185,17 @@ class ReviewSettings:
     """定時レビューと資産の見通し（M5c。SPEC 8.5章・7.4章）。config.yaml の review から読む。"""
     every_minutes: int = 30                 # 定時レビューを作る間隔（分）
     outlook_conservative_pct: float = 30.0  # 資産の見通しの下限: プラスの項目はこの%控えめ、マイナスの項目はこの%厳しめ
+    outlook_min_hours: float = 24.0         # 始めてからこの時間未満は見通しを出さず「データ不足」（2026-09-29 オーナー指示）
+    evaluation_days: int = 14               # 評価の期間（日）。SPEC 11章「2週間のペーパートレードで評価」
 
 
 def _review(raw: dict[str, Any]) -> ReviewSettings:
     r = raw.get("review") or {}
     d = ReviewSettings()
     out = ReviewSettings(every_minutes=int(r.get("every_minutes", d.every_minutes)),
-                         outlook_conservative_pct=float(r.get("outlook_conservative_pct", d.outlook_conservative_pct)))
+                         outlook_conservative_pct=float(r.get("outlook_conservative_pct", d.outlook_conservative_pct)),
+                         outlook_min_hours=float(r.get("outlook_min_hours", d.outlook_min_hours)),
+                         evaluation_days=int(r.get("evaluation_days", d.evaluation_days)))
     if out.every_minutes <= 0 or 60 % out.every_minutes and out.every_minutes % 60:
         raise ConfigError("review.every_minutes は 60 を割り切れる数か、60 の倍数（30 など）にしてください。")
     return out

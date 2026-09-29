@@ -41,10 +41,30 @@ def refresh_funding(conn: sqlite3.Connection, lighter, market_ids: set[int], now
     return n
 
 
+def refresh_perp_fees(conn: sqlite3.Connection, lighter, now: datetime, max_age_hours: float = 1.0) -> int:
+    """Lighter の市場ごとの取引手数料を perp_fees 表に入れる（1時間に1回まで。失敗しても止めない）。"""
+    last = conn.execute("SELECT MAX(ts) FROM perp_fees").fetchone()[0]
+    if last and (now - datetime.fromisoformat(last)).total_seconds() < max_age_hours * 3600:
+        return 0
+    try:
+        fees = lighter.market_fees()
+    except Exception as exc:
+        log.warning("perp fee fetch failed", extra={"data": {"error": str(exc)}})
+        return 0
+    ts = now.astimezone(UTC).isoformat(timespec="seconds")
+    conn.executemany("INSERT OR REPLACE INTO perp_fees(market_id, taker_pct, maker_pct, ts) VALUES (?,?,?,?)",
+                     [(mid, t, m, ts) for mid, (t, m) in fees.items()])
+    conn.commit()
+    return len(fees)
+
+
 def run_watch(conn: sqlite3.Connection, config: Config, tokens: TokenBook, rpc=None, venue=None, gt=None,
-              now: datetime | None = None) -> list[str]:
-    """会場プログラムの見張りと USDG の外部の価格（読み取りだけ）。変わったことの説明を返す。"""
+              now: datetime | None = None, lighter=None) -> list[str]:
+    """会場プログラムの見張りと USDG の外部の価格（読み取りだけ）。変わったことの説明を返す。
+    ついでに perp の取引手数料も取り直す（開く・閉じる費用に使う）。"""
     now = now or datetime.now(UTC)
+    if lighter is not None:
+        refresh_perp_fees(conn, lighter, now)
     changes: list[str] = []
     if config.risk.contract_watch and rpc is not None and venue is not None:
         try:
@@ -62,7 +82,7 @@ def run_paper(conn: sqlite3.Connection, config: Config, tokens: TokenBook, light
     if config.mode != "paper":
         return 0
     now = now or datetime.now(UTC)
-    changes = [] if fast else run_watch(conn, config, tokens, rpc, venue, gt, now)
+    changes = [] if fast else run_watch(conn, config, tokens, rpc, venue, gt, now, lighter)
     positions = conn.execute("SELECT * FROM positions WHERE is_paper=1 AND status='open'").fetchall()
     if not positions:
         if changes:

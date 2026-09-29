@@ -4,7 +4,8 @@
   （AI は使わない。2026-09-29 オーナー決定）
 - タイムライン: 定時レビュー・見張りの記録・建玉の開始と終了を、時刻の順に並べる（種類ごとに色分けは画面で）
 - 損益カレンダー: 練習の建玉の純損益を、日本時間の1日ごとに合計する
-- 資産の見通し: 実績の1日あたりの損益（開く時の費用を除く）で複利に伸ばす。下限は、プラスの項目を控えめ・マイナスの項目を厳しめに
+- 資産の見通し: 始めてからの1日平均の純損益（始めた費用込み）× 日数を、今の評価額に足す（複利にしない。1か月後まで）。
+  下限は、プラスの項目を控えめ・マイナスの項目を厳しめに。始めて24時間未満は出さない（2026-09-29 オーナー指示）
 - 月次CSV: 台帳（練習の取引）を月ごとに書き出す（税務の形式の確認用。Excel で開けるように BOM つき UTF-8）
 """
 
@@ -22,7 +23,7 @@ from ..config import Config
 from . import views as pviews
 from .paper import CATS
 
-OUTLOOK_DAYS = (("1週間後", 7), ("1か月後", 30), ("3か月後", 91), ("半年後", 182), ("1年後", 365))
+OUTLOOK_DAYS = (("1週間後", 7), ("1か月後", 30))
 LEDGER_KIND_JA = {"deposit": "入れる", "withdraw": "引き出す", "claim": "報酬の受け取り", "cost": "費用",
                   "hedge_open": "ヘッジを持つ", "hedge_close": "ヘッジを閉じる", "sell_reward": "報酬を売る",
                   "hedge_adjust": "ヘッジの量を合わせる"}
@@ -181,18 +182,22 @@ def calendar(conn: sqlite3.Connection, month: str | None, now: datetime) -> dict
 
 def outlook(conn: sqlite3.Connection, config: Config, now: datetime,
             positions: list[sqlite3.Row] | None = None) -> dict[str, Any] | None:
-    """持っている建玉の実績から、複利で1週間〜1年後の資産を見積もる（必ず「推定」）。"""
+    """持っている建玉の実績から、1週間後・1か月後の資産を見積もる（必ず「推定」）。
+
+    1日の純損益 = 始めてからの純損益の合計（始めた費用込み）÷ たった日数。見通し = 今の評価額 + 1日の純損益 × 日数
+    （複利にしない。2026-09-29 オーナー指示）。始めて review.outlook_min_hours 時間未満なら数字を出さない（short）。
+    """
     positions = _open_positions(conn) if positions is None else positions
     if not positions:
         return None
-    k = config.review.outlook_conservative_pct / 100
+    rc = config.review
+    k = rc.outlook_conservative_pct / 100
     cap = value = daily = low = 0.0
     hours = []
     for pos in positions:
         c = pviews.card(conn, pos, now, config.risk)
         rows = conn.execute("SELECT * FROM position_pnl WHERE position_id=?", (pos["id"],)).fetchall()
-        per = {cat: sum(float(r[cat] or 0.0) for r in rows) for cat in CATS}
-        per["other"] += c["open_cost_usd"]              # 開く時の費用は1回きりなので、先の見通しから除く
+        per = {cat: sum(float(r[cat] or 0.0) for r in rows) for cat in CATS}   # 始めた費用も「その他」に入ったまま
         d = max(c["days"], 1e-9)
         per_day = {cat: v / d for cat, v in per.items()}
         cap += pos["capital"] or 0.0
@@ -200,21 +205,21 @@ def outlook(conn: sqlite3.Connection, config: Config, now: datetime,
         daily += sum(per_day.values())
         low += sum(v * (1 - k) if v > 0 else v * (1 + k) for v in per_day.values())
         hours.append(c["hours"])
-    rate, rate_low = daily / cap, low / cap
-    rows_out = []
-    for label, n in OUTLOOK_DAYS:
-        rows_out.append({"label": label, "days": n, "value": value * (1 + rate) ** n,
-                         "low": value * max(0.0, 1 + rate_low) ** n})
-    return {
-        "value_now": value, "capital": cap, "daily_usd": daily, "daily_pct": rate * 100,
-        "daily_low_usd": low, "daily_low_pct": rate_low * 100, "rows": rows_out,
-        "hours": min(hours), "short": min(hours) < config.risk.actual_min_hours,
-        "conservative_pct": config.review.outlook_conservative_pct,
-        "note": (f"今までの実績の1日あたりの損益（開く時の費用を除く）が毎日続き、増えた分も同じ割合で増えると"
-                 f"した場合の推定です。下限は、プラスの項目を{config.review.outlook_conservative_pct:g}%控えめ、"
-                 f"マイナスの項目を{config.review.outlook_conservative_pct:g}%厳しめにしています。"
-                 "報酬の量や値段は毎日変わるので、長い期間ほど当たりません。"),
+    short = min(hours) < rc.outlook_min_hours
+    base = {
+        "value_now": value, "capital": cap, "hours": min(hours), "short": short, "min_hours": rc.outlook_min_hours,
+        "conservative_pct": rc.outlook_conservative_pct,
+        "note": ("始めてからの1日平均の純損益（始めた費用込み）が同じように続くとして、今の評価額に日数分を足した推定です"
+                 "（増えた分がさらに増える計算＝複利にはしていません）。"
+                 f"下限は、プラスの項目を{rc.outlook_conservative_pct:g}%控えめ、マイナスの項目を"
+                 f"{rc.outlook_conservative_pct:g}%厳しめにしています。報酬の量や値段は毎日変わるので、当たるとは限りません。"),
     }
+    if short:
+        return {**base, "daily_usd": None, "daily_pct": None, "daily_low_usd": None, "daily_low_pct": None, "rows": []}
+    return {**base, "daily_usd": daily, "daily_pct": daily / cap * 100, "daily_low_usd": low,
+            "daily_low_pct": low / cap * 100,
+            "rows": [{"label": label, "days": n, "value": value + daily * n, "low": value + low * n}
+                     for label, n in OUTLOOK_DAYS]}
 
 
 # --- 月次CSV ------------------------------------------------------------------------------

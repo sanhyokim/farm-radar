@@ -22,6 +22,8 @@ export interface Home {
   scored_at: string | null; greens: PoolRow[]; near: PoolRow[];
   market: {
     us_open: boolean; gas_usd_per_tx: number | null;
+    us_day?: { ny_date: string; trading_day: boolean; holiday: string | null; weekend: boolean; early_close: string | null;
+      calendar_covered: boolean };
     reward_tokens: { venue_id: string; symbol: string; price_usd: number | null; change_24h: number | null }[];
   };
   collection: { venue_id: string; last_ok_at: string | null; stale: boolean; gaps_7d: { start_slot: string; end_slot: string }[] }[];
@@ -102,7 +104,7 @@ export interface PaperCard {
   compare_enabled: boolean; compare_min_hours: number;
   payback_total_hours: number | null; payback_left_hours: number | null;
   rebalances: number; cautions: string[]; skipped: string[];
-  rebalance_cost: number;
+  rebalance_cost: number; close_cost_usd: number | null;
 }
 
 export interface Watch {
@@ -132,10 +134,22 @@ export interface TimelineItem {
   title: string; body: string; position_id?: number | null;
 }
 
+export interface Evaluation {
+  state: "not_started" | "running" | "stopped" | "finished"; mode: string; evaluation_days: number;
+  started_at?: string; ends_at?: string; elapsed_hours?: number; left_hours?: number;
+  coverage?: { venue_id: string; expected: number; ok: number; ratio: number | null; missing_hours: number }[];
+  positions?: number; observed_hours?: number; estimated_hours?: number;
+  compare?: { key: string; label: string; predicted: number | null; actual: number | null }[];
+  predicted_net_day?: number | null; actual_net_day?: number | null; gap_pct?: number | null;
+  hold_net_day?: number | null; sell_net_day?: number | null; closer?: "hold" | "sell" | null;
+  events?: { level: string; level_ja: string; n: number }[]; note?: string;
+}
+
 export interface Outlook {
-  value_now: number; capital: number; daily_usd: number; daily_pct: number; daily_low_usd: number; daily_low_pct: number;
+  value_now: number; capital: number; daily_usd: number | null; daily_pct: number | null;
+  daily_low_usd: number | null; daily_low_pct: number | null;
   rows: { label: string; days: number; value: number; low: number }[];
-  hours: number; short: boolean; conservative_pct: number; note: string;
+  hours: number; short: boolean; min_hours: number; conservative_pct: number; note: string;
 }
 
 export interface PaperCalendar {

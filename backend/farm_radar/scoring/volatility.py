@@ -3,14 +3,16 @@
 - 1時間ごとの終値から、1時間ごとの対数の変化率を出し、その2乗平均の平方根 × √24 を「1日あたり」とする。
 - 取引がなかった時間は、直前の値を引き継ぐ（その1時間の変化は0）。
 - 株トークンは、米国市場の時間中（ニューヨーク 9:30〜16:00、平日）と時間外で分けても計算する。
-  どちらも「その状態が1日続いたとしたら」の値（1時間の値 × √24）で表す。祝日は考えない。
+  どちらも「その状態が1日続いたとしたら」の値（1時間の値 × √24）で表す。
+  休日・短縮取引日は venues/us-market-calendar.yaml（NYSE の公式ページ）で判定する（M5d）。
 """
 
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
+
+from .. import market_calendar
 
 HOUR = 3600
 NY = ZoneInfo("America/New_York")
@@ -50,9 +52,8 @@ def daily_sigma(returns: list[float], min_count: int = 24) -> float | None:
 
 
 def us_market_open(ts: int) -> bool:
-    """その時刻に米国の株式市場が開いているか（平日 9:30〜16:00 ニューヨーク時間。夏時間は自動）。"""
-    t = datetime.fromtimestamp(ts, UTC).astimezone(NY)
-    return t.weekday() < 5 and time(9, 30) <= t.time() < time(16, 0)
+    """その時刻に米国の株式市場が開いているか（9:30〜16:00 ニューヨーク時間。休日・短縮取引日・夏時間を考える）。"""
+    return market_calendar.market_open(ts)
 
 
 def split_sigma(returns: list[tuple[int, float]], min_count: int = 6) -> tuple[float | None, float | None]:

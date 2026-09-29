@@ -11,7 +11,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from . import runtime
+from . import market_calendar, runtime
 from .collectors.snapshot import collect_venue, record_failed_run
 from .db import database as db
 from .execution.review import make_review
@@ -27,12 +27,18 @@ from .tokens import load_tokens
 log = logging.getLogger(__name__)
 
 
-def in_fast_window(now: datetime, window: tuple[str, str]) -> bool:
-    """日本時間で window（"22:00", "23:30"）の中か。日をまたぐ窓（"23:00", "01:00"）にも対応する。"""
+def in_fast_window(now: datetime, window: tuple[str, str], trading_days_only: bool = True) -> bool:
+    """日本時間で window（"22:00", "23:30"）の中か。日をまたぐ窓（"23:00", "01:00"）にも対応する。
+
+    trading_days_only なら、米国市場が開く日（ニューヨークの日付で。土日・休日は除く。M5d）だけ True。
+    """
     local = now.astimezone(ZoneInfo("Asia/Tokyo"))
     cur = local.hour * 60 + local.minute
     a, b = ((int(x.split(":")[0]) * 60 + int(x.split(":")[1])) for x in window)
-    return a <= cur <= b if a <= b else (cur >= a or cur <= b)
+    inside = a <= cur <= b if a <= b else (cur >= a or cur <= b)
+    if not inside or not trading_days_only:
+        return inside
+    return market_calendar.is_trading_day(now.astimezone(market_calendar.NY).date())
 
 
 def main() -> None:

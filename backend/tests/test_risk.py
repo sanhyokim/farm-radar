@@ -508,10 +508,17 @@ def test_calendar_and_outlook(world, calm):  # noqa: F811
     assert cal["total"] == pytest.approx(total) and len(cal["days"]) >= 2
     assert cal["next"] is None and cal["prev"] is None                # 最初の月・今月
     o = review.outlook(conn, cfg, now)
-    assert [x["label"] for x in o["rows"]] == ["1週間後", "1か月後", "3か月後", "半年後", "1年後"]
+    assert [x["label"] for x in o["rows"]] == ["1週間後", "1か月後"]    # 1か月後まで（2026-09-29 オーナー指示）
     assert all(x["low"] <= x["value"] for x in o["rows"])              # 下限は必ず低い
-    assert o["rows"][0]["value"] == pytest.approx(o["value_now"] * (1 + o["daily_pct"] / 100) ** 7)
+    # 単純な足し算: 今の評価額 + 始めてからの1日平均（始めた費用込み）× 日数
+    c = pviews.card(conn, _pos(conn, ref.position_id), now)
+    assert o["daily_usd"] == pytest.approx(c["change_usd"] / c["days"])
+    assert o["rows"][0]["value"] == pytest.approx(o["value_now"] + o["daily_usd"] * 7)
     assert not o["short"]
+    # 24時間未満は出さない
+    cfg100 = dataclasses.replace(cfg, review=dataclasses.replace(cfg.review, outlook_min_hours=100))
+    early = review.outlook(conn, cfg100, now)
+    assert early["short"] and early["rows"] == [] and early["daily_usd"] is None
 
 
 def test_ledger_csv(world, calm):  # noqa: F811
@@ -537,3 +544,38 @@ def test_api_timeline_calendar_csv(client):
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
     d = client.get("/api/paper").json()
     assert {"timeline", "outlook", "ledger_months", "watch"} <= set(d)
+
+
+# --- ヘッジの取引手数料（2026-09-29 オーナー指示: 開く・閉じる費用に必ず入れ、Lighter の値の変化を自動で反映） --------
+
+class FakeLighter:
+    def __init__(self, taker):
+        self.taker = taker
+
+    def market_fees(self):
+        return {mid: (self.taker, 0.0) for mid in range(0, 300)}
+
+    def short_funding_hourly(self, market_id, start, end):
+        return []
+
+
+def test_hedge_fee_follows_lighter_and_is_in_open_and_close_costs(world, calm):  # noqa: F811
+    from farm_radar.execution.jobs import refresh_perp_fees
+    path, conn = world
+    _set_score(conn)
+    _, ref0 = _open(conn, path)
+    base_open = pviews.card(conn, _pos(conn, ref0.position_id), NOW)["open_cost_usd"]
+    hedges = json.loads(_pos(conn, ref0.position_id)["hedges_json"])
+    assert hedges, "テストのプールにはヘッジがある"
+    PaperExecutor(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW).close_position(ref0)
+    assert refresh_perp_fees(conn, FakeLighter(0.05), NOW) > 0             # Lighter が 0.05% に変わった
+    assert refresh_perp_fees(conn, FakeLighter(0.05), NOW + timedelta(minutes=10)) == 0   # 1時間に1回まで
+    ex, ref = _open(conn, path)
+    notional = sum(h["size"] * h["entry"] for h in hedges)
+    c = pviews.card(conn, _pos(conn, ref.position_id), NOW)
+    assert c["open_cost_usd"] == pytest.approx(base_open + notional * 0.0005, rel=1e-6)
+    ex.close_position(ref)
+    c = pviews.card(conn, _pos(conn, ref.position_id), NOW)
+    assert c["close_cost_usd"] > 0
+    notes = [r[0] for r in conn.execute("SELECT note FROM ledger WHERE position_id=? AND kind='cost'", (ref.position_id,))]
+    assert "perp の取引手数料" in notes and "手順3: perp の取引手数料" in notes
