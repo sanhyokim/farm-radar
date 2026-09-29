@@ -224,16 +224,20 @@ class WashGT(FakeGT):
         return {a: PoolMarket(a, 10_000.0, 250_000.0, None, None) for a in addresses}   # 取引量がTVLの25倍
 
 
-def test_unnatural_volume_is_capped_and_warned():
+def test_unnatural_volume_counts_no_fee_income_and_is_warned():
+    # 2026-09-29 オーナー決定: 見せかけの取引の警告が出たら、手数料の収入は0（TVLの10倍までに抑えるルールを置き換え）
     conn = db.connect(":memory:")
     _fill(conn, 24 * 8)
     rows = score_venue(conn, _ctx(WashGT()), now=NOW)
     for r in rows:
-        inp = json.loads(r["details_json"])["inputs"]
-        assert inp["volume_24h_usd"] == 250_000.0 and inp["volume_used_usd"] == 100_000.0
-        assert inp["fees_usd_day"] == pytest.approx(100_000.0 * 0.003)
+        det = json.loads(r["details_json"])
+        inp = det["inputs"]
+        assert inp["volume_24h_usd"] == 250_000.0 and inp["volume_used_usd"] == 0.0
+        assert inp["fees_usd_day"] == 0.0
+        assert all(not x["income_unstaked"] for x in det["ranges"])
+        assert r["mode"] == "staked"
         assert any(w["code"] == "VOL" for w in json.loads(r["warnings_json"]))
-        assert "見せかけの取引" in r["reason_ja"] and len(r["reason_ja"].splitlines()) <= 3
-    # 倍率は設定で変えられる
-    rows = score_venue(conn, _ctx(WashGT(), volume_cap_tvl_multiple=30), now=NOW)
+        assert "手数料の収入は0" in r["reason_ja"] and len(r["reason_ja"].splitlines()) <= 3
+    # しきい値（倍率）は設定で変えられる。超えていなければ取引量そのままで計算する
+    rows = score_venue(conn, _ctx(WashGT(), volume_suspicious_tvl_multiple=30), now=NOW)
     assert all(json.loads(r["details_json"])["inputs"]["volume_used_usd"] == 250_000.0 for r in rows)

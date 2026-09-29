@@ -364,10 +364,11 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     volume = market.volume_24h_usd if market else None
     volume_used = volume
     pool_warns = list(base_warns)
-    cap_x = ctx.settings.volume_cap_tvl_multiple
-    if volume is not None and tvl and volume > cap_x * tvl:
-        # 見せかけの取引かもしれないので、手数料収入は TVL × 倍率 の取引量までとして計算する（2026-09-29 オーナー決定）
-        volume_used = cap_x * tvl
+    sus_x = ctx.settings.volume_suspicious_tvl_multiple
+    if volume is not None and tvl and volume > sus_x * tvl:
+        # 見せかけの取引かもしれないので、手数料収入は0として計算する（安全側。2026-09-29 オーナー決定。
+        # 前の「TVL × 倍率 までに抑える」ルールを置き換えた）
+        volume_used = 0.0
         pool_warns.append(Warn("VOL", "minor", VOLUME_TEXT))
     fees_day = volume_used * fee if volume_used is not None else None
     eff = int(r["reward_rate_effective_raw"] or 0)
@@ -392,7 +393,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     elif eff == 0:
         notes.append("今週のボーナスはまだ配られていません。")
     if volume_used is not None and volume_used != volume:
-        notes.append(f"{VOLUME_TEXT}。手数料はTVLの{cap_x:g}倍の取引量で計算しています。")
+        notes.append(f"{VOLUME_TEXT}。手数料の収入は0として計算しています（取引量がTVLの{sus_x:g}倍超え）。")
     if src == "external":
         notes.append("値動きは外部データ（GeckoTerminal）で補っています。")
 

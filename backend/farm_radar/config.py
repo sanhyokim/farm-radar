@@ -44,7 +44,7 @@ class ScoringSettings:
     slippage_trade_usd: float | None = None      # 両替のずれを見積もる金額（None = LPに置く額）
     slippage_fallback_stable_stock_pct: float = 0.1
     slippage_fallback_other_pct: float = 1.0
-    volume_cap_tvl_multiple: float = 10.0          # 1日の取引量がTVLのこの倍を超えたら警告し、手数料はこの倍までで計算
+    volume_suspicious_tvl_multiple: float = 10.0   # 1日の取引量がTVLのこの倍を超えたら警告し、手数料の収入は0として計算
     hedge_taker_fee_pct: float = 0.0
     count_funding_income: bool = False
     reward_sell_hours: float = 1.0                 # 参考値「報酬をすぐ売る前提」: 受け取ってから売るまでの時間
@@ -79,7 +79,8 @@ def _scoring(raw: dict[str, Any]) -> ScoringSettings:
         slippage_fallback_stable_stock_pct=float(
             slip.get("fallback_stable_stock_pct", d.slippage_fallback_stable_stock_pct)),
         slippage_fallback_other_pct=float(slip.get("fallback_other_pct", d.slippage_fallback_other_pct)),
-        volume_cap_tvl_multiple=float(sc.get("volume_cap_tvl_multiple", d.volume_cap_tvl_multiple)),
+        volume_suspicious_tvl_multiple=float(sc.get("volume_suspicious_tvl_multiple",
+                                                    sc.get("volume_cap_tvl_multiple", d.volume_suspicious_tvl_multiple))),
         hedge_taker_fee_pct=float(hedge.get("taker_fee_pct", d.hedge_taker_fee_pct)),
         count_funding_income=bool(hedge.get("count_funding_income", d.count_funding_income)),
         reward_sell_hours=float(sc.get("reward_sell_hours", d.reward_sell_hours)),
