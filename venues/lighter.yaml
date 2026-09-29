@@ -1,0 +1,34 @@
+# Lighter（perp のヘッジ先）の確認済みの事実。スコア計算のヘッジ費用（SPEC 3.2章 5.）の根拠。
+# 株トークン・WETH と Lighter の市場の対応は venues/tokens-robinhood.yaml の perps にある。
+id: lighter
+name: Lighter
+api_base: https://mainnet.zklighter.elliot.ai/api/v1
+
+fees:
+  # 取引手数料。config.yaml の scoring.hedge.taker_fee_pct（今は 0.0）の根拠
+  standard_account:
+    maker_pct: 0.0
+    taker_pct: 0.0
+    note: 標準アカウント（初期設定）は perp も現物も手数料なし。注文の反映に少し待ち時間がある（テイカー 300ms）
+  premium_account_reference:
+    # 参考: 手数料ありのアカウント（自分で切り替えたときだけ）。LIT をステークしていない場合
+    maker_pct: 0.0040
+    taker_pct: 0.0280
+  sources:
+    - url: https://docs.lighter.xyz/trading/trading-fees
+      checked_at: '2026-09-29'
+      quote: "Lighter currently charges no maker or taker fees for Standard Accounts ... Fees: 0 maker / 0 taker"
+    - url: https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails
+      checked_at: '2026-09-29'
+      quote: 対応表にある29市場（ETH と株の perp）すべてで taker_fee "0.0000" / maker_fee "0.0000"
+  caution: >-
+    公式ドキュメントに「currently（今のところ）」とあるので、将来変わる可能性がある。
+    手数料が有料になったら config.yaml の scoring.hedge.taker_fee_pct を変える。
+
+funding:
+  # 資金調達率（ヘッジ費用の大部分）。M2 で確認済み（2026-09-28）
+  interval: 1時間ごと
+  api: fundings の rate は「1時間あたりの%」、direction は支払う側
+  sources:
+    - url: https://docs.lighter.xyz/trading/funding
+      checked_at: '2026-09-28'

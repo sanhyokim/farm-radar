@@ -38,6 +38,48 @@ alerts:
   # エポックの途中で、報酬の毎秒量がそのエポックの最大値からこの%以上減ったら記録する
   reward_rate_drop_pct: 30
 
+# スコアの計算（SPEC 3.2章）。1時間ごとに全プールを計算して判定する。
+scoring:
+  every_minutes: 60
+  # 総資産（ドル）と、その振り分け（LPに置く額・ヘッジの証拠金・予備）。合計は1にする
+  total_capital_usd: 1000
+  allocation: {lp: 0.55, hedge_margin: 0.40, reserve: 0.05}
+  # 試すレンジ幅（片側の%。±1% なら 1）
+  ranges_pct: [0.5, 1, 2, 3, 5, 10, 15]
+  # レンジを外れてから置き直すまでの待ち時間（分）。レンジ内の時間の割合の計算に使う（2026-09-29 オーナー決定: 初期値15分）
+  rebalance_wait_minutes: 15
+  # 置き直しの費用: 1回の取引のガスの量（ガス代はRPCのガス価格 × この量 × ETHの価格）、両替する割合
+  gas_units_per_tx: 600000
+  swap_ratio: 0.5
+  # 両替のずれ（スリッページ）。プールの今の流動性から「この金額を両替したら価格がどれだけ動くか」を計算する
+  # （2026-09-29 オーナー指示）。計算できないときだけ下の初期値を使う
+  slippage:
+    trade_usd: null                    # 見積もる金額（ドル）。null = LPに置く額（今は $550）
+    fallback_stable_stock_pct: 0.1     # ステーブルコインと株トークンだけのプール
+    fallback_other_pct: 1.0            # それ以外
+  # 1日の取引量がプールのTVLのこの倍を超えたら「取引量が不自然に多い（見せかけの取引の可能性）」と警告し、
+  # 手数料収入は TVL × この倍 の取引量として計算する（2026-09-29 オーナー決定）
+  volume_cap_tvl_multiple: 10
+  hedge:
+    # perp（Lighter）の取引手数料（%）。標準アカウントは0。出典と確認日は venues/lighter.yaml
+    taker_fee_pct: 0.0
+    # 資金調達を受け取る側のとき、それを収入に数えるか（false = 数えない。安全側）
+    count_funding_income: false
+  # 値動き σ を計算する日数。自分の記録がこれに足りない間は GeckoTerminal の1時間足で補う
+  volatility_days: 7
+  # GeckoTerminal の1時間足を取り直す間隔（時間）。1分30回までの制限があるため
+  external_refresh_hours: 3
+
+# 判定（信号機）の基準（SPEC 4章）。純日利は総資産あたりの%
+signal:
+  green_min_pct: 0.30
+  yellow_min_pct: 0.10
+  green_min_tvl_usd: 200000
+  # 報酬トークンが7日でこの%以上下がっていたら重大な警告（🔴）
+  reward_token_7d_major_pct: -30
+  # 純日利がこの%を超えたら「数字が高すぎます」の警告を付ける（軽微な警告なので最高でも🟡）
+  too_high_pct: 5.0
+
 # リスク上限。エージェントは変更しません（変更はオーナーが手で行う）。
 limits:
   position_usd: 1000

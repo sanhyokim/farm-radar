@@ -11,6 +11,7 @@ dependencies = [
   "apscheduler>=3.10,<4",
   "fastapi>=0.115",
   "uvicorn>=0.30",
+  "tzdata>=2024.1",   # 米国市場の時間（ニューヨーク時間・夏時間）の計算用。Docker の slim イメージに無いことがあるため
 ]
 
 [project.optional-dependencies]

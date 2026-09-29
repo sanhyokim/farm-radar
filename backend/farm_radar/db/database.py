@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -30,6 +30,11 @@ _ADDED_COLUMNS = {
     "pool_snapshots": {"block_time": "TEXT", "epoch_start": "TEXT", "period_finish": "TEXT",
                        "reward_rate_effective_raw": "TEXT", "gauge_alive": "INTEGER",
                        "unstaked_fee": "INTEGER", "epoch_just_flipped": "INTEGER"},
+    "scores": {"venue_id": "TEXT", "block_number": "INTEGER", "direction_risk": "REAL",
+               "net_daily_pct_lp": "REAL", "mode": "TEXT", "in_range_ratio": "REAL",
+               "in_range_ratio_hold": "REAL", "sigma_pair": "REAL", "sigma_token0": "REAL",
+               "sigma_token1": "REAL", "vol_source": "TEXT", "has_perp": "INTEGER",
+               "epoch_just_flipped": "INTEGER", "tvl_usd": "REAL", "details_json": "TEXT"},
 }
 
 
@@ -189,3 +194,36 @@ def insert_alert(conn: sqlite3.Connection, *, ts: datetime, venue_id: str, pool_
 
 def list_alerts(conn: sqlite3.Connection, since: datetime) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM alerts WHERE ts>=? ORDER BY ts DESC", (_iso(since),)).fetchall()
+
+
+def insert_token_prices(conn: sqlite3.Connection, rows: list[tuple[str, str, float, str, int | None]]) -> None:
+    """(トークン, 時刻, ドル価格, 出どころ, ブロック) を保存する。同じものがあれば何もしない。"""
+    conn.executemany(
+        "INSERT OR IGNORE INTO token_prices(token, ts, price_usd, source, block_number) VALUES (?,?,?,?,?)", rows
+    )
+
+
+def token_price_series(conn: sqlite3.Connection, token: str, source: str, since: datetime) -> list[tuple[int, float]]:
+    rows = conn.execute(
+        "SELECT ts, price_usd FROM token_prices WHERE token=? AND source=? AND ts>=? ORDER BY ts",
+        (token.lower(), source, _iso(since)),
+    ).fetchall()
+    return [(int(datetime.fromisoformat(r[0]).timestamp()), float(r[1])) for r in rows if r[1]]
+
+
+def insert_score(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    cols = ", ".join(row)
+    marks = ", ".join("?" for _ in row)
+    conn.execute(f"INSERT OR REPLACE INTO scores({cols}) VALUES ({marks})", tuple(row.values()))
+
+
+def latest_scores(conn: sqlite3.Connection, venue_id: str | None = None) -> list[sqlite3.Row]:
+    """プールごとの最新のスコア。"""
+    q = """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address FROM scores s
+           JOIN pools p ON p.id = s.pool_id
+           WHERE s.ts = (SELECT MAX(ts) FROM scores s2 WHERE s2.pool_id = s.pool_id)"""
+    args: tuple = ()
+    if venue_id:
+        q += " AND s.venue_id=?"
+        args = (venue_id,)
+    return conn.execute(q + " ORDER BY s.net_daily_pct DESC", args).fetchall()
