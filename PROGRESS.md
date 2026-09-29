@@ -109,7 +109,8 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
      持ち続ける前提とすぐ売る前提の両方で判定して並べる / 「この評価は予測が当たるかの確認で、儲かるかの判定ではありません」と注記
   3. 5分ごとの見張りはニューヨーク時間に合わせる（開く30分前〜開いた1時間後 = NY 9:00〜10:30）
   4. 評価は STRIKE/USDG ＋ ヘッジできる株トークンのプール1つで始めたい。候補を流動性の多い順に3つ出す。オーナーが選ぶまで評価は始めない
-     - Claude の決めたこと: 「1日」は日本時間の0時〜24時。評価の期間に入る日だけ数え、記録のない日は「満たさない日」に数える。
+     - Claude の決めたこと: 「1日」は評価を始めた時刻から24時間ずつ（14日ぴったりに分けるため）。記録のない日は「満たさない日」に数える。
+       「すぐ売る前提」は、予測もスコアの参考値（すぐ売る前提の純日利）で比べる。
        「総資産」はその日に持っていた建玉の投入額の合計。予測はその日に記録した時間の分だけ足す（推定の時間と、開く・閉じる時の費用は除く。今までと同じ）
      - 注意: config.yaml の limits は1会場あたり $1,500（総額 $3,000 × 50%）。up. に $1,000 の建玉を2つは入らない（オーナーに質問）
 - B（表示）: 保険あり/なしの印とヘッジ先の名前、最適レンジの値段の範囲と「?」、$550 の両替のずれと費用の内訳
@@ -120,6 +121,30 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
   1. SPEC 5.2 の「週1回、DefiLlama と GeckoTerminal から候補を一覧にする」は**まだ作っていない**（SPEC に書いてあるだけ）
   2. Robinhood Chain の up. 以外と、ほかのチェーンの候補を3〜5つ
   3. 「一覧で見て、承認するだけで入れて、危ないときは自動で抜ける」までに残っている作業の一覧
+
+## まとめての依頼の実装メモ（2026-09-29）
+- F: `config.yaml` の `evaluation`（days・min_coverage_pct・day_gap_pct・day_gap_capital_pct・pass_days_pct）。`execution/evaluation.py` の summary に
+  criteria（持ち続ける/すぐ売るそれぞれの 満たした日/必要な日/結果）と days（1日ごとの表）と disclaimer。見張りの時間は `risk.fast_window_ny: "09:00-10:30"`（ニューヨーク時間。
+  scheduler は America/New_York の Cron。前の `fast_window_jst` は読まない）。
+- B: `views.hedge_label`（保険あり（ヘッジ先の名前）/保険なし）、`views.range_prices`（最適レンジの値段の範囲。ステーブルと組むペアはドル、
+  そうでないペアは「$x〜$y 相当（相手の値段が今のままなら）」）、`views.swap_costs`（$550 のずれと、始めた費用・置き直し1回の内訳）。
+  練習の建玉は開いた時に `state.open_breakdown`、置き直しごとに `state.rebalance_slippage` を記録（前から持っている建玉は今のプールで見積もり、と表示）。
+- A: `docs/faq.md`（17問）→ `GET /api/faq` →「学ぶ」タブの「よくある質問」。docker-compose で docs を読み取り専用でつなぐ。
+- C: `backend/farm_radar/hedges/`（base.py = 形、lighter.py = Lighter、status.py = 担保の状態、__init__.py = REGISTRY）。
+  スコア計算がトークンごとに候補を比べて一番安いヘッジ先を選び、`details.inputs.hedge` に記録。練習の建玉はその選択を使う（`hedges_json` に hedge_id）。
+  手数料・資金調達は新しい表 `hedge_fees`・`hedge_funding`（hedge_id つき）、担保は `hedge_accounts`（SCHEMA_VERSION 10）。前の perp_fees・funding_rates は読むだけ。
+  トークンの対応表（venues/tokens-robinhood.yaml の perps.map）は、1つのトークンにヘッジ先ごとの候補をリストで書ける。今は Lighter だけ。
+  担保: `hedge_venues.lighter.account_address` か .env の `LIGHTER_ACCOUNT_ADDRESS`（15分ごとに読む。画面は省略形だけ）。`GET /api/hedges`。
+- 試した結果（サンドボックスの本物のデータ）: 87プール中19プールが「保険あり（Lighter）」。USDG/NVDA の最適レンジ ±0.5% = NVDA $229.46〜$231.77。
+  STRIKE/USDG の両替のずれ 7.11%（$550 のとき）で、始めた費用のうちずれの分は約 $19.56。
+- D の調査結果: /mnt/project-files/farm-radar/research/hedge-venues-2026-09-29.md（要点: 主な株は Lighter・Hyperliquid の xyz・Aster・Ostium にある。
+  dYdX は株なし、GMX は SPY・QQQ・SPCX だけ、Drift は停止（Velocity に移行）。利用規約で日本を名指しで禁止しているところは見つからなかったが、
+  trade.xyz には「免許が必要な地域」という包括的な条項がある。up. の NET/USDG の NET は Cloudflare の株トークンではない（対応表には入っていないので影響なし）。
+  Aster の UPUSDT は up. の UP とは別のトークン）。
+- E の調査結果: /mnt/project-files/farm-radar/research/other-venues-2026-09-29.md（候補: Alandale・STONX（どちらも Robinhood Chain）、Nest（HyperEVM）、
+  Pharaoh（Avalanche）、Aerodrome（Base、比べる基準）。Alandale は報酬を運営のサーバーで計算する方式なので、取り込む前にオーナーに確認が必要）。
+- E1: 週1回の候補一覧は未実装。DefiLlama（TVL）と GeckoTerminal（プール）で作れる。ただし up. は DefiLlama の利回りの一覧に載っていない。
+- オーナーに質問中: 評価に株のプールを足すと、up. の会場の上限（$1,500）を超える（$1,000 × 2）。
 
 ## M5d の実装メモ（2026-09-29）
 - 米国市場の休日: `venues/us-market-calendar.yaml`（2026〜2028年の休日と短縮取引日。出典 https://www.nyse.com/markets/hours-calendars 、2026-09-29 確認）。

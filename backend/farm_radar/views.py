@@ -301,7 +301,12 @@ def range_prices(details: dict[str, Any] | None, r_pct: float | None, sym0: str 
         u = float(usd[sym1])
         return {"kind": "usd", "symbol": sym1, "now": u, "low": u / (1 + r), "high": u / (1 - r)}
     p = float(price)
-    return {"kind": "ratio", "symbol": sym0, "quote": sym1, "now": p, "low": p * (1 - r), "high": p * (1 + r)}
+    out = {"kind": "ratio", "symbol": sym0, "quote": sym1, "now": p, "low": p * (1 - r), "high": p * (1 + r)}
+    if usd.get(sym0):
+        # どちらも値動きするペア: token1 の値段が今のままなら、token0 はドルでこの範囲（目安）
+        u = float(usd[sym0])
+        out.update({"usd_now": u, "usd_low": u * (1 - r), "usd_high": u * (1 + r)})
+    return out
 
 
 def swap_costs(details: dict[str, Any] | None, c_lp: float, swap_ratio: float, trade_usd: float,

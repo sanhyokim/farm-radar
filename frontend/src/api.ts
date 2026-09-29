@@ -22,7 +22,8 @@ export interface PoolRow {
 export interface HedgeInfo { has: boolean; venues: string[]; tokens: Record<string, string | null>; label: string }
 
 /** 最適レンジの実際の値段の範囲 */
-export interface RangePrices { kind: "usd" | "ratio"; symbol: string; quote?: string; now: number; low: number; high: number }
+export interface RangePrices { kind: "usd" | "ratio"; symbol: string; quote?: string; now: number; low: number; high: number;
+  usd_now?: number; usd_low?: number; usd_high?: number }
 
 /** 両替のずれと、費用に含まれる額 */
 export interface SwapCosts {
