@@ -24,8 +24,10 @@ from .db import database as db
 from .execution import views as paper_views
 from .execution.paper import PaperError, PaperExecutor
 from .execution.base import PositionRef
+from .execution import evaluation as paper_evaluation_mod
 from .execution import review as paper_review
 from .execution import risk_job
+from . import market_calendar
 from .notify.telegram import settings_from_env
 from .scoring import volatility as vol
 from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
@@ -297,7 +299,7 @@ def home() -> dict:
             "scored_at": max((d["ts"] for d in rows), default=None),
             "greens": greens, "near": near,
             "market": {"us_open": vol.us_market_open(int(now.timestamp())), "gas_usd_per_tx": gas,
-                       "reward_tokens": rewards},
+                       "reward_tokens": rewards, "us_day": market_calendar.status(now)},
             "collection": health_rows,
         }
 
@@ -441,6 +443,38 @@ def _month(month: str | None) -> str | None:
     return month
 
 
+class ConfirmRequest(BaseModel):
+    confirm: bool = False
+
+
+@app.get("/api/paper/evaluation")
+def paper_evaluation() -> dict:
+    """2週間の評価（M5d）: 期間、データの集まり具合、予測と実績の差。"""
+    with _open() as (config, conn):
+        return paper_evaluation_mod.summary(conn, config, _now())
+
+
+@app.post("/api/paper/evaluation/start")
+def paper_evaluation_start(req: ConfirmRequest) -> dict:
+    if not req.confirm:
+        raise HTTPException(400, "確認のため {\"confirm\": true} を送ってください")
+    with _open() as (config, conn):
+        try:
+            r = paper_evaluation_mod.start(conn, config, _now())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return {"message": f"評価を始めました（{config.review.evaluation_days}日間）。", **r}
+
+
+@app.post("/api/paper/evaluation/stop")
+def paper_evaluation_stop(req: ConfirmRequest) -> dict:
+    if not req.confirm:
+        raise HTTPException(400, "確認のため {\"confirm\": true} を送ってください")
+    with _open() as (config, conn):
+        paper_evaluation_mod.stop(conn, _now())
+        return {"message": "評価をやめました（ここまでの記録は残ります）。"}
+
+
 @app.get("/api/paper/timeline")
 def paper_timeline(kind: str | None = None, limit: int = 200) -> dict:
     """タイムライン（SPEC 7.4章）: 定時レビュー・見張りの記録・開始・終了を新しい順に。kind=review,event,open,close で絞れる。"""
@@ -507,10 +541,6 @@ def paper_close(position_id: int) -> dict:
         except PaperError as exc:
             raise HTTPException(400, str(exc)) from None
         return {"position_id": res.position_id, "net_usd": res.net_usd}
-
-
-class ConfirmRequest(BaseModel):
-    confirm: bool = False
 
 
 def _first_tokens(config):

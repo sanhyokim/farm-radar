@@ -22,6 +22,8 @@ export interface Home {
   scored_at: string | null; greens: PoolRow[]; near: PoolRow[];
   market: {
     us_open: boolean; gas_usd_per_tx: number | null;
+    us_day?: { ny_date: string; trading_day: boolean; holiday: string | null; weekend: boolean; early_close: string | null;
+      calendar_covered: boolean };
     reward_tokens: { venue_id: string; symbol: string; price_usd: number | null; change_24h: number | null }[];
   };
   collection: { venue_id: string; last_ok_at: string | null; stale: boolean; gaps_7d: { start_slot: string; end_slot: string }[] }[];
@@ -130,6 +132,17 @@ export interface Paper {
 export interface TimelineItem {
   key: string; ts: string; type: "review" | "event" | "open" | "close"; level: string;
   title: string; body: string; position_id?: number | null;
+}
+
+export interface Evaluation {
+  state: "not_started" | "running" | "stopped" | "finished"; mode: string; evaluation_days: number;
+  started_at?: string; ends_at?: string; elapsed_hours?: number; left_hours?: number;
+  coverage?: { venue_id: string; expected: number; ok: number; ratio: number | null; missing_hours: number }[];
+  positions?: number; observed_hours?: number; estimated_hours?: number;
+  compare?: { key: string; label: string; predicted: number | null; actual: number | null }[];
+  predicted_net_day?: number | null; actual_net_day?: number | null; gap_pct?: number | null;
+  hold_net_day?: number | null; sell_net_day?: number | null; closer?: "hold" | "sell" | null;
+  events?: { level: string; level_ja: string; n: number }[]; note?: string;
 }
 
 export interface Outlook {

@@ -48,7 +48,12 @@ export default function Home() {
       <Card title="市場の状態">
         <dl className="grid grid-cols-2 gap-y-2 text-sm">
           <dt className="text-slate-400"><Term k="米国市場時間">米国市場</Term></dt>
-          <dd className="text-right">{data.market.us_open ? <Badge tone="emerald">開いている</Badge> : <Badge>閉まっている</Badge>}</dd>
+          <dd className="text-right">
+            {data.market.us_open ? <Badge tone="emerald">開いている</Badge> : <Badge>閉まっている</Badge>}
+            {data.market.us_day?.holiday && <div className="text-[11px] text-amber-300">今日は休日（{data.market.us_day.holiday}）</div>}
+            {data.market.us_day?.early_close && <div className="text-[11px] text-amber-300">今日は {data.market.us_day.early_close} までの短縮取引（ニューヨーク時間）</div>}
+            {data.market.us_day && !data.market.us_day.calendar_covered && <div className="text-[11px] text-slate-500">休日の表が未確認の年です</div>}
+          </dd>
           <dt className="text-slate-400">ガス代（1回）</dt>
           <dd className="num text-right text-slate-100">{usd(data.market.gas_usd_per_tx, 4)}</dd>
           {data.market.reward_tokens.map((t) => (
