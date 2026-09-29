@@ -10,10 +10,12 @@ from datetime import UTC, datetime
 
 # Alchemy などのURLの末尾にあるキー部分（/v2/<key>）を隠す
 _KEY_IN_URL = re.compile(r"(/v\d+/)[A-Za-z0-9_\-]{8,}")
+# Telegram のボットのトークン（数字:英数字）。URL の /bot<トークン>/ にも入る
+_TELEGRAM_TOKEN = re.compile(r"\d{5,}:[A-Za-z0-9_\-]{20,}")
 
 
 def redact(text: str) -> str:
-    return _KEY_IN_URL.sub(r"\1***", text)
+    return _TELEGRAM_TOKEN.sub("***", _KEY_IN_URL.sub(r"\1***", text))
 
 
 class JsonFormatter(logging.Formatter):

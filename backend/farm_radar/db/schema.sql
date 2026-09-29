@@ -170,5 +170,13 @@ CREATE TABLE IF NOT EXISTS reviews (
   ts TEXT NOT NULL, kind TEXT NOT NULL, title TEXT, body_ja TEXT, positions_json TEXT
 );
 CREATE TABLE IF NOT EXISTS learning_notes (
-  ts TEXT NOT NULL, pool_id TEXT, title TEXT, body_ja TEXT
+  ts TEXT NOT NULL, pool_id TEXT, title TEXT, body_ja TEXT,
+  topic TEXT                          -- 学びの種類（同じ話題が続かないように使う。M4）
+);
+-- 毎朝のレポート（M4。SPEC 8章）。1日1通。送れたら sent_at が入る
+CREATE TABLE IF NOT EXISTS daily_reports (
+  day TEXT PRIMARY KEY,               -- 日本時間の日付（2026-09-30）
+  ts TEXT NOT NULL,                   -- 作った時刻
+  body_ja TEXT NOT NULL,
+  sent_at TEXT
 );

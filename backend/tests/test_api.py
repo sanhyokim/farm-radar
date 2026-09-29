@@ -56,6 +56,11 @@ def test_pool_detail_has_six_parts_that_add_up(client):
     assert d["since_start"]["days"] >= 1 and d["today"] is not None
     assert d["assets"]["estimated"] and d["assets"]["series"]
     assert d["history"] and "us_open" in d["history"][0]
+    # 参考値「報酬をすぐ売る前提」: 判定の日利と並べて出す（判定には使わない）
+    sn = d["sell_now"]
+    assert sn["hours"] == 1 and "判定には使いません" in sn["note"]
+    assert sn["hold_net_daily_pct"] == pytest.approx(d["daily"]["net_daily_pct"])
+    assert sn["diff_pct"] == pytest.approx(sn["net_daily_pct"] - sn["hold_net_daily_pct"])
 
 
 def test_unknown_pool_is_404_and_ui_fallback(client, tmp_path, monkeypatch):

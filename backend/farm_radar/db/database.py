@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -35,6 +35,7 @@ _ADDED_COLUMNS = {
                "in_range_ratio_hold": "REAL", "sigma_pair": "REAL", "sigma_token0": "REAL",
                "sigma_token1": "REAL", "vol_source": "TEXT", "has_perp": "INTEGER",
                "epoch_just_flipped": "INTEGER", "tvl_usd": "REAL", "details_json": "TEXT"},
+    "learning_notes": {"topic": "TEXT"},
 }
 
 

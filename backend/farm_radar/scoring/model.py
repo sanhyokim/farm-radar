@@ -5,6 +5,8 @@
 - in_range_ratio（置き直す前提）と参考値（置きっぱなし）: 2026-09-29 オーナー決定（SPEC 3.2章 2.）
 - direction_risk = C_lp × 0.5 × 0.4 × (σ_d(A) + σ_d(B)): 2026-09-29 オーナー決定（SPEC 3.2章 5.）
 - 両替のずれ（スリッページ）はプールの今の流動性から見積もる: 2026-09-29 オーナー指示（SPEC 3.2章 4.）
+- 参考値「報酬をすぐ売る前提」: 報酬トークンの値下がりを、受け取ってから売るまでの時間（初期値1時間）の分だけ引く。
+  判定には使わない（2026-09-29 オーナー指示。SPEC 3.2章 6.）
 - 報酬はレンジ内のステーク流動性に比例、ステークすると手数料は0、ステークしないと手数料の一部を取られる:
   up. で確認済み（venues/up-robinhood.yaml の mechanics）
 """
@@ -27,6 +29,7 @@ class ModelParams:
     swap_ratio: float = 0.5               # 置き直すときに両替する割合
     hedge_taker_fee: float = 0.0          # perp の取引手数料（割合）
     count_funding_income: bool = False    # 資金調達を「受け取る」側のとき、それを収入に数えるか
+    reward_sell_hours: float = 1.0        # 参考値「すぐ売る前提」: 報酬を受け取ってから売るまでの時間
 
     @property
     def c_lp(self) -> float:
@@ -76,6 +79,10 @@ class RangeResult:
     haircut: float
     direction_risk: float
     net: float
+    # 参考値（判定には使わない）: 報酬をすぐ売る前提。値下がりは売るまでの時間の分だけ引く
+    mode_sell_now: str = "staked"
+    haircut_sell_now: float = 0.0
+    net_sell_now: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,16 @@ class Evaluation:
     def net_daily_pct_lp(self) -> float:
         """建玉（LPに置いた額）あたりの純日利（%）。表示用。"""
         return self.best.net / self.params.c_lp * 100
+
+    @property
+    def best_sell_now(self) -> RangeResult:
+        """参考値「報酬をすぐ売る前提」でいちばん良いレンジ。"""
+        return max(self.rows, key=lambda x: x.net_sell_now)
+
+    @property
+    def net_daily_pct_sell_now(self) -> float:
+        """参考値: 報酬をすぐ売る前提の、総資産あたりの純日利（%）。判定には使わない。"""
+        return self.best_sell_now.net_sell_now / self.params.c_total * 100
 
 
 def liquidity_for_usd(c_lp: float, price: float, r: float, t0: TokenSide, t1: TokenSide) -> float:
@@ -163,6 +180,17 @@ def direction_risk(c_lp: float, sigmas_unhedged: list[float]) -> float:
     return c_lp * 0.5 * 0.4 * sum(sigmas_unhedged)
 
 
+def sell_now_drop(trend_daily: float | None, hours: float) -> float:
+    """報酬を受け取ってから hours 時間で売るときの、報酬トークンの値下がりの割合（0以上）。
+
+    7日の変化を1日あたりに直したもの（trend_daily）を、さらに1時間あたりに直して hours 時間分にする。
+    値上がりしているときは0（安全側。値上がりは収入に数えない）。
+    """
+    if trend_daily is None or trend_daily >= 0 or hours <= 0:
+        return 0.0
+    return 1 - (1 + trend_daily) ** (hours / 24)
+
+
 def gamma(c_lp: float, sigma_pair: float, r: float) -> float:
     """ガンマ損失 = C_lp × σ² / (4r)（近似。SPEC 3.2章 3.）。"""
     return c_lp * sigma_pair ** 2 / (4 * r)
@@ -203,6 +231,13 @@ def evaluate(inp: PoolInputs, params: ModelParams) -> Evaluation:
             cost = t.funding_cost_daily if params.count_funding_income else max(0.0, t.funding_cost_daily)
             hedge += notional * cost + n * notional * params.hedge_taker_fee
         net = income - g - reb - hedge - haircut - dir_risk
+        # 参考値: 報酬をすぐ売る前提。値下がりは売るまでの時間の分だけ引き、ステークするかどうかも選び直す
+        haircut_sell = income_staked * sell_now_drop(inp.reward_trend_daily, params.reward_sell_hours)
+        if income_unstaked is not None and income_unstaked > income_staked - haircut_sell:
+            mode_sell, income_sell, haircut_sell = "unstaked", income_unstaked, 0.0
+        else:
+            mode_sell, income_sell = "staked", income_staked
+        net_sell = income_sell - g - reb - hedge - haircut_sell - dir_risk
         rows.append(RangeResult(r, l_mine, n, irr, irr_hold, mode, income_staked, income_unstaked, income,
-                                g, reb, hedge, haircut, dir_risk, net))
+                                g, reb, hedge, haircut, dir_risk, net, mode_sell, haircut_sell, net_sell))
     return Evaluation(params, tuple(rows), has_perp=not unhedged)

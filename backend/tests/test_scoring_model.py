@@ -5,7 +5,7 @@ import pytest
 from farm_radar.scoring.judge import NO_HEDGE_TEXT, SignalParams, Warn, judge
 from farm_radar.scoring.model import (
     ModelParams, PoolInputs, TokenSide, direction_risk, evaluate, gamma, in_range_ratio,
-    in_range_ratio_hold, liquidity_for_usd, rebalances_per_day,
+    in_range_ratio_hold, liquidity_for_usd, rebalances_per_day, sell_now_drop,
 )
 
 
@@ -122,6 +122,30 @@ def test_haircut_only_when_reward_token_falls():
     down = evaluate(_inputs(reward_trend_daily=-0.02, fees_usd_day=None), ModelParams(ranges=(0.01,))).rows[0]
     assert up.haircut == 0
     assert down.haircut == pytest.approx(down.income_staked * 0.02)
+
+
+# --- 参考値: 報酬をすぐ売る前提（2026-09-29 オーナー指示。判定には使わない） ------------------
+
+def test_sell_now_drop_uses_only_the_holding_hours():
+    # 1日 −2% のペースなら、1時間で売るときの値下がりは 1 − 0.98^(1/24) ≈ 0.084%
+    assert sell_now_drop(-0.02, 1) == pytest.approx(1 - 0.98 ** (1 / 24))
+    assert sell_now_drop(-0.02, 24) == pytest.approx(0.02)          # 24時間なら1日分と同じ
+    assert sell_now_drop(0.02, 1) == 0 and sell_now_drop(None, 1) == 0   # 値上がり・不明なら引かない
+
+
+def test_sell_now_reference_does_not_change_judged_net():
+    inp = _inputs(reward_trend_daily=-0.05, fees_usd_day=None)
+    ev = evaluate(inp, ModelParams(reward_sell_hours=1))
+    for x in ev.rows:
+        # 判定用の値は7日の傾向（1日 −5%）で引いたまま
+        assert x.haircut == pytest.approx(x.income_staked * 0.05)
+        assert x.haircut_sell_now == pytest.approx(x.income_staked * (1 - 0.95 ** (1 / 24)))
+        assert x.net_sell_now - x.net == pytest.approx(x.haircut - x.haircut_sell_now)
+    assert ev.net_daily_pct_sell_now >= ev.net_daily_pct
+    # 売るまでの時間が長いほど、参考値は小さくなる
+    slow = evaluate(inp, ModelParams(reward_sell_hours=12))
+    assert slow.net_daily_pct_sell_now < ev.net_daily_pct_sell_now
+    assert slow.net_daily_pct == pytest.approx(ev.net_daily_pct)
 
 
 def test_hedge_vs_direction_risk():
