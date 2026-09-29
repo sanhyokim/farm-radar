@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { postApi, useApi, type EvalVerdict, type Evaluation, type Outlook, type PaperCalendar, type TimelineItem } from "../api";
+import { postApi, useApi, type EvalVerdict, type Evaluation, type Hedges, type HedgeStatus, type Outlook, type PaperCalendar, type TimelineItem } from "../api";
 import { jst, pct, signedUsd, tone, usd } from "../format";
-import { Badge, Card, Loading, Note } from "../ui";
+import { Badge, Card, Loading, Note, Term } from "../ui";
 
 const TYPE_STYLE: Record<string, { tone: "amber" | "sky" | "rose" | "emerald" | "slate"; label?: string; bar: string }> = {
   review: { tone: "slate", label: "定時レビュー", bar: "border-slate-500" },
@@ -346,5 +346,44 @@ function DayTable({ days }: { days: NonNullable<Evaluation["days"]> }) {
         ))}
       </tbody>
     </table>
+  );
+}
+
+const HEDGE_TONE: Record<HedgeStatus["state"], "emerald" | "amber" | "rose" | "slate"> = {
+  ok: "emerald", short: "amber", none: "rose", error: "rose", waiting: "slate",
+};
+
+/** ヘッジ先の担保（SPEC 5.2.1章。2026-09-29 オーナー追加）。読み取りだけ */
+export function HedgeVenuesCard() {
+  const { data, error } = useApi<Hedges>("/api/hedges");
+  if (!data) return <Card title="ヘッジ先の担保"><Loading error={error} /></Card>;
+  return (
+    <Card title={<Term k="保険（ヘッジ）">ヘッジ先の担保</Term>}>
+      <div className="space-y-2">
+        {data.venues.map((v) => (
+          <div key={v.hedge_id} className="rounded-lg bg-slate-800/40 p-2 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-slate-100">{v.name}</span>
+              <Badge tone={HEDGE_TONE[v.status.state]}>{v.status.state_ja}{v.status.paper ? "（練習）" : ""}</Badge>
+            </div>
+            <div className="mt-1 grid grid-cols-2 gap-1 text-xs text-slate-400">
+              <div>担保 <span className="num text-slate-200">{usd(v.status.collateral_usd ?? null, 0)}</span></div>
+              <div>必要な額 <span className="num text-slate-200">{usd(v.need_usd, 0)}</span></div>
+              <div>扱っている先物 <span className="num text-slate-200">{v.markets}</span></div>
+              <div>取引手数料（最大） <span className="num text-slate-200">{v.max_taker_pct == null ? "—" : `${v.max_taker_pct}%`}</span></div>
+            </div>
+            {v.status.note && <p className="mt-1 text-xs text-slate-400">{v.status.note}</p>}
+            {v.real && (
+              <p className="mt-1 text-xs text-slate-400">
+                本物の口座（{v.address}）: {v.real.state_ja}
+                {v.real.collateral_usd != null && ` ・ 担保 ${usd(v.real.collateral_usd, 2)}`}
+                {v.real.positions && v.real.positions.length > 0 && ` ・ 建玉 ${v.real.positions.length}件`}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+      <Note>読み取りだけです（お金は動かしません）。担保の残高は、config.yaml の hedge_venues か .env にアドレスを書いたときだけ読みます。</Note>
+    </Card>
   );
 }

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { postApi, useApi, type Paper, type PaperCard, type RiskEvent, type Watch } from "../api";
 import { jst, pct, signedUsd, tone, usd } from "../format";
 import { Badge, Card, Loading, Note, Term } from "../ui";
-import { CalendarCard, CsvCard, EvaluationCard, OutlookCard, TimelineList } from "./PaperExtras";
+import { CalendarCard, CsvCard, EvaluationCard, HedgeVenuesCard, OutlookCard, TimelineList } from "./PaperExtras";
 
 export default function Practice() {
   const { data, error, reload } = useApi<Paper>("/api/paper");
@@ -49,6 +49,8 @@ export default function Practice() {
       )}
 
       {data.enabled && <EvaluationCard />}
+
+      <HedgeVenuesCard />
 
       {data.enabled && <CalendarCard />}
 

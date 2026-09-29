@@ -230,3 +230,15 @@ export function useApi<T>(path: string): { data: T | null; error: string | null;
   }, [path, n]);
   return { data, error, reload: () => setN((x) => x + 1) };
 }
+
+/** ヘッジ先と担保の状態（SPEC 5.2.1章。読み取りのみ） */
+export interface HedgeStatus {
+  state: "ok" | "short" | "none" | "error" | "waiting"; state_ja: string; collateral_usd?: number | null;
+  available_usd?: number | null; paper?: boolean; note?: string; read_at?: string;
+  positions?: { symbol: string; size: number; value_usd: number | null }[];
+}
+export interface Hedges {
+  mode: string; need_usd: number;
+  venues: { hedge_id: string; name: string; address: string | null; markets: number; fees_at: string | null;
+    max_taker_pct: number | null; need_usd: number; status: HedgeStatus; real: HedgeStatus | null }[];
+}

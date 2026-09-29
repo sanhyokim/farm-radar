@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -25,6 +26,7 @@ from .execution import views as paper_views
 from .execution.paper import PaperError, PaperExecutor
 from .execution.base import PositionRef
 from .execution import evaluation as paper_evaluation_mod
+from .hedges import status as hedge_status
 from .execution import review as paper_review
 from .execution import risk_job
 from . import market_calendar
@@ -205,8 +207,6 @@ def alerts(days: int = 7) -> dict:
 @app.get("/api/scores")
 def scores(venue: str | None = None) -> dict:
     """プールごとの最新の判定（M2）。net_daily_pct は総資産あたりの%で、判定に使う値。"""
-    import json
-
     config = load_config()
     conn = db.connect(config.database_path)
     try:
@@ -487,6 +487,32 @@ def paper_evaluation_stop(req: ConfirmRequest) -> dict:
     with _open() as (config, conn):
         paper_evaluation_mod.stop(conn, _now())
         return {"message": "評価をやめました（ここまでの記録は残ります）。"}
+
+
+@app.get("/api/faq")
+def faq() -> dict:
+    """「学ぶ」タブのよくある質問（SPEC 7.5章）。docs/faq.md を「## Q. 質問」ごとに分けて返す。"""
+    config = load_config()
+    path = config.root / "docs" / "faq.md"
+    return {"items": parse_faq(path.read_text(encoding="utf-8")) if path.exists() else []}
+
+
+def parse_faq(text: str) -> list[dict]:
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    items: list[dict] = []
+    for block in re.split(r"^## ", text, flags=re.M)[1:]:
+        head, _, body = block.partition("\n")
+        q = re.sub(r"^Q[.．]\s*", "", head.strip())
+        paras = [p.strip() for p in re.split(r"\n\s*\n", body.strip()) if p.strip()]
+        items.append({"q": q, "paragraphs": [{"text": p, "analogy": p.startswith("たとえ")} for p in paras]})
+    return items
+
+
+@app.get("/api/hedges")
+def hedges() -> dict:
+    """ヘッジ先の一覧と担保の状態（SPEC 5.2.1章。読み取りのみ。アドレスは省略形だけ出す）。"""
+    with _open() as (config, conn):
+        return hedge_status.summary(conn, config)
 
 
 @app.get("/api/paper/timeline")

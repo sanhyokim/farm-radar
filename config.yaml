@@ -83,6 +83,15 @@ scoring:
   # GeckoTerminal の1時間足を取り直す間隔（時間）。1分30回までの制限があるため
   external_refresh_hours: 3
 
+# ヘッジ先（perp の取引所。SPEC 5.2.1章。2026-09-29 オーナー追加）。読み取りだけで、お金は動かしません。
+# トークンごとに、ここに書いたヘッジ先を比べて「取引手数料（開く＋閉じる）＋ 1日の資金調達料」が一番安いところを使います。
+# 新しいヘッジ先は backend/farm_radar/hedges/ にアダプターを1ファイル足してから、ここに名前を書きます。
+# account_address: 担保の残高を読み取るアドレス（公開情報。秘密鍵ではありません）。空なら読みません。
+#   .env に LIGHTER_ACCOUNT_ADDRESS=0x... と書いても同じです（.env の方が優先）。画面には省略形（0x1234…abcd）だけ出ます。
+hedge_venues:
+  lighter:
+    account_address: ""
+
 # 判定（信号機）の基準（SPEC 4章）。純日利は総資産あたりの%
 signal:
   green_min_pct: 0.30

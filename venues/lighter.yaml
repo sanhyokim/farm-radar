@@ -32,3 +32,16 @@ funding:
   sources:
     - url: https://docs.lighter.xyz/trading/funding
       checked_at: '2026-09-28'
+
+account:
+  # 担保の残高と建玉の読み取り（SPEC 5.2.1章。読み取りのみ。backend/farm_radar/hedges/lighter.py）
+  api: /api/v1/account?by=l1_address&value=<アドレス>
+  fields: collateral（担保）、available_balance（使える残高）、positions（建玉。position・sign・position_value）
+  sources:
+    - url: https://apidocs.lighter.xyz/
+      checked_at: '2026-09-29'
+    - url: https://mainnet.zklighter.elliot.ai/api/v1/account?by=index&value=1
+      checked_at: '2026-09-29'
+      quote: 公開 API の応答で collateral・available_balance・positions の形を確認。見つからないアドレスは code 21100 "account not found"
+  unverified:
+    - 建玉（positions）がある口座の応答の形（sign が売り=-1 か）は、建玉のある口座で未確認
