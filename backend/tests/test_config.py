@@ -86,6 +86,7 @@ def test_scoring_settings_from_repo_config():
     assert s.slippage_trade_usd is None
     assert (s.slippage_fallback_stable_stock_pct, s.slippage_fallback_other_pct) == (0.1, 1.0)
     assert s.too_high_pct == 5.0
+    assert s.volume_cap_tvl_multiple == 10
 
 
 def test_allocation_must_sum_to_one(tmp_path):

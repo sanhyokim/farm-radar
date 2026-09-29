@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import statistics
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from .prices import PoolPrice, usd_prices
 log = logging.getLogger(__name__)
 
 EXTERNAL_SOURCE = "geckoterminal:1h"
+VOLUME_TEXT = "取引量が不自然に多い（見せかけの取引の可能性）"
 REWARD_DECIMALS = 18   # UP（venues/up-robinhood.yaml の reward_token。検証済みソース Up.sol）
 
 
@@ -280,12 +282,15 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
     if reward_change is not None and reward_change * 100 <= s.reward_token_7d_major_pct:
         base_warns.append(Warn("C2", "major", f"報酬トークンが7日で {reward_change * 100:.0f}%"))
 
+    liq_med = liquidity_medians(conn, venue_id, now - timedelta(hours=24))
+
     ts = now.isoformat(timespec="seconds")
     out = []
     for r in latest:
         row = _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok[r["pool_id"]], token_grid,
                           pool_own, markets, funding, reward_usd, reward_trend_daily, reward_change,
-                          reward_volume.volume_24h_usd if reward_volume else None, stale, age_min, now_s, days)
+                          reward_volume.volume_24h_usd if reward_volume else None, stale, age_min, now_s, days,
+                          liq_med.get(r["pool_id"]))
         row.update({"pool_id": r["pool_id"], "ts": ts, "venue_id": venue_id, "block_number": run["block_number"]})
         is_stock = row.pop("_is_stock")
         db.insert_score(conn, row)
@@ -301,9 +306,31 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
     return out
 
 
+def liquidity_medians(conn: sqlite3.Connection, venue_id: str, since: datetime) -> dict[str, tuple[int, int]]:
+    """プールごとの、直近の記録の流動性の中央値 (プール全体, レンジ内のステーク分)。"""
+    rows = conn.execute(
+        """SELECT s.pool_id, s.liquidity_total, s.liquidity_staked_inrange FROM pool_snapshots s
+           JOIN pools p ON p.id = s.pool_id WHERE p.venue_id=? AND s.ts>=?""",
+        (venue_id, since.isoformat(timespec="seconds"))).fetchall()
+    tot: dict[str, list[int]] = defaultdict(list)
+    stk: dict[str, list[int]] = defaultdict(list)
+    for pid, lt, ls in rows:
+        if lt is not None:
+            tot[pid].append(int(lt))
+        if ls is not None:
+            stk[pid].append(int(ls))
+    return {pid: (statistics.median_low(tot[pid]), statistics.median_low(stk[pid]) if stk[pid] else 0)
+            for pid in tot}
+
+
+def others_liquidity(latest: int, median: int | None) -> int:
+    """取り分の分母に使う「他の人の流動性」= 24時間の中央値と最新の値の大きい方（安全側。2026-09-29 オーナー決定）。"""
+    return max(latest, median or 0)
+
+
 def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid, pool_own, markets, funding,
-                reward_usd, reward_trend_daily, reward_change, reward_volume, stale, age_min, now_s, days
-                ) -> dict[str, Any]:
+                reward_usd, reward_trend_daily, reward_change, reward_volume, stale, age_min, now_s, days,
+                liq_med: tuple[int, int] | None = None) -> dict[str, Any]:
     tokens = ctx.tokens
     t0, t1 = r["token0"].lower(), r["token1"].lower()
     src = "own" if own_ok else "external"
@@ -332,8 +359,16 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     s0, s1 = side(t0, sig0, r["token0_decimals"]), side(t1, sig1, r["token1_decimals"])
     market = markets.get((r["address"] or "").lower())
     fee = (r["fee"] or 0) / 1e6
-    fees_day = market.volume_24h_usd * fee if market and market.volume_24h_usd is not None else None
     tvl = market.reserve_usd if market else None
+    volume = market.volume_24h_usd if market else None
+    volume_used = volume
+    pool_warns = list(base_warns)
+    cap_x = ctx.settings.volume_cap_tvl_multiple
+    if volume is not None and tvl and volume > cap_x * tvl:
+        # 見せかけの取引かもしれないので、手数料収入は TVL × 倍率 の取引量までとして計算する（2026-09-29 オーナー決定）
+        volume_used = cap_x * tvl
+        pool_warns.append(Warn("VOL", "minor", VOLUME_TEXT))
+    fees_day = volume_used * fee if volume_used is not None else None
     eff = int(r["reward_rate_effective_raw"] or 0)
     alive = r["gauge_alive"] is None or bool(r["gauge_alive"])
     reward_usd_day = eff * 86400 / 10 ** REWARD_DECIMALS * reward_usd if (reward_usd and alive) else 0.0
@@ -355,14 +390,19 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         notes.append("ゲージが止まっていて、ボーナスは出ません。")
     elif eff == 0:
         notes.append("今週のボーナスはまだ配られていません。")
+    if volume_used is not None and volume_used != volume:
+        notes.append(f"{VOLUME_TEXT}。手数料はTVLの{cap_x:g}倍の取引量で計算しています。")
     if src == "external":
         notes.append("値動きは外部データ（GeckoTerminal）で補っています。")
 
     ev: Evaluation | None = None
     slip = slip_src = None
-    l_total, l_staked = int(r["liquidity_total"] or 0), int(r["liquidity_staked_inrange"] or 0)
+    l_total_now, l_staked_now = int(r["liquidity_total"] or 0), int(r["liquidity_staked_inrange"] or 0)
+    l_total = others_liquidity(l_total_now, liq_med[0] if liq_med else None)
+    l_staked = others_liquidity(l_staked_now, liq_med[1] if liq_med else None)
     if missing is None:
-        slip, slip_src = _slippage(ctx.settings, params, float(r["price"]), l_total, s0, s1, tokens, t0, t1)
+        # 両替のずれは「今」の流動性で見積もる（今の方が少なければ、ずれは大きくなる = 安全側）
+        slip, slip_src = _slippage(ctx.settings, params, float(r["price"]), l_total_now, s0, s1, tokens, t0, t1)
         inp = PoolInputs(
             price=float(r["price"]), token0=s0, token1=s1, fee=fee,
             unstaked_fee=(r["unstaked_fee"] or 0) / 1e6,
@@ -371,7 +411,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             reward_trend_daily=reward_trend_daily, slippage=slip,
         )
         ev = evaluate(inp, params)
-    j: Judgement = judge(ev, sparams, warnings=list(base_warns), tvl_usd=tvl, missing=missing, notes=notes)
+    j: Judgement = judge(ev, sparams, warnings=pool_warns, tvl_usd=tvl, missing=missing, notes=notes)
 
     details = {
         "inputs": {
@@ -379,12 +419,15 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             "sigma_token": {r["token0_symbol"]: sig0, r["token1_symbol"]: sig1}, "sigma_pair": sig_pair,
             "sigma_stock_split": split, "vol_source": src,
             "reward_usd_day": reward_usd_day, "fees_usd_day": fees_day, "fee": fee,
-            "volume_24h_usd": market.volume_24h_usd if market else None, "tvl_usd": tvl,
+            "volume_24h_usd": volume, "tvl_usd": tvl,
             "reward_token_change_7d": reward_change, "reward_token_trend_daily": reward_trend_daily,
             "emission_pressure": (reward_usd_day / reward_volume) if reward_volume else None,
             "gas_usd_per_tx": params.gas_usd_per_tx,
             "slippage": slip, "slippage_source": slip_src,
             "liquidity_total": str(l_total), "liquidity_staked_inrange": str(l_staked),
+            "liquidity_latest": {"total": str(l_total_now), "staked": str(l_staked_now)},
+            "liquidity_median_24h": ({"total": str(liq_med[0]), "staked": str(liq_med[1])} if liq_med else None),
+            "volume_used_usd": volume_used,
             "perp": {sym: (tokens.perp_for(t).symbol if tokens.perp_for(t) else None)
                      for sym, t in ((r["token0_symbol"], t0), (r["token1_symbol"], t1))},
             "notes": notes,

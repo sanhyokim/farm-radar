@@ -195,3 +195,45 @@ def test_slippage_falls_back_when_it_cannot_be_computed(monkeypatch):
     # ステーブルと株トークンだけのプールは 0.1%、それ以外は 1%
     assert rows["p-nvda"]["slippage_source"] == "fallback" and rows["p-nvda"]["slippage"] == pytest.approx(0.001)
     assert rows["p-weth"]["slippage"] == pytest.approx(0.01)
+
+
+def _latest_run(conn):
+    return conn.execute("SELECT MAX(run_id) FROM pool_snapshots").fetchone()[0]
+
+
+def test_others_liquidity_is_larger_of_24h_median_and_latest():
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    last = _latest_run(conn)
+    # 最新の回だけ、ステーク分がたまたま少ない（大口がレンジの外にいた瞬間）→ 24時間の中央値を使う
+    conn.execute("UPDATE pool_snapshots SET liquidity_staked_inrange=? WHERE run_id=? AND pool_id='up-robinhood:p-weth'",
+                 (str(10 ** 15), last))
+    # 最新の回だけ、ステーク分が多い → 最新の値を使う
+    conn.execute("UPDATE pool_snapshots SET liquidity_staked_inrange=? WHERE run_id=? AND pool_id='up-robinhood:p-up'",
+                 (str(9 * 10 ** 17), last))
+    rows = {r["pool_id"].split(":")[1]: json.loads(r["details_json"])["inputs"]
+            for r in score_venue(conn, _ctx(), now=NOW)}
+    assert rows["p-weth"]["liquidity_staked_inrange"] == str(5 * 10 ** 17)
+    assert rows["p-weth"]["liquidity_latest"]["staked"] == str(10 ** 15)
+    assert rows["p-weth"]["liquidity_median_24h"]["staked"] == str(5 * 10 ** 17)
+    assert rows["p-up"]["liquidity_staked_inrange"] == str(9 * 10 ** 17)
+
+
+class WashGT(FakeGT):
+    def pools(self, addresses):
+        return {a: PoolMarket(a, 10_000.0, 250_000.0, None, None) for a in addresses}   # 取引量がTVLの25倍
+
+
+def test_unnatural_volume_is_capped_and_warned():
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    rows = score_venue(conn, _ctx(WashGT()), now=NOW)
+    for r in rows:
+        inp = json.loads(r["details_json"])["inputs"]
+        assert inp["volume_24h_usd"] == 250_000.0 and inp["volume_used_usd"] == 100_000.0
+        assert inp["fees_usd_day"] == pytest.approx(100_000.0 * 0.003)
+        assert any(w["code"] == "VOL" for w in json.loads(r["warnings_json"]))
+        assert "見せかけの取引" in r["reason_ja"] and len(r["reason_ja"].splitlines()) <= 3
+    # 倍率は設定で変えられる
+    rows = score_venue(conn, _ctx(WashGT(), volume_cap_tvl_multiple=30), now=NOW)
+    assert all(json.loads(r["details_json"])["inputs"]["volume_used_usd"] == 250_000.0 for r in rows)
