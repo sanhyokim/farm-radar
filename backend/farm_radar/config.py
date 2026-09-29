@@ -181,6 +181,23 @@ def _risk(raw: dict[str, Any]) -> RiskSettings:
 
 
 @dataclass(frozen=True)
+class ReviewSettings:
+    """定時レビューと資産の見通し（M5c。SPEC 8.5章・7.4章）。config.yaml の review から読む。"""
+    every_minutes: int = 30                 # 定時レビューを作る間隔（分）
+    outlook_conservative_pct: float = 30.0  # 資産の見通しの下限: プラスの項目はこの%控えめ、マイナスの項目はこの%厳しめ
+
+
+def _review(raw: dict[str, Any]) -> ReviewSettings:
+    r = raw.get("review") or {}
+    d = ReviewSettings()
+    out = ReviewSettings(every_minutes=int(r.get("every_minutes", d.every_minutes)),
+                         outlook_conservative_pct=float(r.get("outlook_conservative_pct", d.outlook_conservative_pct)))
+    if out.every_minutes <= 0 or 60 % out.every_minutes and out.every_minutes % 60:
+        raise ConfigError("review.every_minutes は 60 を割り切れる数か、60 の倍数（30 など）にしてください。")
+    return out
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -194,6 +211,7 @@ class Config:
     scoring: ScoringSettings = field(default_factory=ScoringSettings)
     notify: NotifySettings = field(default_factory=NotifySettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
+    review: ReviewSettings = field(default_factory=ReviewSettings)
     root: Path = REPO_ROOT
 
 
@@ -241,6 +259,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         scoring=_scoring(raw),
         notify=_notify(raw),
         risk=_risk(raw),
+        review=_review(raw),
         root=root,
     )
 

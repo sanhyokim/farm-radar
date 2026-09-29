@@ -119,6 +119,11 @@ risk:
   actual_min_hours: 6                  # 始めてから6時間未満は「参考（データ不足）」として小さく出す
   compare_min_hours: 24                # 24時間たってから「予測との比較」を出す
 
+# 定時レビューと資産の見通し（M5c）
+review:
+  every_minutes: 30                    # 練習の建玉の定時レビューを作る間隔（分）
+  outlook_conservative_pct: 30         # 資産の見通しの下限: プラスは30%控えめ、マイナスは30%厳しめに見る
+
 # リスク上限。エージェントは変更しません（変更はオーナーが手で行う）。
 limits:
   position_usd: 1000

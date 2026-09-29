@@ -74,12 +74,12 @@ def targets(conn: sqlite3.Connection, venue: dict[str, Any], tokens: TokenBook) 
             VOTER_CALLS if name == "voter" else None)
     for addr in sorted(tokens.stablecoins):
         add(addr, _symbol(conn, addr) or "ステーブルコイン")
-    rows = conn.execute("""SELECT p.id, p.token0, p.token1, p.token0_symbol, p.token1_symbol, p.gauge_address
+    rows = conn.execute("""SELECT p.address, p.token0, p.token1, p.token0_symbol, p.token1_symbol, p.gauge_address
                            FROM positions x JOIN pools p ON p.id=x.pool_id
                            WHERE x.is_paper=1 AND x.status='open'""").fetchall()
     for r in rows:
         pair = f"{r['token0_symbol']}/{r['token1_symbol']}"
-        add(r["id"], f"{pair} のプール")
+        add(r["address"], f"{pair} のプール")
         add(r["gauge_address"], f"{pair} のゲージ")
         add(r["token0"], r["token0_symbol"] or "token0")
         add(r["token1"], r["token1_symbol"] or "token1")
@@ -122,8 +122,9 @@ def read_target(rpc: RpcClient, t: Target) -> dict[str, str | None]:
     for key, sig in t.calls.items():
         try:
             vals[key] = _word_to_value(key, rpc.eth_call(t.address, "0x" + selector(sig).hex(), "latest"))
-        except RpcCallError:
-            vals[key] = UNREADABLE
+        except RpcCallError as exc:
+            # revert = その関数がない（未確認）。それ以外の明確なエラーは今回は比べない
+            vals[key] = UNREADABLE if exc.code == 3 or "revert" in (exc.message or "").lower() else None
         except Exception:
             vals[key] = None
     return vals

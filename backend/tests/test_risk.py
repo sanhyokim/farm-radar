@@ -468,3 +468,72 @@ def test_card_shows_rebalance_count_and_cost(world, calm):  # noqa: F811
     ex.rebalance(ref, r_pct=4)
     c = pviews.card(conn, _pos(conn, ref.position_id), NOW)
     assert c["rebalances"] == 2 and c["rebalance_cost"] > res["cost_usd"] > 0
+
+
+# --- M5c: 定時レビュー・タイムライン・カレンダー・資産の見通し・月次CSV ------------------------------
+
+def test_review_text_and_timeline(world, calm):  # noqa: F811
+    from farm_radar.execution import review
+    path, conn = world
+    cfg = _config(path)
+    assert review.make_review(conn, cfg, NOW) is None                 # 建玉がなく、何も起きていなければ作らない
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    _extend(conn, 3)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=4))
+    r = review.make_review(conn, cfg, NOW + timedelta(hours=3, minutes=2))
+    assert r and r["body"].startswith("1建玉すべてレンジ内。") and "直近30分" in r["body"]
+    assert "移動なし。" in r["body"] and r["positions"][0]["id"] == ref.position_id
+    assert review.make_review(conn, dataclasses.replace(cfg, mode="observe"), NOW) is None
+    ex.close_position(ref)
+    items = review.timeline(conn)
+    types = [i["type"] for i in items]
+    assert {"review", "open", "close"} <= set(types)
+    assert [i["ts"] for i in items] == sorted((i["ts"] for i in items), reverse=True)
+    assert all(i["type"] == "review" for i in review.timeline(conn, kinds={"review"}))
+    assert all(i.get("position_id") == ref.position_id for i in review.timeline(conn, position_id=ref.position_id))
+
+
+def test_calendar_and_outlook(world, calm):  # noqa: F811
+    from farm_radar.execution import review
+    path, conn = world
+    cfg = _config(path)
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    _extend(conn, 30)
+    now = NOW + timedelta(hours=31)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=now)
+    cal = review.calendar(conn, None, now)
+    total = conn.execute("SELECT SUM(net) FROM position_pnl").fetchone()[0]
+    assert cal["total"] == pytest.approx(total) and len(cal["days"]) >= 2
+    assert cal["next"] is None and cal["prev"] is None                # 最初の月・今月
+    o = review.outlook(conn, cfg, now)
+    assert [x["label"] for x in o["rows"]] == ["1週間後", "1か月後", "3か月後", "半年後", "1年後"]
+    assert all(x["low"] <= x["value"] for x in o["rows"])              # 下限は必ず低い
+    assert o["rows"][0]["value"] == pytest.approx(o["value_now"] * (1 + o["daily_pct"] / 100) ** 7)
+    assert not o["short"]
+
+
+def test_ledger_csv(world, calm):  # noqa: F811
+    from farm_radar.execution import review
+    path, conn = world
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    month = review.ledger_months(conn)[0]
+    body = review.ledger_csv(conn, month)
+    assert body.startswith("﻿日時（日本時間）,種類")
+    lines = body.strip().splitlines()
+    n = conn.execute("SELECT COUNT(*) FROM ledger").fetchone()[0]
+    assert len(lines) == n + 1 and "入れる" in body
+
+
+def test_api_timeline_calendar_csv(client):
+    client, _conn, _path = client
+    r = client.get("/api/paper/timeline?kind=review")
+    assert r.status_code == 200 and "items" in r.json()
+    assert client.get("/api/paper/calendar?month=2026-9x").status_code == 400
+    assert client.get("/api/paper/calendar").status_code == 200
+    r = client.get("/api/paper/ledger.csv?month=2026-09")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+    d = client.get("/api/paper").json()
+    assert {"timeline", "outlook", "ledger_months", "watch"} <= set(d)

@@ -14,6 +14,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from . import runtime
 from .collectors.snapshot import collect_venue, record_failed_run
 from .db import database as db
+from .execution.review import make_review
 from .external.geckoterminal import GeckoTerminal
 from .external.lighter import Lighter
 from .logging_setup import setup_logging
@@ -115,6 +116,17 @@ def main() -> None:
             conn.close()
         notifier.tick()
 
+    def review_job() -> None:
+        """練習の定時レビュー（M5c。SPEC 8.5章: 30分ごと）。"""
+        conn = db.connect(config.database_path)
+        try:
+            make_review(conn, config)
+        except Exception as exc:
+            log.exception("review failed")
+            notifier.error("-", "練習の定時レビューの作成に失敗", f"{type(exc).__name__}: {exc}")
+        finally:
+            conn.close()
+
     def notify_job() -> None:
         try:
             notifier.tick()
@@ -153,6 +165,13 @@ def main() -> None:
         sched.add_job(fast_job, CronTrigger(minute=",".join(map(str, fast_minutes)), hour=hours,
                                             timezone="Asia/Tokyo"),
                       id="paper_fast", max_instances=1, coalesce=True, misfire_grace_time=60)
+    # 定時レビュー（M5c）: 収集と練習の計算が終わったあと（毎時2分・32分など）に作る
+    if config.mode == "paper":
+        rm = config.review.every_minutes
+        review_trigger = (CronTrigger(minute=f"2-59/{rm}", timezone="UTC") if rm < 60
+                          else CronTrigger(minute="2", hour=f"*/{rm // 60}", timezone="UTC"))
+        sched.add_job(review_job, review_trigger, id="paper_review", max_instances=1, coalesce=True,
+                      misfire_grace_time=300)
     # 起動直後のスコア計算も、ここで直接呼ばずにスケジューラーに任せる。
     # 最初の計算は外部サイトから7日分の足を取り寄せるので数分かかり、直接呼ぶと15分ごとの収集が待たされるため
     sched.add_job(score_job, score_trigger, id="score", max_instances=1, coalesce=True, misfire_grace_time=None,

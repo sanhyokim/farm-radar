@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { postApi, useApi, type Paper, type PaperCard, type RiskEvent, type Watch } from "../api";
 import { jst, pct, signedUsd, tone, usd } from "../format";
 import { Badge, Card, Loading, Note, Term } from "../ui";
+import { CalendarCard, CsvCard, OutlookCard, TimelineList } from "./PaperExtras";
 
 export default function Practice() {
   const { data, error, reload } = useApi<Paper>("/api/paper");
@@ -37,13 +38,17 @@ export default function Practice() {
       )}
       {data.open.map((c) => <PositionCard key={c.id} c={c} />)}
 
+      {data.outlook && <OutlookCard o={data.outlook} />}
+
       {data.enabled && (
-        <Card title="見張りの記録（新しい順）">
-          {data.events.length ? <EventList events={data.events} /> : (
-            <p className="text-sm text-slate-400">まだ記録はありません。危ないことが起きたら、ここに理由と一緒に残ります。</p>
+        <Card title="タイムライン（新しい順）" right={<Link to="/practice/timeline" className="text-xs text-sky-300">すべて見る ›</Link>}>
+          {data.timeline.length ? <TimelineList items={data.timeline} /> : (
+            <p className="text-sm text-slate-400">まだ記録はありません。30分ごとの定時レビューと、見張りで起きたことがここに並びます。</p>
           )}
         </Card>
       )}
+
+      {data.enabled && <CalendarCard />}
 
       {data.enabled && (
         <Card title="見張りのルール">
@@ -61,6 +66,8 @@ export default function Practice() {
       )}
 
       {data.enabled && <WatchCard w={data.watch} />}
+
+      {data.enabled && <CsvCard months={data.ledger_months} />}
 
       {data.closed.length > 0 && (
         <Card title="閉じた練習">

@@ -5,7 +5,8 @@ import { AssetsLine, HourlyBars, Waterfall } from "../charts";
 import { jst, pct, signedUsd, tone, usd } from "../format";
 import { Badge, Card, Loading, Note, Term } from "../ui";
 import { BreakdownTable } from "./PoolDetail";
-import { EventList, PositionCard, hoursJa } from "./Practice";
+import { PositionCard, hoursJa } from "./Practice";
+import { OutlookCard, TimelineList } from "./PaperExtras";
 
 const KIND_JA: Record<string, string> = {
   deposit: "入れる", withdraw: "引き出す", claim: "報酬の受け取り", cost: "費用",
@@ -29,8 +30,8 @@ export default function PracticeDetail() {
       <PositionCard c={d} link={false} />
       {d.red_note && <Card><p className="text-sm text-rose-200">{d.red_note}</p></Card>}
 
-      <Card title="この建玉の見張りの記録（新しい順）">
-        {d.events.length ? <EventList events={d.events} /> : (
+      <Card title="この建玉のタイムライン（新しい順）">
+        {d.timeline.length ? <TimelineList items={d.timeline.slice(0, 12)} /> : (
           <p className="text-sm text-slate-400">まだ記録はありません。レンジの端に近づく・外に出る・報酬トークンが大きく下がるなどが起きると、理由と一緒にここに残ります。</p>
         )}
       </Card>
@@ -161,6 +162,8 @@ export default function PracticeDetail() {
       <Card title="評価額の推移">
         <AssetsLine series={d.series} capital={d.capital} />
       </Card>
+
+      {d.outlook && <OutlookCard o={d.outlook} title="この建玉の資産の見通し" />}
 
       <Card title={<Term k="台帳">台帳（新しい順）</Term>}>
         <div className="max-h-80 space-y-1 overflow-y-auto text-xs">
