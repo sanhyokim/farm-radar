@@ -1,0 +1,485 @@
+"""練習（ペーパートレード）の建玉を、本物のデータで動かす（SPEC 7.4章・12.1章。M5a）。
+
+お金は動かさない。ウォレットも秘密鍵も使わない。15分ごとの記録（実際のプール価格・報酬の毎秒量・ステーク流動性）
+から「この建玉を持っていたらどうなったか」を計算し、positions / position_pnl / ledger 表に書く。
+
+損益の6区分（SPEC 7.6章。すべて「開いてからの累計」で持ち、行ごとに差分を書く）:
+- 収入: 受け取った報酬トークン × 受け取った時の値段（ステーク）/ 手数料の推定（ステークしない）
+- 方向: 開いた時のトークンの量をそのまま持っていた場合の値動き = 開いた時の量 × 今の値段 − LPに入れた額
+- ガンマ: LPの今の中身の価値 − 開いた時の量をそのまま持っていた場合の価値（v3 の式）
+- ヘッジ: perp の仮想の売りの損益 − 資金調達の支払い − 取引手数料
+- 報酬トークン値下がり: 持っている報酬トークン ×（今の値段 − 受け取った時の値段）（SPEC 7.6章 6.）
+- その他: 両替の手数料とずれ、ガス代（開く時・閉じる時。受け取りのガス代は1日1回分）
+参考として「受け取ってから reward_sell_hours 時間で売った場合」の値下がりも記録する（M4 の参考値と比べるため）。
+
+注意（推定の部分。画面にも書く）:
+- 受け取りは15分ごとに記録する（値段を細かく付けるため）。ガス代は1日1回受け取る前提で数える。
+- perp の値段は、プールから出したドル価格で代用する（Lighter の値段との差は小さいとみなす）。
+- ステークしない建玉の手数料は、スコア計算の「1日の手数料」（GeckoTerminal の取引量 × 手数料率。
+  取引量が不自然に多ければ0）から取り分を推定する。
+- 置き直し（リバランス）と離脱のルールは M5b。M5a の建玉はレンジを外れても置いたまま（外れている間は報酬0）。
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+import sqlite3
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from ..config import Config
+from ..fx import Frankfurter, rate_for
+from ..scoring.prices import PoolPrice, usd_prices
+from ..tokens import TokenBook
+from .base import ClaimResult, CloseResult, HedgeResult, PositionRef, SwapResult
+
+log = logging.getLogger(__name__)
+
+REWARD_DECIMALS = 18
+CATS = ("income", "direction", "gamma", "hedge", "haircut", "other")
+
+
+class PaperError(Exception):
+    """練習の建玉を作れない・閉じられない（理由はオーナー向けの日本語）。"""
+
+
+def lp_amounts(liquidity: float, price: float, lower: float, upper: float, d0: int, d1: int) -> tuple[float, float]:
+    """v3 の式で、流動性 L を [lower, upper] に置いたときの、今の価格でのトークンの量（小数点調整済み）。"""
+    k = 10 ** (d1 - d0)
+    sa, sb = math.sqrt(lower * k), math.sqrt(upper * k)
+    sp = min(max(math.sqrt(price * k), sa), sb)
+    x_raw = liquidity * (1 / sp - 1 / sb)
+    y_raw = liquidity * (sp - sa)
+    return x_raw / 10 ** d0, y_raw / 10 ** d1
+
+
+def _iso(t: datetime) -> str:
+    return t.astimezone(UTC).isoformat(timespec="seconds")
+
+
+def _ts(s: str) -> datetime:
+    return datetime.fromisoformat(s)
+
+
+@dataclass
+class Market:
+    """記録（pool_snapshots）から、ある時点のプールの状態とトークンのドル価格を読む。"""
+    conn: sqlite3.Connection
+    stables: frozenset[str]
+    _prices: dict[int, dict[str, float]] = field(default_factory=dict)
+
+    def pool(self, pool_id: str) -> sqlite3.Row:
+        row = self.conn.execute(
+            "SELECT p.*, v.name AS venue_name FROM pools p LEFT JOIN venues v ON v.id = p.venue_id WHERE p.id=?",
+            (pool_id,)).fetchone()
+        if row is None:
+            raise PaperError("このプールは見つかりません。")
+        return row
+
+    def latest(self, pool_id: str) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM pool_snapshots WHERE pool_id=? AND price IS NOT NULL "
+                                 "ORDER BY ts DESC LIMIT 1", (pool_id,)).fetchone()
+
+    def after(self, pool_id: str, since: str, until: str | None = None) -> list[sqlite3.Row]:
+        q = "SELECT * FROM pool_snapshots WHERE pool_id=? AND ts>? AND price IS NOT NULL"
+        args: list[Any] = [pool_id, since]
+        if until:
+            q += " AND ts<=?"
+            args.append(until)
+        return self.conn.execute(q + " ORDER BY ts", args).fetchall()
+
+    def prices(self, run_id: int) -> dict[str, float]:
+        """その回の記録のすべてのプールから出したドル価格（{トークン(小文字): ドル}）。"""
+        if run_id not in self._prices:
+            rows = self.conn.execute(
+                """SELECT s.price, s.liquidity_total, s.sqrt_price_x96, p.token0, p.token1, p.token0_decimals,
+                          p.token1_decimals FROM pool_snapshots s JOIN pools p ON p.id = s.pool_id
+                   WHERE s.run_id=? AND s.price IS NOT NULL""", (run_id,)).fetchall()
+            pps = [PoolPrice(r["token0"], r["token1"], int(r["token0_decimals"]), int(r["token1_decimals"]),
+                             float(r["price"]), int(r["liquidity_total"] or 0), int(r["sqrt_price_x96"] or 0))
+                   for r in rows if r["token0_decimals"] is not None and r["sqrt_price_x96"]]
+            self._prices[run_id] = usd_prices(pps, self.stables)
+        return self._prices[run_id]
+
+
+def latest_score(conn: sqlite3.Connection, pool_id: str, at: str | None = None) -> sqlite3.Row | None:
+    q = "SELECT * FROM scores WHERE pool_id=?"
+    args: list[Any] = [pool_id]
+    if at:
+        q += " AND ts<=?"
+        args.append(at)
+    return conn.execute(q + " ORDER BY ts DESC LIMIT 1", args).fetchone()
+
+
+def _range_row(details: dict[str, Any], r_pct: float) -> dict[str, Any] | None:
+    for x in details.get("ranges") or []:
+        if abs(float(x.get("r_pct", -1)) - r_pct) < 1e-9:
+            return x
+    return None
+
+
+class PaperExecutor:
+    """練習の建玉を作る・閉じる・受け取る（SPEC 12.1章の形）。"""
+
+    def __init__(self, conn: sqlite3.Connection, config: Config, tokens: TokenBook,
+                 fx: Frankfurter | None = None, now: datetime | None = None):
+        self.conn = conn
+        self.config = config
+        self.tokens = tokens
+        self.fx = fx
+        self.now = now or datetime.now(UTC)
+        self.market = Market(conn, tokens.stablecoins)
+
+    # --- 上限と状態 -------------------------------------------------------------------------
+
+    def check_can_open(self, venue_id: str, capital: float) -> None:
+        """上限（config.yaml の limits。変更はオーナーだけ）と、モード・停止の確認。守れなければ PaperError。"""
+        if self.config.mode != "paper":
+            raise PaperError("今は「見るだけ」モードです。練習するには config.yaml の mode を paper にしてください。")
+        st = self.conn.execute("SELECT stopped FROM paper_state WHERE id=1").fetchone()
+        if st and st["stopped"]:
+            raise PaperError("練習は「停止」中です。再開してから試してください。")
+        lim = self.config.limits
+        if capital > float(lim.get("position_usd", capital)):
+            raise PaperError(f"1つの建玉の上限（${lim['position_usd']:,.0f}）を超えています。")
+        open_rows = self.conn.execute("SELECT venue_id, capital FROM positions WHERE is_paper=1 AND status='open'"
+                                      ).fetchall()
+        total = sum(r["capital"] for r in open_rows) + capital
+        if "total_usd" in lim and total > float(lim["total_usd"]):
+            raise PaperError(f"建玉の合計の上限（${lim['total_usd']:,.0f}）を超えます。")
+        venue_total = sum(r["capital"] for r in open_rows if r["venue_id"] == venue_id) + capital
+        if "per_venue_share" in lim and "total_usd" in lim and \
+                venue_total > float(lim["total_usd"]) * float(lim["per_venue_share"]):
+            cap = float(lim["total_usd"]) * float(lim["per_venue_share"])
+            raise PaperError(f"1つの会場に置ける上限（合計の{float(lim['per_venue_share']) * 100:.0f}% = "
+                             f"${cap:,.0f}）を超えます。先にほかの建玉を閉じてください。")
+        day_start = (self.now - timedelta(hours=24)).isoformat(timespec="seconds")
+        trades = self.conn.execute(
+            "SELECT COUNT(*) FROM positions WHERE is_paper=1 AND (opened_at>=? OR closed_at>=?)",
+            (day_start, day_start)).fetchone()[0]
+        if "trades_per_day" in lim and trades + 1 > int(lim["trades_per_day"]):
+            raise PaperError(f"1日の取引の上限（{lim['trades_per_day']}件）に達しています。")
+
+    # --- 開く ---------------------------------------------------------------------------------
+
+    def open_position(self, pool_id: str, capital: float, lower: float | None = None,
+                      upper: float | None = None, r_pct: float | None = None) -> PositionRef:
+        """建玉を作る。レンジを指定しなければ、最新のスコアの最適レンジ（±r%）を使う。"""
+        pool = self.market.pool(pool_id)
+        snap = self.market.latest(pool_id)
+        score = latest_score(self.conn, pool_id)
+        if snap is None or score is None or score["best_r"] is None:
+            raise PaperError("このプールはまだ計算できていないので、練習を始められません。")
+        self.check_can_open(pool["venue_id"], capital)
+        details = json.loads(score["details_json"] or "{}")
+        inp = details.get("inputs") or {}
+        price = float(snap["price"])
+        r_pct = r_pct if r_pct is not None else float(score["best_r"])
+        if lower is None or upper is None:
+            lower, upper = price * (1 - r_pct / 100), price * (1 + r_pct / 100)
+        pred = _range_row(details, r_pct) or {}
+        prices = self.market.prices(snap["run_id"])
+        t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+        u0, u1 = prices.get(t0), prices.get(t1)
+        if u0 is None or u1 is None:
+            raise PaperError("トークンのドル価格が分からないので、練習を始められません。")
+        d0, d1 = int(pool["token0_decimals"]), int(pool["token1_decimals"])
+        s = self.config.scoring
+        c_lp = capital * s.allocation_lp
+        liq = _liquidity_for_range(c_lp, price, lower, upper, u0, u1, d0, d1)
+        x0, y0 = lp_amounts(liq, price, lower, upper, d0, d1)
+        c_lp_open = x0 * u0 + y0 * u1
+
+        # 開く時の費用: 両替（手数料 + ずれ）とガス代2回（スコア計算と同じ値を使う）
+        fee = float(inp.get("fee") or (snap["fee"] or 0) / 1e6)
+        slip = float(inp.get("slippage") or 0.0)
+        gas = float(inp.get("gas_usd_per_tx") or 0.0)
+        swap_cost = c_lp * s.swap_ratio * (fee + slip)
+        hedges = []
+        for tok, amt, usd, sym in ((t0, x0, u0, pool["token0_symbol"]), (t1, y0, u1, pool["token1_symbol"])):
+            perp = self.tokens.perp_for(tok)
+            if self.tokens.is_stable(tok) or perp is None or amt <= 0:
+                continue
+            hedges.append({"token": tok, "symbol": sym, "perp": perp.symbol, "market_id": perp.market_id,
+                           "size": amt, "entry": usd})
+        taker = s.hedge_taker_fee_pct / 100
+        hedge_fee = sum(h["size"] * h["entry"] * taker for h in hedges)
+        costs = swap_cost + 2 * gas + hedge_fee
+
+        started_red = 1 if score["signal"] == "red" else 0
+        predicted = {
+            "score_ts": score["ts"], "signal": score["signal"], "r_pct": r_pct, "mode": pred.get("mode"),
+            "net": pred.get("net"), "income": pred.get("income"), "gamma": pred.get("gamma"),
+            "rebalance": pred.get("rebalance"), "hedge": pred.get("hedge"), "haircut": pred.get("haircut"),
+            "direction_risk": pred.get("direction_risk"), "net_sell_now": pred.get("net_sell_now"),
+            "in_range_ratio": pred.get("in_range_ratio"), "c_total": s.total_capital_usd,
+        }
+        mode = pred.get("mode") or score["mode"] or "staked"
+        up_price = self._reward_price(prices)
+        state = _new_state(snap, costs, up_price, gas)
+        ts = _iso(self.now)
+        # 報酬などは「開いた時刻」から数える（最新の記録が少し前のものでも、その間の分は数えない）
+        state["prev"]["ts"] = max(ts, snap["ts"])
+        cur = self.conn.execute(
+            """INSERT INTO positions(pool_id, is_paper, opened_at, capital, r, lower, upper, status, venue_id, mode,
+                 liquidity, amount0, amount1, price_open, usd0_open, usd1_open, c_lp, hedges_json, started_red,
+                 signal_open, predicted_json, last_ts, state_json)
+               VALUES (?,1,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (pool_id, ts, capital, r_pct / 100, lower, upper, pool["venue_id"], mode, str(liq), x0, y0, price, u0, u1,
+             c_lp_open, json.dumps(hedges), started_red, score["signal"], json.dumps(predicted), snap["ts"],
+             json.dumps(state)))
+        pid = int(cur.lastrowid)
+        led = [("deposit", pool["token0_symbol"], x0, u0, "LPに入れる"),
+               ("deposit", pool["token1_symbol"], y0, u1, "LPに入れる"),
+               ("cost", "USD", swap_cost, 1.0, "両替の手数料とずれ（開く時）"),
+               ("cost", "USD", 2 * gas, 1.0, "ガス代（開く時 2回）")]
+        led += [("hedge_open", h["perp"], h["size"], h["entry"], "perp の仮想の売り") for h in hedges]
+        if hedge_fee:
+            led.append(("cost", "USD", hedge_fee, 1.0, "perp の取引手数料"))
+        for kind, token, amount, usd, note in led:
+            self._ledger(ts, pid, kind, token, amount, usd, note)
+        # 開いた時の行（その他 = 開く時の費用）
+        self._pnl_row(pid, state["prev"]["ts"], {**{c: 0.0 for c in CATS}, "other": -costs}, 0.0,
+                      in_range=1.0 if lower <= price <= upper else 0.0, reward_amount=0.0,
+                      value=capital - costs, estimated=False, detail={"event": "open"})
+        self.conn.commit()
+        log.info("paper position opened", extra={"data": {"position": pid, "pool": pool_id, "r_pct": r_pct,
+                                                          "mode": mode, "started_red": bool(started_red)}})
+        return PositionRef(pid)
+
+    def _reward_price(self, prices: dict[str, float]) -> float | None:
+        rt = self._reward_token()
+        return prices.get(rt) if rt else None
+
+    def _reward_token(self) -> str | None:
+        row = self.conn.execute("SELECT reward_token FROM pool_snapshots WHERE reward_token IS NOT NULL "
+                                "ORDER BY ts DESC LIMIT 1").fetchone()
+        return row[0].lower() if row and row[0] else None
+
+    # --- 毎回の計算（15分ごとの記録1つごと） --------------------------------------------------
+
+    def update(self, pos: sqlite3.Row, until: str | None = None) -> int:
+        """前回の続きから until までの記録で、損益を計算して position_pnl に書く。書いた行の数を返す。"""
+        pool = self.market.pool(pos["pool_id"])
+        snaps = self.market.after(pos["pool_id"], pos["last_ts"], until)
+        if not snaps:
+            return 0
+        st = json.loads(pos["state_json"])
+        hedges = json.loads(pos["hedges_json"] or "[]")
+        liq = float(pos["liquidity"])
+        d0, d1 = int(pool["token0_decimals"]), int(pool["token1_decimals"])
+        t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+        s = self.config.scoring
+        gap_s = self.config.snapshot_minutes * 60 * 1.5
+        sell_s = s.reward_sell_hours * 3600
+        rt = self._reward_token()
+        n = 0
+        for snap in snaps:
+            prev = st["prev"]
+            dt = (_ts(snap["ts"]) - _ts(prev["ts"])).total_seconds()
+            if dt <= 0:
+                continue
+            prices = self.market.prices(snap["run_id"])
+            u0 = prices.get(t0, st["last_prices"].get(t0))
+            u1 = prices.get(t1, st["last_prices"].get(t1))
+            up = prices.get(rt, st["last_prices"].get("reward")) if rt else None
+            if u0 is None or u1 is None:
+                continue
+            st["last_prices"] = {t0: u0, t1: u1, "reward": up}
+            price = float(snap["price"])
+            inside = lambda p: 1.0 if pos["lower"] <= p <= pos["upper"] else 0.0  # noqa: E731
+            f = (inside(prev["price"]) + inside(price)) / 2
+            reward_amt = 0.0
+            if pos["mode"] == "unstaked":
+                sc = latest_score(self.conn, pos["pool_id"], snap["ts"])
+                fees_day = float((json.loads(sc["details_json"] or "{}").get("inputs") or {}).get("fees_usd_day")
+                                 or 0.0) if sc else 0.0
+                share = liq / (prev["liq_total"] + liq) if liq > 0 else 0.0
+                st["fees_usd"] += fees_day * (1 - prev["unstaked_fee"]) * share * f * dt / 86400
+            elif prev["alive"] and up is not None:
+                share = liq / (prev["liq_staked"] + liq) if liq > 0 else 0.0
+                reward_amt = prev["rate"] / 10 ** REWARD_DECIMALS * dt * share * f
+                if reward_amt > 0:
+                    st["held"] += reward_amt
+                    st["held_value"] += reward_amt * up
+                    st["lots"].append([_ts(snap["ts"]).timestamp(), reward_amt, up])
+                    self._ledger(snap["ts"], pos["id"], "claim", "UP", reward_amt, up, "報酬の受け取り（記録）")
+            st["costs"] += float(st.get("gas", 0.0)) * dt / 86400        # 受け取りのガス代は1日1回分
+            for h in hedges:
+                rate = self._funding(h["market_id"], _ts(prev["ts"]))
+                if rate is None:
+                    st["funding_missing"] = True
+                    rate = 0.0
+                hp = prices.get(h["token"], h["entry"])
+                st["funding_paid"] += h["size"] * hp * rate * dt / 3600
+            # 「すぐ売る」場合: 受け取ってから reward_sell_hours たった分を、今の値段で売ったことにする
+            now_s = _ts(snap["ts"]).timestamp()
+            keep = []
+            for lot in st["lots"]:
+                if now_s - lot[0] >= sell_s and up is not None:
+                    st["sold_haircut"] += lot[1] * (up - lot[2])
+                else:
+                    keep.append(lot)
+            st["lots"] = keep
+            cum = _cumulative(pos, st, hedges, price, u0, u1, up, prices, d0, d1)
+            delta = {c: cum[c] - st["cum"][c] for c in CATS}
+            delta_sell = cum["haircut_sell"] - st["cum"]["haircut_sell"]
+            st["cum"] = cum
+            estimated = dt > gap_s
+            self._pnl_row(pos["id"], snap["ts"], delta, delta_sell, in_range=f, reward_amount=reward_amt,
+                          value=pos["capital"] + sum(cum[c] for c in CATS), estimated=estimated,
+                          detail={"price": price, "usd0": u0, "usd1": u1, "reward_usd": up,
+                                  "dt_s": dt, **({"gap": True} if estimated else {})})
+            st["prev"] = _prev_of(snap)
+            n += 1
+        self.conn.execute("UPDATE positions SET last_ts=?, state_json=? WHERE id=?",
+                          (st["prev"]["ts"], json.dumps(st), pos["id"]))
+        self.conn.commit()
+        return n
+
+    def _funding(self, market_id: int, at: datetime) -> float | None:
+        hour = int(at.timestamp()) // 3600 * 3600
+        row = self.conn.execute("SELECT short_rate FROM funding_rates WHERE market_id=? AND ts<=? AND ts>? "
+                                "ORDER BY ts DESC LIMIT 1", (market_id, hour, hour - 3 * 3600)).fetchone()
+        return float(row[0]) if row else None
+
+    def claim(self, ref: PositionRef) -> ClaimResult:
+        """練習では報酬は15分ごとの計算で受け取ったことにしている。ここでは直近の受け取りを返す。"""
+        row = self.conn.execute("SELECT token, amount, price_usd FROM ledger WHERE position_id=? AND kind='claim' "
+                                "ORDER BY ts DESC LIMIT 1", (ref.position_id,)).fetchone()
+        return ClaimResult(row["token"], row["amount"], row["price_usd"]) if row else ClaimResult("UP", 0.0, 0.0)
+
+    def swap_to_usdg(self, token: str, amount: float, max_slippage: float) -> SwapResult:
+        raise NotImplementedError("練習の両替は、閉じる時に close_position の中で計算します（M5b で分けます）。")
+
+    def hedge_adjust(self, symbol: str, target_size: float) -> HedgeResult:
+        raise NotImplementedError("ヘッジの量の調整は M5b で作ります。")
+
+    def hedge_close(self, symbol: str) -> HedgeResult:
+        raise NotImplementedError("ヘッジを閉じるのは close_position の中で行います。")
+
+    # --- 閉じる ---------------------------------------------------------------------------------
+
+    def close_position(self, ref: PositionRef, reason: str = "manual") -> CloseResult:
+        pos = self.conn.execute("SELECT * FROM positions WHERE id=? AND is_paper=1", (ref.position_id,)).fetchone()
+        if pos is None:
+            raise PaperError("この建玉は見つかりません。")
+        if pos["status"] != "open":
+            raise PaperError("この建玉はもう閉じています。")
+        self.update(pos)
+        pos = self.conn.execute("SELECT * FROM positions WHERE id=?", (ref.position_id,)).fetchone()
+        pool = self.market.pool(pos["pool_id"])
+        st = json.loads(pos["state_json"])
+        hedges = json.loads(pos["hedges_json"] or "[]")
+        snap = self.market.latest(pos["pool_id"])
+        price = float(snap["price"])
+        prices = self.market.prices(snap["run_id"])
+        t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+        u0, u1 = prices.get(t0, st["last_prices"].get(t0)), prices.get(t1, st["last_prices"].get(t1))
+        up = st["last_prices"].get("reward")
+        d0, d1 = int(pool["token0_decimals"]), int(pool["token1_decimals"])
+        x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"], d0, d1)
+        score = latest_score(self.conn, pos["pool_id"])
+        inp = (json.loads(score["details_json"] or "{}").get("inputs") or {}) if score else {}
+        fee = float(inp.get("fee") or 0.0)
+        slip = float(inp.get("slippage") or 0.0)
+        gas = float(inp.get("gas_usd_per_tx") or 0.0)
+        volatile = (0.0 if self.tokens.is_stable(t0) else x * u0) + (0.0 if self.tokens.is_stable(t1) else y * u1)
+        swap_cost = volatile * (fee + slip)
+        taker = self.config.scoring.hedge_taker_fee_pct / 100
+        hedge_fee = sum(h["size"] * prices.get(h["token"], h["entry"]) * taker for h in hedges)
+        close_cost = swap_cost + 2 * gas + hedge_fee
+        st["costs"] += close_cost
+        cum = _cumulative(pos, st, hedges, price, u0, u1, up, prices, d0, d1)
+        delta = {c: cum[c] - st["cum"][c] for c in CATS}
+        delta_sell = cum["haircut_sell"] - st["cum"]["haircut_sell"]
+        st["cum"] = cum
+        ts = _iso(self.now)
+        net = sum(cum[c] for c in CATS)
+        row_ts = max(ts, _iso(_ts(pos["last_ts"]) + timedelta(seconds=1)))
+        self._pnl_row(pos["id"], row_ts, delta, delta_sell, in_range=None, reward_amount=0.0,
+                      value=pos["capital"] + net, estimated=False, detail={"event": "close", "reason": reason})
+        for kind, token, amount, usd, note in (
+                ("withdraw", pool["token0_symbol"], x, u0, "LPから引き出す"),
+                ("withdraw", pool["token1_symbol"], y, u1, "LPから引き出す"),
+                ("cost", "USD", swap_cost, 1.0, "両替の手数料とずれ（閉じる時）"),
+                ("cost", "USD", 2 * gas, 1.0, "ガス代（閉じる時 2回）"),
+                *[("hedge_close", h["perp"], h["size"], prices.get(h["token"], h["entry"]), "perp の仮想の売りを閉じる")
+                  for h in hedges],
+                *([("sell_reward", "UP", st["held"], up, "持っていた報酬トークンを売る")] if st["held"] > 0 and up else [])):
+            self._ledger(ts, pos["id"], kind, token, amount, usd, note)
+        if hedge_fee:
+            self._ledger(ts, pos["id"], "cost", "USD", hedge_fee, 1.0, "perp の取引手数料（閉じる時）")
+        self.conn.execute("UPDATE positions SET status='closed', closed_at=?, close_reason=?, state_json=? WHERE id=?",
+                          (ts, reason, json.dumps(st), pos["id"]))
+        self.conn.commit()
+        log.info("paper position closed", extra={"data": {"position": pos["id"], "reason": reason,
+                                                          "net_usd": round(net, 2)}})
+        return CloseResult(pos["id"], net)
+
+    # --- 書き込み -------------------------------------------------------------------------------
+
+    def _ledger(self, ts: str, pid: int, kind: str, token: str, amount: float, usd: float | None, note: str) -> None:
+        fx = rate_for(self.conn, _ts(ts), self.fx) if self.fx is not False else None
+        value = amount * usd if usd is not None else None
+        self.conn.execute(
+            """INSERT INTO ledger(ts, is_paper, tx_hash, kind, token, amount, price_usd, price_jpy, position_id, note,
+                 value_usd, fx_rate, fx_date) VALUES (?,1,NULL,?,?,?,?,?,?,?,?,?,?)""",
+            (ts, kind, token, amount, usd, usd * fx.jpy_per_usd if (fx and usd is not None) else None, pid, note,
+             value, fx.jpy_per_usd if fx else None, fx.rate_date if fx else None))
+
+    def _pnl_row(self, pid: int, ts: str, delta: dict[str, float], delta_sell: float, *, in_range: float | None,
+                 reward_amount: float, value: float, estimated: bool, detail: dict[str, Any]) -> None:
+        self.conn.execute(
+            """INSERT OR REPLACE INTO position_pnl(position_id, ts, income, direction, gamma, hedge, other, net,
+                 is_estimated, haircut, haircut_sell, in_range, reward_amount, value_usd, detail_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (pid, ts, delta["income"], delta["direction"], delta["gamma"], delta["hedge"], delta["other"],
+             sum(delta[c] for c in CATS), int(estimated), delta["haircut"], delta_sell, in_range, reward_amount,
+             value, json.dumps(detail)))
+
+
+def _liquidity_for_range(c_lp: float, price: float, lower: float, upper: float, u0: float, u1: float,
+                         d0: int, d1: int) -> float:
+    x, y = lp_amounts(1.0, price, lower, upper, d0, d1)
+    per_l = x * u0 + y * u1
+    return c_lp / per_l if per_l > 0 else 0.0
+
+
+def _prev_of(snap: sqlite3.Row) -> dict[str, Any]:
+    return {"ts": snap["ts"], "price": float(snap["price"]),
+            "rate": float(int(snap["reward_rate_effective_raw"] or 0)),
+            "liq_staked": float(int(snap["liquidity_staked_inrange"] or 0)),
+            "liq_total": float(int(snap["liquidity_total"] or 0)),
+            "alive": snap["gauge_alive"] is None or bool(snap["gauge_alive"]),
+            "unstaked_fee": (snap["unstaked_fee"] or 0) / 1e6}
+
+
+def _new_state(snap: sqlite3.Row, costs: float, up_price: float | None, gas: float) -> dict[str, Any]:
+    return {"prev": _prev_of(snap), "held": 0.0, "held_value": 0.0, "lots": [], "sold_haircut": 0.0,
+            "fees_usd": 0.0, "funding_paid": 0.0, "costs": costs, "gas": gas, "funding_missing": False,
+            "last_prices": {"reward": up_price},
+            "cum": {**{c: 0.0 for c in CATS}, "other": -costs, "haircut_sell": 0.0}}
+
+
+def _cumulative(pos: sqlite3.Row, st: dict[str, Any], hedges: list[dict[str, Any]], price: float, u0: float,
+                u1: float, up: float | None, prices: dict[str, float], d0: int, d1: int) -> dict[str, float]:
+    x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"], d0, d1)
+    v_lp = x * u0 + y * u1
+    v_hold = pos["amount0"] * u0 + pos["amount1"] * u1
+    hedge_pnl = sum(-h["size"] * (prices.get(h["token"], h["entry"]) - h["entry"]) for h in hedges)
+    up_now = up if up is not None else 0.0
+    haircut = st["held"] * up_now - st["held_value"]
+    sell = st["sold_haircut"] + sum(lot[1] * (up_now - lot[2]) for lot in st["lots"])
+    return {
+        "income": st["held_value"] + st["fees_usd"],
+        "direction": v_hold - pos["c_lp"],
+        "gamma": v_lp - v_hold,
+        "hedge": hedge_pnl - st["funding_paid"],
+        "haircut": haircut,
+        "other": -st["costs"],
+        "haircut_sell": sell,
+    }

@@ -48,6 +48,42 @@ def breakdown(income: float, gamma: float, rebalance: float, hedge: float, hairc
     }
 
 
+def signed_breakdown(parts: dict[str, float]) -> dict[str, float | bool]:
+    """符号つきの6区分（損はマイナス。練習の実績）から、純損益・ヘッジのずれ・本業の稼ぎ・運の割合を出す。"""
+    p = {k: float(parts.get(k) or 0.0) for k in CATEGORIES}
+    core = p["income"] + p["gamma"]
+    side = p["direction"] + p["hedge"] + p["haircut"] + p["other"]
+    denom = abs(core) + abs(side)
+    luck = abs(side) / denom if denom > 0 else 0.0
+    return {**p, "net": sum(p.values()), "hedge_gap": p["direction"] + p["hedge"], "core": core,
+            "luck_ratio": luck, "lucky": luck > LUCK_THRESHOLD}
+
+
+def hourly_sum_bars(rows: list[dict[str, Any]], now: datetime, hours: int = 48) -> dict[str, Any]:
+    """実績の1時間ごとの純損益（その1時間の合計）の棒グラフ用データ（7.7章 3.）。形は hourly_bars と同じ。"""
+    end = now.replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(hours=hours - 1)
+    by_hour: dict[datetime, float] = {}
+    for r in rows:
+        t = datetime.fromisoformat(r["ts"]).astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+        by_hour[t] = by_hour.get(t, 0.0) + float(r["net"] or 0.0)
+    bars = []
+    t = start
+    while t <= end:
+        v = by_hour.get(t)
+        last24 = [by_hour[x] for x in (t - timedelta(hours=i) for i in range(24)) if x in by_hour]
+        bars.append({
+            "ts": t.isoformat(), "jst": t.astimezone(JST).strftime("%m/%d %H時"),
+            "net_usd": v, "ma24_usd": sum(last24) / len(last24) if last24 else None,
+            "us_open": vol.us_market_open(int((t + timedelta(minutes=30)).timestamp())),
+        })
+        t += timedelta(hours=1)
+    have = [b for b in bars if b["net_usd"] is not None]
+    best = max(have, key=lambda b: b["net_usd"]) if have else None
+    worst = min(have, key=lambda b: b["net_usd"]) if have else None
+    return {"bars": bars, "best": best, "worst": worst}
+
+
 def row_breakdown(r: sqlite3.Row | dict) -> dict[str, float | bool] | None:
     if r["net_daily_pct"] is None:
         return None
