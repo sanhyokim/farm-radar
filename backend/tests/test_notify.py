@@ -206,4 +206,4 @@ def test_status_and_commands_only_for_owner(setup):
     status, m5, help_ = tg.sent
     assert "観察モード" in status and "判定: 🟢" in status and "上位3件" in status
     assert "データ収集" in status and "報酬トークン" in status
-    assert "M5" in m5 and "/status" in help_
+    assert "練習モード" in m5 and "/status" in help_

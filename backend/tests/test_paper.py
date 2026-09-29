@@ -184,6 +184,8 @@ def test_no_reward_while_out_of_range(world):
     _extend(conn, 3, price_mult=3.0)          # 価格が3倍 = レンジの外
     run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=4))
     rows = conn.execute("SELECT * FROM position_pnl WHERE position_id=? ORDER BY ts", (ref.position_id,)).fetchall()
+    # 記録ごとの行（置き直し・閉じるの行は除く。M5b ではレンジの外に出ると見張りが動くため）
+    rows = [r for r in rows if "dt_s" in __import__("json").loads(r["detail_json"])]
     assert rows[-1]["in_range"] == 0 and rows[-1]["reward_amount"] == 0
     assert rows[-1]["income"] == 0
 

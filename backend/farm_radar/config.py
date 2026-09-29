@@ -130,6 +130,49 @@ def _notify(raw: dict[str, Any]) -> NotifySettings:
 
 
 @dataclass(frozen=True)
+class RiskSettings:
+    """練習の建玉の見張り（M5b。SPEC 12.2章・付録A 3章の初期値）。config.yaml の risk から読む。"""
+    fast_window_jst: tuple[str, str] = ("22:00", "23:30")   # 米国市場の開場前後。この間は見張りの間隔を短くする
+    fast_minutes: int = 5
+    caution_edge_pct: float = 1.0               # 注意: レンジの端までこの%未満
+    caution_reward_shortfall_pct: float = 40.0  # 注意: 報酬の実績が予測よりこの%以上少ない
+    caution_min_hours: float = 2.0              # 報酬の実績と予測を比べるのは、この時間分の記録がたまってから
+    rebalance_after_minutes: float = 15.0       # 置き直し: レンジの外にこの分数いたら
+    rebalance_min_net_pct: float = 0.0          # 置き直し先の純日利（総資産あたり%）がこれ以下なら、置き直さずに離脱
+    exit_reward_token_24h_pct: float = -20.0    # 離脱: 報酬トークンが24時間でこの%以下
+    emergency_liquidity_drop_1h_pct: float = 50.0   # 緊急離脱: プールの流動性が1時間でこの%以上減った
+    emergency_daily_loss_pct: float = 5.0       # 緊急離脱: 今日（日本時間）の損がこの%に達した（持っている建玉の合計額に対して）
+    max_swap_slippage_pct: float = 1.0          # 離脱の両替: ずれがこの%を超えるなら分けて売る
+    max_gas_usd_per_tx: float = 1.0             # ふつうの離脱と置き直しは、ガス代がこれを超えたら見送る（緊急離脱は実行する）
+    # 実績の日利の見せ方（2026-09-29 オーナー指示）
+    actual_min_hours: float = 6.0               # 始めてからこの時間未満は「参考（データ不足）」として小さく出す
+    compare_min_hours: float = 24.0             # この時間以上たってから「予測との比較」を有効にする
+
+
+def _risk(raw: dict[str, Any]) -> RiskSettings:
+    r = raw.get("risk") or {}
+    d = RiskSettings()
+    win = str(r.get("fast_window_jst", "-".join(d.fast_window_jst))).split("-")
+    if len(win) != 2:
+        raise ConfigError("risk.fast_window_jst は \"22:00-23:30\" のように書いてください。")
+    out = RiskSettings(
+        fast_window_jst=(win[0].strip(), win[1].strip()),
+        **{k: type(getattr(d, k))(r.get(k, getattr(d, k))) for k in (
+            "fast_minutes", "caution_edge_pct", "caution_reward_shortfall_pct", "caution_min_hours",
+            "rebalance_after_minutes", "rebalance_min_net_pct", "exit_reward_token_24h_pct",
+            "emergency_liquidity_drop_1h_pct", "emergency_daily_loss_pct", "max_swap_slippage_pct",
+            "max_gas_usd_per_tx", "actual_min_hours", "compare_min_hours")},
+    )
+    for hm in out.fast_window_jst:
+        hh, _, mm = hm.partition(":")
+        if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
+            raise ConfigError("risk.fast_window_jst は \"22:00-23:30\" のように書いてください。")
+    if out.fast_minutes <= 0 or 60 % out.fast_minutes:
+        raise ConfigError("risk.fast_minutes は60を割り切れる数（5 など）にしてください。")
+    return out
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -142,6 +185,7 @@ class Config:
     reward_drop_alert_pct: float = 30.0     # エポックの途中で報酬の毎秒量がこの%以上減ったら通知
     scoring: ScoringSettings = field(default_factory=ScoringSettings)
     notify: NotifySettings = field(default_factory=NotifySettings)
+    risk: RiskSettings = field(default_factory=RiskSettings)
     root: Path = REPO_ROOT
 
 
@@ -188,6 +232,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         reward_drop_alert_pct=float((raw.get("alerts") or {}).get("reward_rate_drop_pct", 30)),
         scoring=_scoring(raw),
         notify=_notify(raw),
+        risk=_risk(raw),
         root=root,
     )
 

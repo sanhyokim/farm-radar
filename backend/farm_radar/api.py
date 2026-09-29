@@ -24,6 +24,7 @@ from .db import database as db
 from .execution import views as paper_views
 from .execution.paper import PaperError, PaperExecutor
 from .execution.base import PositionRef
+from .execution import risk_job
 from .notify.telegram import settings_from_env
 from .scoring import volatility as vol
 from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
@@ -397,11 +398,12 @@ def _paper_tokens(config, pool_venue: str):
 def _paper_status(config, conn) -> dict:
     lim = config.limits
     open_rows = conn.execute("SELECT venue_id, capital FROM positions WHERE is_paper=1 AND status='open'").fetchall()
-    st = conn.execute("SELECT stopped FROM paper_state WHERE id=1").fetchone()
+    st = risk_job.paper_state(conn)
     venue_cap = (float(lim["total_usd"]) * float(lim["per_venue_share"])
                  if "total_usd" in lim and "per_venue_share" in lim else None)
     return {
-        "mode": config.mode, "enabled": config.mode == "paper", "stopped": bool(st and st["stopped"]),
+        "mode": config.mode, "enabled": config.mode == "paper", "stopped": st["stopped"],
+        "stopped_reason": st["reason"], "stopped_since": st["since"],
         "capital": config.scoring.total_capital_usd,
         "limits": {k: lim.get(k) for k in ("position_usd", "total_usd", "per_venue_share", "trades_per_day")},
         "venue_cap_usd": venue_cap, "open_total_usd": sum(r["capital"] for r in open_rows),
@@ -416,10 +418,12 @@ def paper() -> dict:
     with _open() as (config, conn):
         rows = conn.execute("SELECT * FROM positions WHERE is_paper=1 ORDER BY status='open' DESC, opened_at DESC"
                             ).fetchall()
-        cards = [paper_views.card(conn, p, now) for p in rows]
+        cards = [paper_views.card(conn, p, now, config.risk) for p in rows]
         return {**_paper_status(config, conn),
                 "open": [c for c in cards if c["status"] == "open"],
-                "closed": [c for c in cards if c["status"] != "open"][:20]}
+                "closed": [c for c in cards if c["status"] != "open"][:20],
+                "events": paper_views.events(conn, None, limit=20),
+                "risk": paper_views.risk_rules(config.risk)}
 
 
 @app.get("/api/paper/positions/{position_id}")
@@ -429,7 +433,7 @@ def paper_position(position_id: int) -> dict:
         p = conn.execute("SELECT * FROM positions WHERE id=? AND is_paper=1", (position_id,)).fetchone()
         if p is None:
             raise HTTPException(404, "この建玉は見つかりません")
-        d = paper_views.detail(conn, p, now)
+        d = paper_views.detail(conn, p, now, config.risk)
         d["sell_now"]["hours"] = config.scoring.reward_sell_hours
         return d
 
@@ -461,6 +465,37 @@ def paper_close(position_id: int) -> dict:
         except PaperError as exc:
             raise HTTPException(400, str(exc)) from None
         return {"position_id": res.position_id, "net_usd": res.net_usd}
+
+
+class ConfirmRequest(BaseModel):
+    confirm: bool = False
+
+
+def _first_tokens(config):
+    return _paper_tokens(config, config.venues[0]) if config.venues else load_tokens("robinhood", config.root)
+
+
+@app.post("/api/paper/stop")
+def paper_stop() -> dict:
+    """停止（新しい建玉を作らない。持っている建玉の計算と見張りは続ける）。SPEC 12.5章。"""
+    with _open() as (config, conn):
+        return {"message": risk_job.owner_stop(conn, _now(), "画面のボタン"), **risk_job.paper_state(conn)}
+
+
+@app.post("/api/paper/resume")
+def paper_resume() -> dict:
+    with _open() as (config, conn):
+        return {"message": risk_job.owner_resume(conn, _now(), "画面のボタン"), **risk_job.paper_state(conn)}
+
+
+@app.post("/api/paper/exit_all")
+def paper_exit_all(req: ConfirmRequest) -> dict:
+    """全部閉じる。画面で確認してから confirm=true で呼ぶ。"""
+    if not req.confirm:
+        raise HTTPException(400, "確認がないので、全部閉じるのをやめました。")
+    with _open() as (config, conn):
+        msg = risk_job.owner_exit_all(conn, config, _first_tokens(config), _now(), "画面のボタン")
+        return {"message": msg, **risk_job.paper_state(conn)}
 
 
 # --- 画面のファイル（frontend/dist） ---------------------------------------------------------

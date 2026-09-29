@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -25,13 +26,26 @@ from .tokens import load_tokens
 log = logging.getLogger(__name__)
 
 
+def in_fast_window(now: datetime, window: tuple[str, str]) -> bool:
+    """日本時間で window（"22:00", "23:30"）の中か。日をまたぐ窓（"23:00", "01:00"）にも対応する。"""
+    local = now.astimezone(ZoneInfo("Asia/Tokyo"))
+    cur = local.hour * 60 + local.minute
+    a, b = ((int(x.split(":")[0]) * 60 + int(x.split(":")[1])) for x in window)
+    return a <= cur <= b if a <= b else (cur >= a or cur <= b)
+
+
 def main() -> None:
     setup_logging()
     config, venues = runtime.build()
     log.info("scheduler starting", extra={"data": {"mode": config.mode, "snapshot_minutes": config.snapshot_minutes}})
     notifier = Notifier.from_env(config)
 
-    def snapshot_job() -> None:
+    lock = threading.Lock()
+
+    def snapshot_job(fast: bool = False) -> None:
+        # 5分ごとの見張り（fast）は、ふつうの15分ごとの収集と重なったら休む
+        if not lock.acquire(blocking=not fast):
+            return
         conn = db.connect(config.database_path)
         try:
             for v in venues:
@@ -47,14 +61,27 @@ def main() -> None:
                                     reward_drop_alert_pct=config.reward_drop_alert_pct)
                 if res.status == "failed":
                     notifier.error(v.adapter.venue_id, "データ収集の失敗", res.error or "全プールで読み取りに失敗")
-            # 練習（M5a）: 新しい記録の分だけ、練習の建玉の損益を計算する（mode が paper のときだけ）
+            # 練習（M5a・M5b）: 新しい記録の分だけ損益を計算し、見張りのルールで調べる（mode が paper のときだけ）
             try:
                 run_paper(conn, config, paper_tokens, lighter=lighter)
             except Exception as exc:
                 log.exception("paper job failed")
-                notifier.error("-", "練習の損益の計算に失敗", f"{type(exc).__name__}: {exc}")
+                notifier.error("-", "練習の損益の計算・見張りに失敗", f"{type(exc).__name__}: {exc}")
         finally:
             conn.close()
+            lock.release()
+
+    def fast_job() -> None:
+        """米国市場の開場前後（config の risk.fast_window_jst）だけ、練習の建玉があれば短い間隔で記録して見張る（SPEC 5.1章）。"""
+        if config.mode != "paper" or not in_fast_window(datetime.now(UTC), config.risk.fast_window_jst):
+            return
+        conn = db.connect(config.database_path)
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM positions WHERE is_paper=1 AND status='open'").fetchone()[0]
+        finally:
+            conn.close()
+        if n:
+            snapshot_job(fast=True)
 
     lighter = Lighter()
     paper_tokens = load_tokens(venues[0].venue["chain"]["id"], config.root) if venues else None
@@ -115,6 +142,15 @@ def main() -> None:
         score_trigger = CronTrigger(minute=f"{5 % sm}-59/{sm}", timezone="UTC")
     else:
         score_trigger = IntervalTrigger(minutes=sm)
+    # 練習の見張り（M5b）: 開場前後の時間だけ、ふつうの収集の間の時刻にも記録を取る
+    r = config.risk
+    fast_minutes = [m for m in range(0, 60, r.fast_minutes) if m % minutes]
+    if config.mode == "paper" and fast_minutes and 60 % minutes == 0:
+        h0, h1 = int(r.fast_window_jst[0].split(":")[0]), int(r.fast_window_jst[1].split(":")[0])
+        hours = f"{h0}-{h1}" if h0 <= h1 else f"{h0}-23,0-{h1}"
+        sched.add_job(fast_job, CronTrigger(minute=",".join(map(str, fast_minutes)), hour=hours,
+                                            timezone="Asia/Tokyo"),
+                      id="paper_fast", max_instances=1, coalesce=True, misfire_grace_time=60)
     # 起動直後のスコア計算も、ここで直接呼ばずにスケジューラーに任せる。
     # 最初の計算は外部サイトから7日分の足を取り寄せるので数分かかり、直接呼ぶと15分ごとの収集が待たされるため
     sched.add_job(score_job, score_trigger, id="score", max_instances=1, coalesce=True, misfire_grace_time=None,

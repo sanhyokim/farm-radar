@@ -15,13 +15,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..config import Config
+from ..config import Config, load_venue
 from ..db import database as db
 from ..logging_setup import redact
 from . import events, report
 from .telegram import HELP_COMMANDS, Telegram, settings_from_env
 
 log = logging.getLogger(__name__)
+
+EXIT_ALL_YES = "exit_all:yes"
+EXIT_ALL_NO = "exit_all:no"
+EXIT_ALL_ASK = ("練習の建玉（{n}件）を全部閉じて、新しく始めるのも止めます。よければ「全部閉じる」を押してください"
+                "（10分以内。お金は動きません）。")
 
 
 def _home() -> dict[str, Any]:
@@ -133,19 +138,83 @@ class Notifier:
                 conn.close()
             return row["body_ja"] if row else "まだ朝のレポートがありません。毎朝8時（日本時間）に作ります。"
         if cmd in ("/stop", "/exit_all", "/resume"):
-            return report.M5_ONLY
+            if self.config.mode != "paper":
+                return report.PAPER_ONLY
+            from ..execution import risk_job
+            conn = self._conn()
+            try:
+                if cmd == "/stop":
+                    return risk_job.owner_stop(conn, self.now(), "Telegram")
+                if cmd == "/resume":
+                    return risk_job.owner_resume(conn, self.now(), "Telegram")
+                n = conn.execute("SELECT COUNT(*) FROM positions WHERE is_paper=1 AND status='open'").fetchone()[0]
+            finally:
+                conn.close()
+            return EXIT_ALL_ASK.format(n=n)
         return report.HELP
+
+    def _practice_line(self) -> str:
+        if self.config.mode != "paper":
+            return ""
+        from ..execution import risk_job
+        conn = self._conn()
+        try:
+            n = conn.execute("SELECT COUNT(*) FROM positions WHERE is_paper=1 AND status='open'").fetchone()[0]
+            st = risk_job.paper_state(conn)
+        finally:
+            conn.close()
+        return f"\n\n練習: 持っている建玉 {n}件" + ("（停止中）" if st["stopped"] else "")
+
+    def _tokens(self):
+        from ..tokens import load_tokens
+        v = load_venue(self.config.venues[0], self.config.root)
+        return load_tokens(v["chain"]["id"], self.config.root)
+
+    def handle_button(self, cb: dict[str, Any]) -> str | None:
+        """ボタンが押された（全部閉じるの確認）。オーナー以外、古いボタン（10分より前）は無視する。"""
+        sender = (cb.get("from") or {}).get("id")
+        msg = cb.get("message") or {}
+        if self.telegram is None or sender != self.telegram.owner_id:
+            log.warning("telegram button ignored (not the owner)")
+            return None
+        try:
+            self.telegram.answer_button(cb.get("id"))
+        except Exception as exc:
+            log.warning("answerCallbackQuery failed", extra={"data": {"error": redact(str(exc))}})
+        sent = msg.get("date")
+        if cb.get("data") == EXIT_ALL_YES and sent and self.now().timestamp() - float(sent) <= 600:
+            from ..execution import risk_job
+            conn = self._conn()
+            try:
+                reply = risk_job.owner_exit_all(conn, self.config, self._tokens(), self.now(), "Telegram")
+            finally:
+                conn.close()
+        elif cb.get("data") == EXIT_ALL_YES:
+            reply = "このボタンは古い（10分より前）ので使えません。もう一度 /exit_all を送ってください。"
+        else:
+            reply = "全部閉じるのをやめました。"
+        self.telegram.send(reply)
+        return reply
 
     def handle_update(self, u: dict[str, Any]) -> str | None:
         """届いた1件を処理する。オーナー以外からのものは無視する（返事もしない）。返した文を返す。"""
+        if u.get("callback_query"):
+            return self.handle_button(u["callback_query"])
         msg = u.get("message") or {}
         sender = (msg.get("from") or {}).get("id")
         chat = (msg.get("chat") or {}).get("id")
         if self.telegram is None or sender != self.telegram.owner_id or chat != self.telegram.owner_id:
             log.warning("telegram message ignored (not the owner)")
             return None
-        reply = self.answer(msg.get("text") or "")
-        self.telegram.send(reply)
+        text = msg.get("text") or ""
+        reply = self.answer(text)
+        cmd = text.strip().split()[0].split("@")[0].lower() if text.strip() else ""
+        if cmd == "/status":
+            reply += self._practice_line()
+        if cmd == "/exit_all" and self.config.mode == "paper":
+            self.telegram.send_buttons(reply, [("全部閉じる", EXIT_ALL_YES), ("やめる", EXIT_ALL_NO)])
+        else:
+            self.telegram.send(reply)
         return reply
 
     def poll_once(self, wait_seconds: int = 25) -> int:

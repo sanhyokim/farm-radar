@@ -17,7 +17,9 @@
 - perp の値段は、プールから出したドル価格で代用する（Lighter の値段との差は小さいとみなす）。
 - ステークしない建玉の手数料は、スコア計算の「1日の手数料」（GeckoTerminal の取引量 × 手数料率。
   取引量が不自然に多ければ0）から取り分を推定する。
-- 置き直し（リバランス）と離脱のルールは M5b。M5a の建玉はレンジを外れても置いたまま（外れている間は報酬0）。
+- 置き直し（リバランス）と離脱は M5b（risk_job.py が危険判定のルールで決めて、ここの rebalance / close_position を呼ぶ）。
+  置き直した後も「開いてからの累計」が続くように、それまでの方向・ガンマ・ヘッジの損益を state の off に固定し、
+  新しいレンジの中身（base）から先を足していく。
 """
 
 from __future__ import annotations
@@ -334,6 +336,11 @@ class PaperExecutor:
                           detail={"price": price, "usd0": u0, "usd1": u1, "reward_usd": up,
                                   "dt_s": dt, **({"gap": True} if estimated else {})})
             st["prev"] = _prev_of(snap)
+            # レンジの外に出た時刻（置き直しの判定に使う。M5b）
+            if pos["lower"] <= price <= pos["upper"]:
+                st.pop("out_since", None)
+            else:
+                st.setdefault("out_since", snap["ts"])
             n += 1
         self.conn.execute("UPDATE positions SET last_ts=?, state_json=? WHERE id=?",
                           (st["prev"]["ts"], json.dumps(st), pos["id"]))
@@ -353,24 +360,34 @@ class PaperExecutor:
         return ClaimResult(row["token"], row["amount"], row["price_usd"]) if row else ClaimResult("UP", 0.0, 0.0)
 
     def swap_to_usdg(self, token: str, amount: float, max_slippage: float) -> SwapResult:
-        raise NotImplementedError("練習の両替は、閉じる時に close_position の中で計算します（M5b で分けます）。")
+        raise NotImplementedError("練習の両替は、閉じる時・置き直す時の中で計算します（_exit_costs）。")
 
     def hedge_adjust(self, symbol: str, target_size: float) -> HedgeResult:
-        raise NotImplementedError("ヘッジの量の調整は M5b で作ります。")
+        raise NotImplementedError("練習のヘッジの量の調整は、置き直す時の中で計算します（rebalance）。")
 
     def hedge_close(self, symbol: str) -> HedgeResult:
-        raise NotImplementedError("ヘッジを閉じるのは close_position の中で行います。")
+        raise NotImplementedError("ヘッジを閉じるのは close_position の中で行います（付録A 4章の手順3）。")
 
-    # --- 閉じる ---------------------------------------------------------------------------------
+    # --- 置き直し（M5b） ------------------------------------------------------------------------
 
-    def close_position(self, ref: PositionRef, reason: str = "manual") -> CloseResult:
-        pos = self.conn.execute("SELECT * FROM positions WHERE id=? AND is_paper=1", (ref.position_id,)).fetchone()
-        if pos is None:
-            raise PaperError("この建玉は見つかりません。")
-        if pos["status"] != "open":
-            raise PaperError("この建玉はもう閉じています。")
+    def _costs_now(self, pool_id: str) -> tuple[float, float, float]:
+        """最新のスコアの入力から、手数料率・両替のずれ・ガス代（1回）を返す。"""
+        score = latest_score(self.conn, pool_id)
+        inp = (json.loads(score["details_json"] or "{}").get("inputs") or {}) if score else {}
+        return float(inp.get("fee") or 0.0), float(inp.get("slippage") or 0.0), float(inp.get("gas_usd_per_tx") or 0.0)
+
+    def gas_too_high(self, pool_id: str) -> tuple[bool, float]:
+        gas = self._costs_now(pool_id)[2]
+        return gas > self.config.risk.max_gas_usd_per_tx, gas
+
+    def rebalance(self, ref: PositionRef, r_pct: float | None = None, reason: str = "") -> dict[str, Any]:
+        """今の価格を中心に、新しいレンジ（±r%。指定がなければ最新のスコアの最適レンジ）に置き直す。
+
+        費用はスコア計算の置き直しと同じ: 両替（LPの額 × swap_ratio × (手数料 + ずれ)）+ ガス代2回 + perp の手数料。
+        """
+        pos = self._open_pos(ref.position_id)
         self.update(pos)
-        pos = self.conn.execute("SELECT * FROM positions WHERE id=?", (ref.position_id,)).fetchone()
+        pos = self._open_pos(ref.position_id)
         pool = self.market.pool(pos["pool_id"])
         st = json.loads(pos["state_json"])
         hedges = json.loads(pos["hedges_json"] or "[]")
@@ -382,42 +399,129 @@ class PaperExecutor:
         up = st["last_prices"].get("reward")
         d0, d1 = int(pool["token0_decimals"]), int(pool["token1_decimals"])
         x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"], d0, d1)
+        v_lp = x * u0 + y * u1
         score = latest_score(self.conn, pos["pool_id"])
-        inp = (json.loads(score["details_json"] or "{}").get("inputs") or {}) if score else {}
-        fee = float(inp.get("fee") or 0.0)
-        slip = float(inp.get("slippage") or 0.0)
-        gas = float(inp.get("gas_usd_per_tx") or 0.0)
+        if r_pct is None:
+            r_pct = float(score["best_r"]) if score and score["best_r"] is not None else pos["r"] * 100
+        fee, slip, gas = self._costs_now(pos["pool_id"])
+        s = self.config.scoring
+        swap_cost = v_lp * s.swap_ratio * (fee + slip)
+        lower, upper = price * (1 - r_pct / 100), price * (1 + r_pct / 100)
+        liq = _liquidity_for_range(v_lp, price, lower, upper, u0, u1, d0, d1)
+        a0, a1 = lp_amounts(liq, price, lower, upper, d0, d1)
+        # ヘッジ: ここまでの損益を固定し、新しい中身の量に合わせて建て直す
+        taker = s.hedge_taker_fee_pct / 100
+        new_hedges, hedge_fee = [], 0.0
+        for h in hedges:
+            hp = prices.get(h["token"], h["entry"])
+            size = a0 if h["token"] == t0 else a1
+            hedge_fee += abs(size - h["size"]) * hp * taker
+            new_hedges.append({**h, "size": size, "entry": hp})
+        cost = swap_cost + 2 * gas + hedge_fee
+        cum = _cumulative(pos, st, hedges, price, u0, u1, up, prices, d0, d1)
+        st["off"] = {"direction": cum["direction"], "gamma": cum["gamma"],
+                     "hedge": cum["hedge"] + st["funding_paid"]}      # 資金調達は funding_paid の累計でそのまま引き続ける
+        st["base"] = {"value": a0 * u0 + a1 * u1}
+        st["costs"] += cost
+        st["rebalances"] = int(st.get("rebalances", 0)) + 1
+        st.pop("out_since", None)
+        ts = _iso(self.now)
+        row_ts = max(ts, _iso(_ts(pos["last_ts"]) + timedelta(seconds=1)))
+        self.conn.execute(
+            "UPDATE positions SET liquidity=?, lower=?, upper=?, r=?, amount0=?, amount1=?, hedges_json=? WHERE id=?",
+            (str(liq), lower, upper, r_pct / 100, a0, a1, json.dumps(new_hedges), pos["id"]))
+        pos = self._open_pos(pos["id"])
+        cum2 = _cumulative(pos, st, new_hedges, price, u0, u1, up, prices, d0, d1)
+        delta = {c: cum2[c] - st["cum"][c] for c in CATS}
+        delta_sell = cum2["haircut_sell"] - st["cum"]["haircut_sell"]
+        st["cum"] = cum2
+        self._pnl_row(pos["id"], row_ts, delta, delta_sell, in_range=1.0, reward_amount=0.0,
+                      value=pos["capital"] + sum(cum2[c] for c in CATS), estimated=False,
+                      detail={"event": "rebalance", "reason": reason, "r_pct": r_pct})
+        note = "置き直し"
+        for kind, token, amount, usd, text in (
+                ("withdraw", pool["token0_symbol"], x, u0, f"{note}: LPから引き出す"),
+                ("withdraw", pool["token1_symbol"], y, u1, f"{note}: LPから引き出す"),
+                ("cost", "USD", swap_cost, 1.0, f"{note}: 両替の手数料とずれ"),
+                ("cost", "USD", 2 * gas, 1.0, f"{note}: ガス代（2回）"),
+                ("deposit", pool["token0_symbol"], a0, u0, f"{note}: 新しいレンジ ±{r_pct:g}% に入れる"),
+                ("deposit", pool["token1_symbol"], a1, u1, f"{note}: 新しいレンジ ±{r_pct:g}% に入れる"),
+                *[("hedge_adjust", h["perp"], h["size"], h["entry"], f"{note}: perp の売りの量を合わせる")
+                  for h in new_hedges]):
+            self._ledger(ts, pos["id"], kind, token, amount, usd, text)
+        if hedge_fee:
+            self._ledger(ts, pos["id"], "cost", "USD", hedge_fee, 1.0, f"{note}: perp の取引手数料")
+        self.conn.execute("UPDATE positions SET last_ts=?, state_json=? WHERE id=?", (row_ts, json.dumps(st), pos["id"]))
+        self.conn.commit()
+        log.info("paper position rebalanced", extra={"data": {"position": pos["id"], "r_pct": r_pct,
+                                                              "cost_usd": round(cost, 4)}})
+        return {"r_pct": r_pct, "lower": lower, "upper": upper, "cost_usd": cost}
+
+    def _open_pos(self, pid: int) -> sqlite3.Row:
+        pos = self.conn.execute("SELECT * FROM positions WHERE id=? AND is_paper=1", (pid,)).fetchone()
+        if pos is None:
+            raise PaperError("この建玉は見つかりません。")
+        if pos["status"] != "open":
+            raise PaperError("この建玉はもう閉じています。")
+        return pos
+
+    # --- 閉じる（付録A 4章の順番: 1 引き出して受け取る → 2 USDG に両替 → 3 ヘッジを閉じる → 4 記録と通知） ----
+
+    def close_position(self, ref: PositionRef, reason: str = "manual") -> CloseResult:
+        pos = self._open_pos(ref.position_id)
+        self.update(pos)
+        pos = self._open_pos(ref.position_id)
+        pool = self.market.pool(pos["pool_id"])
+        st = json.loads(pos["state_json"])
+        hedges = json.loads(pos["hedges_json"] or "[]")
+        snap = self.market.latest(pos["pool_id"])
+        price = float(snap["price"])
+        prices = self.market.prices(snap["run_id"])
+        t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+        u0, u1 = prices.get(t0, st["last_prices"].get(t0)), prices.get(t1, st["last_prices"].get(t1))
+        up = st["last_prices"].get("reward")
+        d0, d1 = int(pool["token0_decimals"]), int(pool["token1_decimals"])
+        x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"], d0, d1)
+        fee, slip, gas = self._costs_now(pos["pool_id"])
         volatile = (0.0 if self.tokens.is_stable(t0) else x * u0) + (0.0 if self.tokens.is_stable(t1) else y * u1)
-        swap_cost = volatile * (fee + slip)
+        # 手順2: ずれが上限（max_swap_slippage_pct）を超えるなら、分けて売る（1回あたりのずれが上限に収まる回数）
+        max_slip = self.config.risk.max_swap_slippage_pct / 100
+        parts = max(1, math.ceil(slip / max_slip)) if max_slip > 0 and slip > max_slip else 1
+        swap_cost = volatile * (fee + slip / parts)
+        swap_gas = gas * parts
         taker = self.config.scoring.hedge_taker_fee_pct / 100
         hedge_fee = sum(h["size"] * prices.get(h["token"], h["entry"]) * taker for h in hedges)
-        close_cost = swap_cost + 2 * gas + hedge_fee
+        close_cost = swap_cost + gas + swap_gas + hedge_fee
         st["costs"] += close_cost
         cum = _cumulative(pos, st, hedges, price, u0, u1, up, prices, d0, d1)
         delta = {c: cum[c] - st["cum"][c] for c in CATS}
         delta_sell = cum["haircut_sell"] - st["cum"]["haircut_sell"]
         st["cum"] = cum
+        st["exit_steps"] = {"swap_parts": parts, "slippage_pct": slip * 100}
         ts = _iso(self.now)
         net = sum(cum[c] for c in CATS)
         row_ts = max(ts, _iso(_ts(pos["last_ts"]) + timedelta(seconds=1)))
         self._pnl_row(pos["id"], row_ts, delta, delta_sell, in_range=None, reward_amount=0.0,
                       value=pos["capital"] + net, estimated=False, detail={"event": "close", "reason": reason})
+        split = f"（ずれ{slip * 100:.2f}%が上限{max_slip * 100:g}%を超えるので{parts}回に分けて売る想定）" if parts > 1 else ""
         for kind, token, amount, usd, note in (
-                ("withdraw", pool["token0_symbol"], x, u0, "LPから引き出す"),
-                ("withdraw", pool["token1_symbol"], y, u1, "LPから引き出す"),
-                ("cost", "USD", swap_cost, 1.0, "両替の手数料とずれ（閉じる時）"),
-                ("cost", "USD", 2 * gas, 1.0, "ガス代（閉じる時 2回）"),
-                *[("hedge_close", h["perp"], h["size"], prices.get(h["token"], h["entry"]), "perp の仮想の売りを閉じる")
-                  for h in hedges],
-                *([("sell_reward", "UP", st["held"], up, "持っていた報酬トークンを売る")] if st["held"] > 0 and up else [])):
+                ("withdraw", pool["token0_symbol"], x, u0, "手順1: LPから引き出す"),
+                ("withdraw", pool["token1_symbol"], y, u1, "手順1: LPから引き出す"),
+                ("cost", "USD", gas, 1.0, "手順1: ガス代（引き出しと受け取り）"),
+                *([("sell_reward", "UP", st["held"], up, "手順2: 持っていた報酬トークンを USDG に両替")]
+                  if st["held"] > 0 and up else []),
+                ("cost", "USD", swap_cost, 1.0, f"手順2: 両替の手数料とずれ{split}"),
+                ("cost", "USD", swap_gas, 1.0, f"手順2: ガス代（両替 {parts}回）"),
+                *[("hedge_close", h["perp"], h["size"], prices.get(h["token"], h["entry"]), "手順3: perp の仮想の売りを閉じる")
+                  for h in hedges]):
             self._ledger(ts, pos["id"], kind, token, amount, usd, note)
         if hedge_fee:
-            self._ledger(ts, pos["id"], "cost", "USD", hedge_fee, 1.0, "perp の取引手数料（閉じる時）")
-        self.conn.execute("UPDATE positions SET status='closed', closed_at=?, close_reason=?, state_json=? WHERE id=?",
-                          (ts, reason, json.dumps(st), pos["id"]))
+            self._ledger(ts, pos["id"], "cost", "USD", hedge_fee, 1.0, "手順3: perp の取引手数料")
+        self.conn.execute("UPDATE positions SET status='closed', closed_at=?, close_reason=?, last_ts=?, state_json=? "
+                          "WHERE id=?", (ts, reason, row_ts, json.dumps(st), pos["id"]))
         self.conn.commit()
         log.info("paper position closed", extra={"data": {"position": pos["id"], "reason": reason,
-                                                          "net_usd": round(net, 2)}})
+                                                          "net_usd": round(net, 2), "swap_parts": parts}})
         return CloseResult(pos["id"], net)
 
     # --- 書き込み -------------------------------------------------------------------------------
@@ -469,6 +573,9 @@ def _cumulative(pos: sqlite3.Row, st: dict[str, Any], hedges: list[dict[str, Any
                 u1: float, up: float | None, prices: dict[str, float], d0: int, d1: int) -> dict[str, float]:
     x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"], d0, d1)
     v_lp = x * u0 + y * u1
+    # 置き直した後は、置き直した時の中身（base）からの変化に、それまでの分（off）を足す
+    base = st.get("base") or {"value": pos["c_lp"]}
+    off = st.get("off") or {}
     v_hold = pos["amount0"] * u0 + pos["amount1"] * u1
     hedge_pnl = sum(-h["size"] * (prices.get(h["token"], h["entry"]) - h["entry"]) for h in hedges)
     up_now = up if up is not None else 0.0
@@ -476,9 +583,9 @@ def _cumulative(pos: sqlite3.Row, st: dict[str, Any], hedges: list[dict[str, Any
     sell = st["sold_haircut"] + sum(lot[1] * (up_now - lot[2]) for lot in st["lots"])
     return {
         "income": st["held_value"] + st["fees_usd"],
-        "direction": v_hold - pos["c_lp"],
-        "gamma": v_lp - v_hold,
-        "hedge": hedge_pnl - st["funding_paid"],
+        "direction": off.get("direction", 0.0) + v_hold - base["value"],
+        "gamma": off.get("gamma", 0.0) + v_lp - v_hold,
+        "hedge": off.get("hedge", 0.0) + hedge_pnl - st["funding_paid"],
         "haircut": haircut,
         "other": -st["costs"],
         "haircut_sell": sell,

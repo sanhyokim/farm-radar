@@ -189,8 +189,23 @@ CREATE TABLE IF NOT EXISTS funding_rates (
 );
 -- 練習の状態（M5b の停止・再開で使う。1行だけ）
 CREATE TABLE IF NOT EXISTS paper_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1), stopped INTEGER NOT NULL DEFAULT 0, updated_at TEXT
+  id INTEGER PRIMARY KEY CHECK (id = 1), stopped INTEGER NOT NULL DEFAULT 0, updated_at TEXT,
+  reason TEXT                         -- 止めた理由（M5b: オーナーの停止ボタン / 緊急離脱）
 );
+
+-- 練習の建玉の見張りの記録（M5b。SPEC 12.2章・付録A 3章）。画面の「見張りの記録」とタイムライン（M5c）に出す
+-- level: caution（注意）/ rebalance（置き直し）/ exit（離脱）/ emergency（緊急離脱）/ info（停止・再開・見送りなど）
+CREATE TABLE IF NOT EXISTS risk_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  position_id INTEGER,                -- 全体に関わるもの（停止・再開・緊急離脱のきっかけ）は NULL のこともある
+  level TEXT NOT NULL,
+  kind TEXT NOT NULL,                 -- 例: edge_near / reward_shortfall / out_of_range / reward_token_drop / signal_red
+  message_ja TEXT NOT NULL,
+  action TEXT,                        -- 実際にしたこと: none / rebalanced / closed / closed_all / skipped_gas / stopped / resumed
+  data_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_risk_events_pos ON risk_events(position_id, ts);
 
 -- 毎朝のレポート（M4。SPEC 8章）。1日1通。送れたら sent_at が入る
 CREATE TABLE IF NOT EXISTS daily_reports (
