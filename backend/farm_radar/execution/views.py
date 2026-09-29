@@ -8,11 +8,16 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .. import views
+from ..config import RiskSettings
+from ..risk.rules import LEVEL_JA
 from .paper import CATS, lp_amounts
 
 RED_START_LABEL = "🔴で開始した練習"
 RED_START_NOTE = ("判定が🔴のプールで始めた練習です。「判定が🔴になったら離脱」のルールは当てはめません"
-                  "（ほかの離脱・緊急離脱のルールは当てはめます。M5b）。")
+                  "（ほかの離脱・緊急離脱のルールは当てはめます）。")
+ACTION_JA = {"none": "記録のみ", "rebalanced": "置き直した", "closed": "閉じた", "closed_all": "全部閉じた",
+             "skipped_gas": "ガス代が高く見送り", "stopped": "停止", "resumed": "再開"}
+CAUTION_JA = {"edge_near": "レンジの端が近い", "reward_shortfall": "報酬が予測より少ない"}
 ESTIMATE_NOTES = [
     "報酬は15分ごとの記録（実際の報酬の量・ステーク流動性・価格）から計算しています。",
     "perp の値段は、プールから出したドル価格で代用しています。",
@@ -34,8 +39,10 @@ def _pair(conn: sqlite3.Connection, pool_id: str) -> tuple[str, sqlite3.Row]:
     return f"{p['token0_symbol']}/{p['token1_symbol']}", p
 
 
-def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime) -> dict[str, Any]:
-    """建玉カード（SPEC 7.4章）: レンジ、端までの距離、評価額、入れた額との差、1日の報酬、予測と実績の日利。"""
+def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSettings | None = None
+         ) -> dict[str, Any]:
+    """建玉カード（SPEC 7.4章）: レンジ、端までの距離、評価額、入れた額との差、報酬、予測と実績の日利。"""
+    risk = risk or RiskSettings()
     pair, pool = _pair(conn, pos["pool_id"])
     rows = _pnl_rows(conn, pos["id"])
     tot = views.signed_breakdown(_sum(rows))
@@ -45,39 +52,101 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime) -> dict[str,
     last = rows[-1]["ts"] if rows else pos["opened_at"]
     end = datetime.fromisoformat(pos["closed_at"]) if pos["closed_at"] else datetime.fromisoformat(last)
     days = max((end - datetime.fromisoformat(pos["opened_at"])).total_seconds() / 86400, 1e-9)
+    hours = days * 24
     pred = json.loads(pos["predicted_json"] or "{}")
     since24 = (now - timedelta(hours=24)).isoformat(timespec="seconds")
     reward_24h = sum(float(r["income"] or 0) for r in rows if r["ts"] >= since24)
     x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"],
                       int(pool["token0_decimals"]), int(pool["token1_decimals"]))
     open_cost = -float(rows[0]["other"] or 0.0) if rows else 0.0
-    running = sum(tot[k] for k in CATS) + open_cost          # 1日あたりの比較は、開く時の費用を除いて行う
+    net = float(tot["net"])
+    running = net + open_cost          # 1日あたりの比較は、開く時の費用を除いて行う
+    cap = pos["capital"] or 0.0
+    # 始めた費用を取り返すまでの見込み（費用を除いた稼ぎのペースで、費用込みの損がゼロに戻るまで）
+    per_hour = running / hours if hours > 0 else 0.0
+    payback_total = open_cost / per_hour if per_hour > 0 and open_cost > 0 else None
+    payback_left = (max(0.0, -net) / per_hour if per_hour > 0 else None) if open_cost > 0 else None
+    actual_state = "short" if hours < risk.actual_min_hours else "ok"
     return {
         "id": pos["id"], "pool_id": pos["pool_id"], "pair": pair, "venue_id": pos["venue_id"],
         "status": pos["status"], "opened_at": pos["opened_at"], "closed_at": pos["closed_at"],
-        "close_reason": pos["close_reason"], "last_ts": last,
+        "close_reason": pos["close_reason"], "close_reason_ja": close_reason_ja(pos["close_reason"]),
+        "last_ts": last,
         "capital": pos["capital"], "c_lp": pos["c_lp"], "mode": pos["mode"],
         "r_pct": pos["r"] * 100, "lower": pos["lower"], "upper": pos["upper"], "price": price,
         "price_open": pos["price_open"], "in_range": in_range,
         "to_lower_pct": (price / pos["lower"] - 1) * 100, "to_upper_pct": (pos["upper"] / price - 1) * 100,
         "amounts": {pool["token0_symbol"]: x, pool["token1_symbol"]: y},
-        "value": pos["capital"] + tot["net"], "change_usd": tot["net"],
-        "change_pct": tot["net"] / pos["capital"] * 100 if pos["capital"] else 0.0,
-        "reward_24h_usd": reward_24h,
+        "value": cap + net, "change_usd": net,
+        "change_pct": net / cap * 100 if cap else 0.0,
+        "reward_24h_usd": reward_24h, "reward_hours": min(24.0, (now - datetime.fromisoformat(pos["opened_at"])
+                                                                 ).total_seconds() / 3600),
         "predicted_daily_pct": (pred["net"] / pred["c_total"] * 100
                                 if pred.get("net") is not None and pred.get("c_total") else None),
-        "actual_daily_pct": running / days / pos["capital"] * 100 if pos["capital"] else None,
-        "days": days, "open_cost_usd": open_cost,
+        "actual_daily_pct": running / days / cap * 100 if cap else None,
+        "actual_daily_pct_with_cost": net / days / cap * 100 if cap else None,
+        "actual_state": actual_state, "actual_min_hours": risk.actual_min_hours,
+        "compare_enabled": hours >= risk.compare_min_hours, "compare_min_hours": risk.compare_min_hours,
+        "payback_total_hours": payback_total, "payback_left_hours": payback_left,
+        "days": days, "hours": hours, "open_cost_usd": open_cost,
         "started_red": bool(pos["started_red"]), "signal_open": pos["signal_open"],
         "red_label": RED_START_LABEL if pos["started_red"] else None,
         "hedges": json.loads(pos["hedges_json"] or "[]"),
         "estimated_rows": sum(1 for r in rows if r["is_estimated"]),
+        "rebalances": int(st.get("rebalances", 0)),
+        "cautions": [CAUTION_JA.get(k, k) for k in st.get("risk_active") or [] if not k.startswith("skip:")],
+        "skipped": [k[5:] for k in st.get("risk_active") or [] if k.startswith("skip:")],
     }
 
 
-def detail(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, limit_ledger: int = 60) -> dict[str, Any]:
+def close_reason_ja(reason: str | None) -> str | None:
+    if not reason:
+        return None
+    if reason == "manual":
+        return "オーナーが閉じた"
+    if reason == "owner_exit_all":
+        return "オーナーが全部閉じた"
+    if reason.startswith("emergency:"):
+        return "緊急離脱"
+    if reason.startswith("risk:"):
+        return "離脱のルール"
+    return reason
+
+
+def events(conn: sqlite3.Connection, pid: int | None, limit: int = 50) -> list[dict[str, Any]]:
+    """見張りの記録（新しい順）。pid を指定すればその建玉の分と全体の分、None なら全部。"""
+    q = "SELECT * FROM risk_events"
+    args: list[Any] = []
+    if pid is not None:
+        q += " WHERE position_id=? OR position_id IS NULL"
+        args.append(pid)
+    rows = conn.execute(q + " ORDER BY ts DESC, id DESC LIMIT ?", (*args, limit)).fetchall()
+    return [{"id": r["id"], "ts": r["ts"], "position_id": r["position_id"], "level": r["level"],
+             "level_ja": LEVEL_JA.get(r["level"], r["level"]), "kind": r["kind"], "message": r["message_ja"],
+             "action": r["action"], "action_ja": ACTION_JA.get(r["action"] or "none", r["action"])} for r in rows]
+
+
+def risk_rules(r: RiskSettings) -> list[dict[str, str]]:
+    """画面の「見張りのルール」の一覧（config.yaml の risk の今の値）。"""
+    return [
+        {"level": "caution", "level_ja": "注意", "rule": f"レンジの端まで{r.caution_edge_pct:g}%未満 / "
+                                                       f"報酬の実績が予測より{r.caution_reward_shortfall_pct:g}%以上少ない"
+                                                       f"（{r.caution_min_hours:g}時間たってから）", "action": "記録する"},
+        {"level": "rebalance", "level_ja": "置き直し", "rule": f"レンジの外に{r.rebalance_after_minutes:g}分いた",
+         "action": f"今の価格を中心に置き直す（置き直し先の純日利が{r.rebalance_min_net_pct:+g}%以下なら閉じる）"},
+        {"level": "exit", "level_ja": "離脱", "rule": f"報酬トークンが24時間で{r.exit_reward_token_24h_pct:g}% / "
+                                                    "プールの判定が🔴になった（🔴で始めた練習は除く）", "action": "その建玉を閉じる"},
+        {"level": "emergency", "level_ja": "緊急離脱",
+         "rule": f"プールの流動性が1時間で−{r.emergency_liquidity_drop_1h_pct:g}% / "
+                 f"今日の損が持っている額の{r.emergency_daily_loss_pct:g}%",
+         "action": "全部閉じて、新しく始めるのを止める"},
+    ]
+
+
+def detail(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSettings | None = None,
+           limit_ledger: int = 60) -> dict[str, Any]:
     """建玉の詳細: 6区分（累計・今日・1日平均）、実現/未実現、着地見込み、1時間ごとの棒グラフ、予測との差、台帳。"""
-    c = card(conn, pos, now)
+    c = card(conn, pos, now, risk)
     rows = _pnl_rows(conn, pos["id"])
     tot = views.signed_breakdown(_sum(rows))
     closed = pos["status"] != "open"
@@ -115,7 +184,8 @@ def detail(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, limit_ledg
             "rows": [{"key": k, "label": views.CATEGORY_JA[k], "predicted": pred_parts[k], "actual": run[k] / d}
                      for k in CATS],
             "predicted_net": pred["net"], "actual_net": sum(run.values()) / d,
-            "score_ts": pred.get("score_ts"), "short": d < 1,
+            "score_ts": pred.get("score_ts"), "short": not c["compare_enabled"],
+            "enabled": c["compare_enabled"], "min_hours": c["compare_min_hours"],
             "note": "予測はスコア（始めた時の最適レンジの1日の見込み）。実績は始めてからの1日あたり（開く時の費用を除く）。",
         }
     sell = {
@@ -141,5 +211,6 @@ def detail(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, limit_ledg
         "apy_display": views.apy(tot["income"] / d, pos["capital"]),
         "apy_net": views.apy(sum(run.values()) / d, pos["capital"]),
         "red_note": RED_START_NOTE if pos["started_red"] else None,
+        "events": events(conn, pos["id"]),
         "notes": ESTIMATE_NOTES,
     }

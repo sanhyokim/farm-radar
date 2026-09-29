@@ -3,6 +3,7 @@
 - 持っている建玉の perp の資金調達率（Lighter の1時間ごとの実績）を取っておく
 - 新しい記録の分だけ、建玉の損益を計算する
 - 円のレートが取れていなかった台帳の行を埋める
+- 危険判定のルールで見張り、仮想的に置き直す・閉じる（M5b。risk_job.py）
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from ..config import Config
 from ..fx import Frankfurter, fill_ledger_jpy
 from ..tokens import TokenBook
 from .paper import PaperExecutor
+from .risk_job import run_risk
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +66,8 @@ def run_paper(conn: sqlite3.Connection, config: Config, tokens: TokenBook, light
         fill_ledger_jpy(conn, fx)
     except Exception:
         log.exception("fx fill failed")
+    # 見張り（失敗したら scheduler がエラーとして通知する）
+    run_risk(conn, config, tokens, ex, now)
     if n:
         log.info("paper positions updated", extra={"data": {"positions": len(positions), "rows": n}})
     return n

@@ -5,11 +5,11 @@ import { AssetsLine, HourlyBars, Waterfall } from "../charts";
 import { jst, pct, signedUsd, tone, usd } from "../format";
 import { Badge, Card, Loading, Note, Term } from "../ui";
 import { BreakdownTable } from "./PoolDetail";
-import { PositionCard } from "./Practice";
+import { EventList, PositionCard, hoursJa } from "./Practice";
 
 const KIND_JA: Record<string, string> = {
   deposit: "入れる", withdraw: "引き出す", claim: "報酬の受け取り", cost: "費用",
-  hedge_open: "ヘッジを持つ", hedge_close: "ヘッジを閉じる", sell_reward: "報酬を売る",
+  hedge_open: "ヘッジを持つ", hedge_close: "ヘッジを閉じる", sell_reward: "報酬を売る", hedge_adjust: "ヘッジの量を合わせる",
 };
 
 export default function PracticeDetail() {
@@ -28,6 +28,12 @@ export default function PracticeDetail() {
 
       <PositionCard c={d} link={false} />
       {d.red_note && <Card><p className="text-sm text-rose-200">{d.red_note}</p></Card>}
+
+      <Card title="この建玉の見張りの記録（新しい順）">
+        {d.events.length ? <EventList events={d.events} /> : (
+          <p className="text-sm text-slate-400">まだ記録はありません。レンジの端に近づく・外に出る・報酬トークンが大きく下がるなどが起きると、理由と一緒にここに残ります。</p>
+        )}
+      </Card>
 
       <Card title="始めてからの損益（実績）" right={<Badge tone="emerald">実績</Badge>}>
         <div className="rounded-xl bg-slate-800/60 p-3 text-center">
@@ -89,7 +95,17 @@ export default function PracticeDetail() {
         ) : <p className="text-sm text-slate-400">まだ記録がありません。</p>}
       </Card>
 
-      {d.compare && (
+      {d.compare && !d.compare.enabled && (
+        <Card title="予測と実績のちがい（1日あたり）">
+          <p className="text-sm text-slate-300">
+            始めて{d.compare.min_hours}時間たってから比べます（あと約{hoursJa(Math.max(0, d.compare.min_hours - d.hours))}）。
+            それより短い時間の実績は、たまたまの動きが大きく、比べても当てになりません。
+          </p>
+          <Note>予測の純損益は1日 {signedUsd(d.compare.predicted_net)}（始めた時のスコア）。</Note>
+        </Card>
+      )}
+
+      {d.compare && d.compare.enabled && (
         <Card title="予測と実績のちがい（1日あたり）">
           <table className="w-full text-sm">
             <thead><tr className="text-xs text-slate-400"><th className="text-left font-normal">区分</th>
@@ -109,7 +125,7 @@ export default function PracticeDetail() {
               </tr>
             </tbody>
           </table>
-          <Note>{d.compare.note}{d.compare.short && " まだ1日たっていないので、実績は大きくぶれます。"}</Note>
+          <Note>{d.compare.note}</Note>
         </Card>
       )}
 

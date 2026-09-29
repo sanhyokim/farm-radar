@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -44,6 +44,8 @@ _ADDED_COLUMNS = {
     "position_pnl": {"haircut": "REAL", "haircut_sell": "REAL", "in_range": "REAL", "reward_amount": "REAL",
                      "value_usd": "REAL", "detail_json": "TEXT"},
     "ledger": {"value_usd": "REAL", "fx_rate": "REAL", "fx_date": "TEXT"},
+    # M5b: 停止の理由
+    "paper_state": {"reason": "TEXT"},
 }
 
 

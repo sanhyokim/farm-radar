@@ -84,9 +84,19 @@ class Telegram:
             self._call("sendMessage", {"chat_id": self._s.owner_id, "text": part,
                                        "disable_web_page_preview": True})
 
+    def send_buttons(self, text: str, buttons: list[tuple[str, str]]) -> None:
+        """ボタンつきで送る（全部閉じる前の確認用）。buttons は (表示, 押したときに届く合図) の並び。"""
+        self._call("sendMessage", {"chat_id": self._s.owner_id, "text": text[:MAX_TEXT],
+                                   "reply_markup": {"inline_keyboard": [[{"text": t, "callback_data": d}
+                                                                         for t, d in buttons]]}})
+
+    def answer_button(self, callback_id: str) -> None:
+        """ボタンを押したことを Telegram に伝える（押した後の読み込み中の表示を消す）。"""
+        self._call("answerCallbackQuery", {"callback_query_id": callback_id})
+
     def updates(self, offset: int | None, wait_seconds: int = 25) -> list[dict[str, Any]]:
-        """新しく届いたメッセージ（ロングポーリング: 最大 wait_seconds 秒待つ）。"""
-        payload: dict[str, Any] = {"timeout": wait_seconds, "allowed_updates": ["message"]}
+        """新しく届いたメッセージとボタンの押下（ロングポーリング: 最大 wait_seconds 秒待つ）。"""
+        payload: dict[str, Any] = {"timeout": wait_seconds, "allowed_updates": ["message", "callback_query"]}
         if offset is not None:
             payload["offset"] = offset
         return self._call("getUpdates", payload, timeout=wait_seconds + 10) or []
