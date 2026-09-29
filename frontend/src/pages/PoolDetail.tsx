@@ -34,7 +34,7 @@ export default function PoolDetail() {
           <h1 className="truncate text-xl font-bold text-slate-50">{s.pair}</h1>
           <SignalBadge s={s.signal} />
         </div>
-        <div className="text-xs text-slate-400">{s.venue_id} ・ 計算 {jst(s.ts)}{stock && " ・ 株ペア"}</div>
+        <div className="text-xs text-slate-400">{data.venue?.name ?? s.venue_name ?? s.venue_id} ・ 計算 {jst(s.ts)}{stock && " ・ 株ペア"}</div>
         <div className="mt-1"><Term k="保険（ヘッジ）"><HedgeBadge h={s.hedge_info} /></Term></div>
       </div>
 
@@ -49,7 +49,14 @@ export default function PoolDetail() {
         )}
       </Card>
 
-      <TryCard poolId={s.pool_id} red={s.signal === "red"} />
+      {data.venue && !data.venue.practice ? (
+        <Card title={<Term k="練習">練習</Term>}>
+          <div className="mb-1"><Badge tone="sky">観察だけ</Badge></div>
+          <p className="text-sm text-slate-300">{data.venue.practice_note}</p>
+        </Card>
+      ) : (
+        <TryCard poolId={s.pool_id} red={s.signal === "red"} />
+      )}
 
       {b && (
         <>

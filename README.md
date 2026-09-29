@@ -175,7 +175,7 @@ http://localhost:18000/api/health を開きます。
 - `stale`: `true` なら「データが古い」（しばらく成功していない）
 - `last_24h`: 直近24時間の予定回数（expected）と成功回数（ok）
 
-http://localhost:18000/api/venues では会場の警告（例: C4「報酬の上限を決める仕組みのソースが非公開」）と、
+http://localhost:18000/api/venues では会場の警告（例: C4「報酬の上限はチームが毎週手で決めている」）と、
 コントラクトごとの確認状況（Sourcify の照合が full / partial か）を見られます。
 http://localhost:18000/api/alerts では、記録された通知（報酬の急減など）を見られます。
 http://localhost:18000/api/scores では、プールごとの最新の判定（信号・純日利・理由）を見られます。

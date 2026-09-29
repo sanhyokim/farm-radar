@@ -99,7 +99,7 @@ export function PoolCard({ p }: { p: PoolRow }) {
       <div className="flex items-start justify-between gap-2">
         <Link to={`/pools/${encodeURIComponent(p.pool_id)}`} className="min-w-0">
           <div className="truncate font-semibold text-slate-50">{p.pair}</div>
-          <div className="text-xs text-slate-400">{p.venue_id}{p.best_r != null && ` ・ 最適レンジ ±${p.best_r}%`}</div>
+          <div className="text-xs text-slate-400">{p.venue_name ?? p.venue_id}{p.best_r != null && ` ・ 最適レンジ ±${p.best_r}%`}</div>
           {p.range_prices && <div className="num text-xs text-slate-300">{rangeText(p.range_prices)}</div>}
         </Link>
         <div className="shrink-0 text-right">

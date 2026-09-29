@@ -117,6 +117,27 @@ def test_unstaked_chosen_when_fees_beat_rewards():
     assert x.haircut == 0   # 手数料はプールのトークンで受け取るので、報酬トークンの値下がりは関係ない
 
 
+def test_fees_with_rewards_adds_both_incomes():
+    # ステークがない会場（Alandale。M6）: ボーナスと手数料の両方を受け取る。取り分の式はそれぞれ同じ
+    p = ModelParams(ranges=(0.01,))
+    inp = _inputs(fees_with_rewards=True, unstaked_fee=0.0, liquidity_staked=10 ** 24, reward_trend_daily=-0.02)
+    x = evaluate(inp, p).rows[0]
+    share = x.liquidity_mine / (10 ** 24 + x.liquidity_mine)
+    assert x.mode == "both" and x.mode_sell_now == "both"
+    assert x.income_staked == pytest.approx(500 * share * x.in_range_ratio)
+    assert x.income_unstaked == pytest.approx(100 * share * x.in_range_ratio)
+    assert x.income == pytest.approx(x.income_staked + x.income_unstaked)
+    # 報酬トークンの値下がりは、報酬の分だけに引く（手数料はプールのトークンで受け取るため）
+    assert x.haircut == pytest.approx(x.income_staked * 0.02)
+    assert x.net_sell_now - x.net == pytest.approx(x.haircut - x.haircut_sell_now)
+    # 会場が手数料の一部を取るなら、その分を引く
+    y = evaluate(_inputs(fees_with_rewards=True, unstaked_fee=0.25, liquidity_staked=10 ** 24), p).rows[0]
+    assert y.income_unstaked == pytest.approx(100 * 0.75 * share * y.in_range_ratio)
+    # 手数料が分からない（出来高なし）ときは、ボーナスだけ
+    z = evaluate(_inputs(fees_with_rewards=True, fees_usd_day=None, liquidity_staked=10 ** 24), p).rows[0]
+    assert z.income == pytest.approx(z.income_staked) and z.mode == "both"
+
+
 def test_haircut_only_when_reward_token_falls():
     up = evaluate(_inputs(reward_trend_daily=0.02, fees_usd_day=None), ModelParams(ranges=(0.01,))).rows[0]
     down = evaluate(_inputs(reward_trend_daily=-0.02, fees_usd_day=None), ModelParams(ranges=(0.01,))).rows[0]

@@ -11,7 +11,7 @@ export interface Breakdown {
 }
 
 export interface PoolRow {
-  pool_id: string; pair: string; venue_id: string; signal: Signal;
+  pool_id: string; pair: string; venue_id: string; venue_name?: string | null; signal: Signal;
   net_daily_pct: number | null; net_daily_pct_lp: number | null; best_r: number | null;
   reason_ja: string; is_stock_pair?: number; has_perp: number | null; tvl_usd: number | null;
   warnings?: Warn[]; mode?: string | null;
@@ -47,6 +47,7 @@ export interface Point { ts: string; v: number | null }
 
 export interface Venue {
   venue_id: string; name: string; audited: boolean | null; launch_date: string | null; age_days: number | null;
+  practice?: boolean;   // false なら観察だけ（練習と評価に入れない。M6）
   warnings: { code: string; level: string; title_ja?: string; key?: string }[];
   unverified_contracts: string[];
   reward_token: { symbol: string | null; price_usd: number | null; change_24h: number | null; change_7d: number | null; sparkline: Point[] };
@@ -81,6 +82,7 @@ export interface PoolDetail {
     vol_source: string | null; is_stock_pair: number; address: string;
     details: { inputs?: Record<string, any>; ranges?: RangeRow[] };
   };
+  venue?: { id: string; name: string | null; practice: boolean; practice_note: string };
   price: { price: number; tick: number; ts: string } | null;
   capital: { total: number; lp: number; margin: number; reserve: number };
   daily: {

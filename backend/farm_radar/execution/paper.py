@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..config import Config
+from ..config import Config, ConfigError, load_venue, practice_allowed
 from ..fx import Frankfurter, rate_for
 from ..scoring.prices import PoolPrice, usd_prices
 from ..tokens import TokenBook
@@ -165,12 +165,23 @@ class PaperExecutor:
         if "trades_per_day" in lim and trades + 1 > int(lim["trades_per_day"]):
             raise PaperError(f"1日の取引の上限（{lim['trades_per_day']}件）に達しています。")
 
+    def check_practice_venue(self, venue_id: str, venue_name: str | None = None) -> None:
+        """観察だけの会場（会場ファイルの practice: false。M6 の Alandale）では練習を始めない。"""
+        try:
+            venue = load_venue(venue_id, self.config.root)
+        except (OSError, ConfigError):
+            raise PaperError("この会場の設定が見つからないので、練習を始められません。") from None
+        if not practice_allowed(venue):
+            raise PaperError(f"{venue_name or venue.get('name') or venue_id} は観察だけの会場です。"
+                             "練習と2週間の評価には入れていません。")
+
     # --- 開く ---------------------------------------------------------------------------------
 
     def open_position(self, pool_id: str, capital: float, lower: float | None = None,
                       upper: float | None = None, r_pct: float | None = None) -> PositionRef:
         """建玉を作る。レンジを指定しなければ、最新のスコアの最適レンジ（±r%）を使う。"""
         pool = self.market.pool(pool_id)
+        self.check_practice_venue(pool["venue_id"], pool["venue_name"])
         snap = self.market.latest(pool_id)
         score = latest_score(self.conn, pool_id)
         if snap is None or score is None or score["best_r"] is None:

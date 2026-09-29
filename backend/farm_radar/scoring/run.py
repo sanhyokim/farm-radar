@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..config import ScoringSettings, contract_address
+from ..config import ScoringSettings, contract_address, mechanic_value
 from ..db import database as db
 from ..external.geckoterminal import GeckoTerminal, PoolMarket
 from .. import hedges as hedge_mod
@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 EXTERNAL_SOURCE = "geckoterminal:1h"
 VOLUME_TEXT = "取引量が不自然に多い（見せかけの取引の可能性）"
-REWARD_DECIMALS = 18   # UP（venues/up-robinhood.yaml の reward_token。検証済みソース Up.sol）
+REWARD_DECIMALS = 18   # 既定値。会場ファイルの contracts.reward_token.decimals があればそちらを使う
 
 
 @dataclass
@@ -256,6 +256,8 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
     prices = usd_prices([p for p in (_pool_price(r) for r in latest) if p], stables)
 
     reward_token = (contract_address(ctx.venue, "reward_token") or "").lower()
+    reward_decimals = int(((ctx.venue.get("contracts") or {}).get("reward_token") or {}).get("decimals")
+                          or REWARD_DECIMALS)
 
     # どのプールが自分の記録だけで足りるか
     own_ok: dict[str, bool] = {}
@@ -326,7 +328,7 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
         row = _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok[r["pool_id"]], token_grid,
                           pool_own, markets, funding, reward_usd, reward_trend_daily, reward_change,
                           reward_volume.volume_24h_usd if reward_volume else None, stale, age_min, now_s, days,
-                          liq_med.get(r["pool_id"]))
+                          liq_med.get(r["pool_id"]), reward_decimals)
         row.update({"pool_id": r["pool_id"], "ts": ts, "venue_id": venue_id, "block_number": run["block_number"]})
         is_stock = row.pop("_is_stock")
         db.insert_score(conn, row)
@@ -366,7 +368,7 @@ def others_liquidity(latest: int, median: int | None) -> int:
 
 def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid, pool_own, markets, funding,
                 reward_usd, reward_trend_daily, reward_change, reward_volume, stale, age_min, now_s, days,
-                liq_med: tuple[int, int] | None = None) -> dict[str, Any]:
+                liq_med: tuple[int, int] | None = None, reward_decimals: int = REWARD_DECIMALS) -> dict[str, Any]:
     tokens = ctx.tokens
     t0, t1 = r["token0"].lower(), r["token1"].lower()
     src = "own" if own_ok else "external"
@@ -410,7 +412,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     fees_day = volume_used * fee if volume_used is not None else None
     eff = int(r["reward_rate_effective_raw"] or 0)
     alive = r["gauge_alive"] is None or bool(r["gauge_alive"])
-    reward_usd_day = eff * 86400 / 10 ** REWARD_DECIMALS * reward_usd if (reward_usd and alive) else 0.0
+    reward_usd_day = eff * 86400 / 10 ** reward_decimals * reward_usd if (reward_usd and alive) else 0.0
 
     missing = None
     if stale:
@@ -448,6 +450,8 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             liquidity_total=l_total, liquidity_staked=l_staked,
             reward_usd_day=reward_usd_day, fees_usd_day=fees_day, sigma_pair=sig_pair,
             reward_trend_daily=reward_trend_daily, slippage=slip,
+            # ステークがなく、手数料と報酬の両方を受け取る会場（Alandale。会場ファイルの mechanics）
+            fees_with_rewards=bool(mechanic_value(ctx.venue, "lp_receives_fees_with_rewards", False)),
         )
         ev = evaluate(inp, params)
     j: Judgement = judge(ev, sparams, warnings=pool_warns, tvl_usd=tvl, missing=missing, notes=notes)
@@ -490,8 +494,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         "sell_now": ({
             "hours": params.reward_sell_hours, "best_r": ev.best_sell_now.r * 100,
             "net_daily_pct": ev.net_daily_pct_sell_now, "net_usd": ev.best_sell_now.net_sell_now,
-            "income": (ev.best_sell_now.income_unstaked if ev.best_sell_now.mode_sell_now == "unstaked"
-                       else ev.best_sell_now.income_staked),
+            "income": _sell_income(ev.best_sell_now),
             "haircut": ev.best_sell_now.haircut_sell_now, "mode": ev.best_sell_now.mode_sell_now,
         } if ev else None),
     }
@@ -514,6 +517,13 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         "details_json": json.dumps(details, ensure_ascii=False, default=str),
         "_is_stock": int(is_stock),
     }
+
+
+def _sell_income(x) -> float:
+    """参考値「すぐ売る前提」の収入（選んだ受け取り方の分）。"""
+    if x.mode_sell_now == "unstaked":
+        return x.income_unstaked
+    return x.income if x.mode_sell_now == "both" else x.income_staked
 
 
 def _slippage(s: ScoringSettings, params: ModelParams, price: float, l_total: int, t0: TokenSide, t1: TokenSide,

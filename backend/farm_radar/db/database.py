@@ -230,8 +230,8 @@ def insert_score(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
 
 def latest_scores(conn: sqlite3.Connection, venue_id: str | None = None) -> list[sqlite3.Row]:
     """プールごとの最新のスコア。"""
-    q = """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address FROM scores s
-           JOIN pools p ON p.id = s.pool_id
+    q = """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address, v.name AS venue_name FROM scores s
+           JOIN pools p ON p.id = s.pool_id LEFT JOIN venues v ON v.id = p.venue_id
            WHERE s.ts = (SELECT MAX(ts) FROM scores s2 WHERE s2.pool_id = s.pool_id)"""
     args: tuple = ()
     if venue_id:

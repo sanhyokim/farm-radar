@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, Response
 from . import discovery as discovery_mod
 from . import views
 from .collectors.completeness import check
-from .config import REPO_ROOT, contract_address, load_config, load_venue
+from .config import REPO_ROOT, ConfigError, contract_address, load_config, load_venue, practice_allowed
 from .db import database as db
 from .execution import views as paper_views
 from .execution.paper import PaperError, PaperExecutor
@@ -111,6 +111,7 @@ def venues() -> dict:
         extra = _venue_extra(conn, config, v)
         out.append({
             "venue_id": venue_id, "name": v.get("name"), "audited": v.get("audited"),
+            "practice": practice_allowed(v),   # false なら観察だけ（練習と評価に入れない。M6）
             "launch_date": v.get("launch_date"), "warnings": v.get("warnings") or [],
             "contracts": contracts, "mechanics": mechanics,
             "unverified_contracts": [n for n, c in contracts.items() if c["unverified"]],
@@ -271,7 +272,7 @@ def home() -> dict:
         counts = {"green": 0, "yellow": 0, "red": 0}
         for d in rows:
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
-        slim = ["pool_id", "pair", "venue_id", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
+        slim = ["pool_id", "pair", "venue_id", "venue_name", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
                 "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices"]
         greens = [{k: d.get(k) for k in slim} for d in rows if d["signal"] == "green"]
         # 🟢がないときの参考: 判定できたプールを純日利の高い順に3件
@@ -311,8 +312,9 @@ def pool(pool_id: str) -> dict:
     """プール詳細（SPEC 7.3章・7.6章・7.7章）。損益は1時間ごとのスコア（予測）から作る。"""
     with _open() as (config, conn):
         r = conn.execute(
-            """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address, p.is_stock_pair FROM scores s
-               JOIN pools p ON p.id = s.pool_id WHERE s.pool_id=? ORDER BY s.ts DESC LIMIT 1""", (pool_id,)
+            """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address, p.is_stock_pair, v.name AS venue_name
+               FROM scores s JOIN pools p ON p.id = s.pool_id LEFT JOIN venues v ON v.id = p.venue_id
+               WHERE s.pool_id=? ORDER BY s.ts DESC LIMIT 1""", (pool_id,)
         ).fetchone()
         if r is None:
             raise HTTPException(404, "このプールの判定はまだありません")
@@ -329,8 +331,14 @@ def pool(pool_id: str) -> dict:
     c_lp = capital * s.allocation_lp
     for h in history:
         h["us_open"] = vol.us_market_open(int(datetime.fromisoformat(h["ts"]).timestamp()))
+    venue = _venue_or_none(d["venue_id"], config)
     return {
         "score": d,
+        # 観察だけの会場（practice: false。M6 の Alandale）では、練習のボタンの代わりに説明を出す
+        "venue": {"id": d["venue_id"], "name": (venue or {}).get("name") or d.get("venue_name"),
+                  "practice": practice_allowed(venue) if venue else False,
+                  "practice_note": ((venue or {}).get("practice_note_ja")
+                                    or "この会場は観察だけです。練習と2週間の評価には入れていません。")},
         "price": dict(snap) if snap else None,
         "capital": {"total": capital, "lp": c_lp, "margin": capital * s.allocation_hedge_margin,
                     "reserve": capital * s.allocation_reserve},
@@ -352,6 +360,13 @@ def pool(pool_id: str) -> dict:
                                      history, now),
         "history": history,
     }
+
+
+def _venue_or_none(venue_id: str, config) -> dict | None:
+    try:
+        return load_venue(venue_id, config.root)
+    except (OSError, ConfigError):
+        return None
 
 
 def _swap(d: dict, config) -> dict | None:

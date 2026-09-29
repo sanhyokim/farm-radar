@@ -386,6 +386,19 @@ def load_venue(venue_id: str, root: Path = REPO_ROOT) -> dict[str, Any]:
     return data
 
 
+def mechanic_value(venue: dict[str, Any], name: str, default: Any = None) -> Any:
+    """会場の仕組み（mechanics）の値。確認済みか、未確認のままオーナーが承認したものだけ。それ以外は default。"""
+    m = (venue.get("mechanics") or {}).get(name) or {}
+    if "value" not in m or (m.get("unverified", True) and not m.get("owner_acknowledged")):
+        return default
+    return m["value"]
+
+
+def practice_allowed(venue: dict[str, Any]) -> bool:
+    """この会場で練習（と評価）ができるか。practice: false の会場は観察だけ（M6 の Alandale）。"""
+    return venue.get("practice", True) is not False
+
+
 def contract_address(venue: dict[str, Any], name: str) -> str | None:
     """確認済みのアドレスだけを返す。未確認（unverified: true）なら None。"""
     entry = (venue.get("contracts") or {}).get(name) or {}

@@ -10,23 +10,40 @@ export default function Pools() {
   const { data, error } = useApi<Scores>("/api/scores");
   const [params, setParams] = useSearchParams();
   const filter = (params.get("signal") as Signal | null) ?? null;
+  const venue = params.get("venue");
   if (!data) return <Loading error={error} />;
-  const rows = data.scores.filter((r) => !filter || r.signal === filter);
+  // 会場が2つ以上あるときだけ、会場で絞り込むボタンを出す（M6）
+  const venues = [...new Map(data.scores.map((r) => [r.venue_id, r.venue_name ?? r.venue_id])).entries()];
+  const inVenue = data.scores.filter((r) => !venue || r.venue_id === venue);
+  const rows = inVenue.filter((r) => !filter || r.signal === filter);
+  const counts = { green: 0, yellow: 0, red: 0 } as Record<Signal, number>;
+  inVenue.forEach((r) => { counts[r.signal] = (counts[r.signal] ?? 0) + 1; });
+  const set = (next: { signal?: Signal | null; venue?: string | null }) => {
+    const s = next.signal !== undefined ? next.signal : filter;
+    const v = next.venue !== undefined ? next.venue : venue;
+    setParams({ ...(s ? { signal: s } : {}), ...(v ? { venue: v } : {}) });
+  };
+  const chipClass = (on: boolean) =>
+    `rounded-full px-3 py-1 text-sm ${on ? "bg-sky-500/20 text-sky-200 ring-1 ring-sky-500/40" : "bg-slate-800 text-slate-300"}`;
   const chip = (s: Signal | null, label: string) => (
-    <button
-      key={label}
-      onClick={() => setParams(s ? { signal: s } : {})}
-      className={`rounded-full px-3 py-1 text-sm ${filter === s ? "bg-sky-500/20 text-sky-200 ring-1 ring-sky-500/40" : "bg-slate-800 text-slate-300"}`}
-    >
+    <button key={label} onClick={() => set({ signal: s })} className={chipClass(filter === s)}>
       {label}
     </button>
   );
   return (
     <div className="space-y-3">
       <h1 className="text-lg font-bold text-slate-100">プール</h1>
+      {venues.length > 1 && (
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => set({ venue: null })} className={chipClass(!venue)}>全部の会場</button>
+          {venues.map(([id, name]) => (
+            <button key={id} onClick={() => set({ venue: id })} className={chipClass(venue === id)}>{name}</button>
+          ))}
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
-        {chip(null, `すべて ${data.scores.length}`)}
-        {(["green", "yellow", "red"] as const).map((s) => chip(s, `${SIGNAL[s].emoji} ${data.counts[s] ?? 0}`))}
+        {chip(null, `すべて ${inVenue.length}`)}
+        {(["green", "yellow", "red"] as const).map((s) => chip(s, `${SIGNAL[s].emoji} ${counts[s] ?? 0}`))}
       </div>
       <p className="text-xs text-slate-400">純日利の高い順。数字は<Term k="総資産あたり日利" />。値段は最適レンジの<Term k="範囲（レンジ）">範囲</Term>、印は<Term k="保険（ヘッジ）">保険</Term>の有無。</p>
       <ul className="divide-y divide-slate-800 rounded-2xl bg-slate-900 ring-1 ring-slate-800">
@@ -37,6 +54,7 @@ export default function Pools() {
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium text-slate-100">{r.pair}</span>
                 <span className="block text-xs text-slate-400">
+                  {venues.length > 1 && `${r.venue_name ?? r.venue_id} ・ `}
                   {r.best_r != null ? `±${r.best_r}%` : "判定できず"} ・ TVL {bigUsd(r.tvl_usd)}
                 </span>
                 {r.range_prices && <span className="num block text-xs text-slate-300">{rangeText(r.range_prices)}</span>}

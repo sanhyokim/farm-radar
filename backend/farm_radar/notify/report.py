@@ -45,7 +45,8 @@ def _pair(r: dict[str, Any]) -> str:
 
 def _rank_line(i: int, r: dict[str, Any]) -> str:
     rng = f"（±{r['best_r']:g}%）" if r.get("best_r") is not None else ""
-    return f"{i}. {SIGNAL_MARK.get(r['signal'], '')} {_pair(r)} {_pct(r.get('net_daily_pct'))}{rng}"
+    where = f" [{r['venue_name']}]" if r.get("venue_name") else ""   # 会場が2つになったので（M6）
+    return f"{i}. {SIGNAL_MARK.get(r['signal'], '')} {_pair(r)}{where} {_pct(r.get('net_daily_pct'))}{rng}"
 
 
 def _reward_lines(home: dict[str, Any]) -> list[str]:
