@@ -33,10 +33,20 @@ rewards:
   # エポック切り替え（木曜 09:00 JST）からこの分数までのデータに「エポック更新直後」の印を付ける。
   epoch_fresh_minutes: 120
 
-# 通知の条件（送信は M4 で実装。今はデータベースの alerts 表とログに記録する）
+# 通知の条件（記録はデータベースの alerts 表。送信は下の notify）
 alerts:
   # エポックの途中で、報酬の毎秒量がそのエポックの最大値からこの%以上減ったら記録する
   reward_rate_drop_pct: 30
+
+# 通知（M4。SPEC 8章）。送り先は Telegram。トークンとあなたのIDは .env にだけ書きます
+# （TELEGRAM_BOT_TOKEN / TELEGRAM_OWNER_ID。書いていなければ送らず、記録だけします）
+# 送るもの: 新しく🟢になった / 🟢から🔴に落ちた / 報酬がエポックの途中で減った / 収集や計算のエラー / 毎朝のレポート
+notify:
+  daily_report_time_jst: "08:00"   # 毎朝のレポートの時刻（日本時間）
+  daily_report_top: 5              # レポートに載せる上位の件数
+  error_repeat_minutes: 60         # 同じエラーは、この分数に1回だけ知らせる
+  max_age_hours: 24                # これより古いお知らせは送らない（パソコンを長く止めていたとき用）
+  send_every_minutes: 1            # 送っていないお知らせを確かめる間隔（分）
 
 # スコアの計算（SPEC 3.2章）。1時間ごとに全プールを計算して判定する。
 scoring:

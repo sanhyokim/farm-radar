@@ -100,6 +100,35 @@ def _scoring(raw: dict[str, Any]) -> ScoringSettings:
 
 
 @dataclass(frozen=True)
+class NotifySettings:
+    """通知の設定（M4。SPEC 8章）。config.yaml の notify から読む。トークンなどは .env にだけ書く。"""
+    daily_report_hour_jst: int = 8        # 毎朝のレポートを送る時刻（日本時間）
+    daily_report_minute: int = 0
+    daily_report_top: int = 5             # レポートに載せる上位の件数
+    error_repeat_minutes: int = 60        # 同じエラーの通知はこの分数に1回だけ
+    max_age_hours: float = 24.0           # これより古いお知らせは送らない（パソコンを長く止めていたとき用）
+    send_every_minutes: int = 1           # 送っていないお知らせを確かめる間隔
+
+
+def _notify(raw: dict[str, Any]) -> NotifySettings:
+    n = raw.get("notify") or {}
+    d = NotifySettings()
+    hh, mm = str(n.get("daily_report_time_jst", "08:00")).split(":")
+    out = NotifySettings(
+        daily_report_hour_jst=int(hh), daily_report_minute=int(mm),
+        daily_report_top=int(n.get("daily_report_top", d.daily_report_top)),
+        error_repeat_minutes=int(n.get("error_repeat_minutes", d.error_repeat_minutes)),
+        max_age_hours=float(n.get("max_age_hours", d.max_age_hours)),
+        send_every_minutes=int(n.get("send_every_minutes", d.send_every_minutes)),
+    )
+    if not (0 <= out.daily_report_hour_jst < 24 and 0 <= out.daily_report_minute < 60):
+        raise ConfigError("notify.daily_report_time_jst は \"08:00\" のように書いてください。")
+    if out.error_repeat_minutes <= 0 or out.send_every_minutes <= 0:
+        raise ConfigError("notify の分数は1以上にしてください。")
+    return out
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -111,6 +140,7 @@ class Config:
     epoch_fresh_minutes: int = 120          # エポック切り替えからこの分数までは「エポック更新直後」の印を付ける
     reward_drop_alert_pct: float = 30.0     # エポックの途中で報酬の毎秒量がこの%以上減ったら通知
     scoring: ScoringSettings = field(default_factory=ScoringSettings)
+    notify: NotifySettings = field(default_factory=NotifySettings)
     root: Path = REPO_ROOT
 
 
@@ -156,6 +186,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         epoch_fresh_minutes=int((raw.get("rewards") or {}).get("epoch_fresh_minutes", 120)),
         reward_drop_alert_pct=float((raw.get("alerts") or {}).get("reward_rate_drop_pct", 30)),
         scoring=_scoring(raw),
+        notify=_notify(raw),
         root=root,
     )
 

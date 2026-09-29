@@ -20,6 +20,7 @@ from . import views
 from .collectors.completeness import check
 from .config import REPO_ROOT, contract_address, load_config, load_venue
 from .db import database as db
+from .notify.telegram import settings_from_env
 from .scoring import volatility as vol
 from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
 from .tokens import load_tokens
@@ -357,6 +358,25 @@ def _sell_now(d: dict, b: dict | None) -> dict | None:
         "diff_pct": sn["net_daily_pct"] - d["net_daily_pct"] if d["net_daily_pct"] is not None else None,
         "note": (f"報酬を受け取ってから{sn['hours']:g}時間で売る前提の参考値です。判定には使いません。"
                  "判定は「報酬を持ち続ける前提」（7日の値下がりの傾向を引く）で出しています。"),
+    }
+
+
+@app.get("/api/reports")
+def reports(days: int = 30) -> dict:
+    """毎朝のレポートと今日の学びの履歴（M4。学ぶタブで表示）。Telegram の設定は「あるかないか」だけ返す。"""
+    days = max(1, min(days, 365))
+    since = (_now() - timedelta(days=days)).isoformat(timespec="seconds")
+    with _open() as (config, conn):
+        reps = [dict(r) for r in conn.execute(
+            "SELECT day, ts, body_ja, sent_at FROM daily_reports WHERE ts>=? ORDER BY day DESC", (since,))]
+        notes = [dict(r) for r in conn.execute(
+            "SELECT ts, pool_id, title, body_ja, topic FROM learning_notes WHERE ts>=? ORDER BY ts DESC", (since,))]
+        sent = conn.execute("SELECT MAX(notified_at) FROM alerts").fetchone()[0]
+        n = config.notify
+    return {
+        "reports": reps, "learning": notes,
+        "telegram": {"configured": settings_from_env(os.environ) is not None, "last_alert_sent_at": sent},
+        "schedule_jst": f"{n.daily_report_hour_jst:02d}:{n.daily_report_minute:02d}",
     }
 
 

@@ -52,6 +52,13 @@ export interface HistoryPoint {
 
 export interface Bar { ts: string; jst: string; net_usd: number | null; ma24_usd: number | null; us_open: boolean }
 
+export interface Reports {
+  reports: { day: string; ts: string; body_ja: string; sent_at: string | null }[];
+  learning: { ts: string; pool_id: string | null; title: string; body_ja: string; topic: string }[];
+  telegram: { configured: boolean; last_alert_sent_at: string | null };
+  schedule_jst: string;
+}
+
 export interface PoolDetail {
   score: PoolRow & {
     ts: string; in_range_ratio: number | null; in_range_ratio_hold: number | null; sigma_pair: number | null;
