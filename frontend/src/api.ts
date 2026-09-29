@@ -87,6 +87,49 @@ export interface PoolDetail {
   history: HistoryPoint[];
 }
 
+export interface PaperCard {
+  id: number; pool_id: string; pair: string; venue_id: string; status: "open" | "closed";
+  opened_at: string; closed_at: string | null; close_reason: string | null; last_ts: string;
+  capital: number; c_lp: number; mode: string; r_pct: number; lower: number; upper: number; price: number;
+  price_open: number; in_range: boolean; to_lower_pct: number; to_upper_pct: number;
+  amounts: Record<string, number>; value: number; change_usd: number; change_pct: number; reward_24h_usd: number;
+  predicted_daily_pct: number | null; actual_daily_pct: number | null; days: number; open_cost_usd: number;
+  started_red: boolean; signal_open: Signal; red_label: string | null;
+  hedges: { symbol: string; perp: string; size: number; entry: number }[]; estimated_rows: number;
+}
+
+export interface Paper {
+  mode: string; enabled: boolean; stopped: boolean; capital: number;
+  limits: { position_usd?: number; total_usd?: number; per_venue_share?: number; trades_per_day?: number };
+  venue_cap_usd: number | null; open_total_usd: number; how_to_enable: string;
+  open: PaperCard[]; closed: PaperCard[];
+}
+
+export interface PaperDetail extends PaperCard {
+  total: Breakdown; realized: number; unrealized: number; today: Breakdown | null; landing: number | null;
+  since_start: Breakdown | null; hourly: { bars: Bar[]; best: Bar | null; worst: Bar | null };
+  series: { ts: string; jst: string; value: number }[];
+  compare: {
+    rows: { key: keyof Breakdown; label: string; predicted: number; actual: number }[];
+    predicted_net: number; actual_net: number; score_ts: string; short: boolean; note: string;
+  } | null;
+  sell_now: { hours: number; hold_haircut: number; sell_haircut: number; hold_net: number; sell_net: number;
+    predicted_hold_pct: number | null; predicted_sell_pct: number | null };
+  ledger: { ts: string; kind: string; token: string; amount: number; price_usd: number | null; value_usd: number | null;
+    price_jpy: number | null; fx_rate: number | null; fx_date: string | null; note: string }[];
+  labels: Record<string, string>; apy_note: string; apy_display: number; apy_net: number;
+  red_note: string | null; notes: string[];
+}
+
+/** POST して JSON を返す。失敗したらサーバーの日本語の理由を投げる。 */
+export async function postApi<T>(path: string, body?: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => null))?.detail ?? `エラー ${r.status}`);
+  return r.json();
+}
+
 export function useApi<T>(path: string): { data: T | null; error: string | null; reload: () => void } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);

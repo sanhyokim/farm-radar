@@ -296,3 +296,19 @@ def test_api_refuses_in_observe_mode(client, monkeypatch):
     r = c.post("/api/paper/positions", json={"pool_id": WETH_POOL})
     assert r.status_code == 400 and "mode を paper" in r.json()["detail"]
     assert c.get("/api/paper").json()["enabled"] is False
+
+
+def test_rewards_count_only_from_opening_time(world):
+    # 最新の記録が50分前のものでも、開く前の50分の報酬は数えない
+    path, conn = world
+    ex, ref = _open(conn, path, now=NOW + timedelta(minutes=40))
+    _extend(conn, 1)                          # 最後の記録の1時間後 = 開いてから10分後
+    run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=2))
+    last = conn.execute("SELECT * FROM position_pnl WHERE position_id=? ORDER BY ts DESC LIMIT 1",
+                        (ref.position_id,)).fetchone()
+    assert __import__("json").loads(last["detail_json"])["dt_s"] == pytest.approx(600)
+    p = conn.execute("SELECT * FROM positions WHERE id=?", (ref.position_id,)).fetchone()
+    c = pviews.card(conn, p, NOW + timedelta(hours=2))
+    # 実績の日利 = (純損益 + 開く時の費用) ÷ 日数 ÷ 入れた額
+    run = c["change_usd"] + c["open_cost_usd"]
+    assert c["actual_daily_pct"] == pytest.approx(run / c["days"] / 1000 * 100)

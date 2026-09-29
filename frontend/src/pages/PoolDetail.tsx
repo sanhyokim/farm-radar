@@ -1,5 +1,6 @@
-import { useParams } from "react-router-dom";
-import { useApi, type Breakdown, type PoolDetail as Detail, type RangeRow } from "../api";
+import { useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { postApi, useApi, type Breakdown, type Paper, type PoolDetail as Detail, type RangeRow } from "../api";
 import { AssetsLine, HourlyBars, RangeNet, Series, Waterfall } from "../charts";
 import { bigUsd, jst, pct, ratioPct, signedUsd, tone, usd } from "../format";
 import { Badge, Card, Loading, Note, SignalBadge, Term } from "../ui";
@@ -44,6 +45,8 @@ export default function PoolDetail() {
           </div>
         )}
       </Card>
+
+      <TryCard poolId={s.pool_id} red={s.signal === "red"} />
 
       {b && (
         <>
@@ -163,6 +166,39 @@ export default function PoolDetail() {
   );
 }
 
+function TryCard({ poolId, red }: { poolId: string; red: boolean }) {
+  const { data } = useApi<Paper>("/api/paper");
+  const nav = useNavigate();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  if (!data) return null;
+  const go = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await postApi<{ position_id: number }>("/api/paper/positions", { pool_id: poolId });
+      nav(`/practice/${r.position_id}`);
+    } catch (e) {
+      setErr(String((e as Error).message));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Card title={<Term k="練習">練習</Term>}>
+      {red && <div className="mb-2"><Badge tone="rose">練習用・判定は🔴</Badge></div>}
+      <button onClick={go} disabled={busy || !data.enabled || data.stopped}
+        className="w-full rounded-xl bg-sky-600 py-3 font-bold text-white disabled:bg-slate-700 disabled:text-slate-400">
+        {busy ? "作っています…" : `このプールで ${usd(data.capital, 0)} を試す`}
+      </button>
+      {!data.enabled && <Note>今は「見るだけ」モードです。{data.how_to_enable}</Note>}
+      {data.stopped && <Note>練習は停止中です。</Note>}
+      {err && <p className="mt-2 text-sm text-rose-300">{err}</p>}
+      <Note>お金は動きません。本物の値動きと報酬のデータで「入れていたらどうなったか」を毎時記録します。</Note>
+    </Card>
+  );
+}
+
 function SellNow({ sn }: { sn: NonNullable<Detail["sell_now"]> }) {
   return (
     <div className="mt-2 rounded-xl border border-dashed border-slate-600 p-2">
@@ -193,7 +229,7 @@ function Row({ k, v, note }: { k: React.ReactNode; v: string; note?: string }) {
   );
 }
 
-function BreakdownTable({ b, compact = false }: { b: Breakdown; compact?: boolean }) {
+export function BreakdownTable({ b, compact = false }: { b: Breakdown; compact?: boolean }) {
   return (
     <div className={compact ? "" : "mt-3"}>
       <table className="w-full text-sm">

@@ -51,7 +51,7 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime) -> dict[str,
     x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"],
                       int(pool["token0_decimals"]), int(pool["token1_decimals"]))
     open_cost = -float(rows[0]["other"] or 0.0) if rows else 0.0
-    running = {**tot, "other": tot["other"] + open_cost}   # 1日あたりの比較は、開く時の費用を除いて行う
+    running = sum(tot[k] for k in CATS) + open_cost          # 1日あたりの比較は、開く時の費用を除いて行う
     return {
         "id": pos["id"], "pool_id": pos["pool_id"], "pair": pair, "venue_id": pos["venue_id"],
         "status": pos["status"], "opened_at": pos["opened_at"], "closed_at": pos["closed_at"],
@@ -66,7 +66,7 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime) -> dict[str,
         "reward_24h_usd": reward_24h,
         "predicted_daily_pct": (pred["net"] / pred["c_total"] * 100
                                 if pred.get("net") is not None and pred.get("c_total") else None),
-        "actual_daily_pct": running["net"] / days / pos["capital"] * 100 if pos["capital"] else None,
+        "actual_daily_pct": running / days / pos["capital"] * 100 if pos["capital"] else None,
         "days": days, "open_cost_usd": open_cost,
         "started_red": bool(pos["started_red"]), "signal_open": pos["signal_open"],
         "red_label": RED_START_LABEL if pos["started_red"] else None,

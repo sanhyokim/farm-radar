@@ -99,6 +99,15 @@ function usAreas(points: { x: string; us_open: boolean }[]) {
 }
 
 /** 1時間ごとの純損益（予測）の棒グラフ + 24時間移動平均 + 米国市場時間（7.7章 3.）。 */
+// 0 の線がいつも見えるように、縦軸に 0 を含める
+function yDomain(values: (number | null | undefined)[]): [number, number] {
+  const v = values.filter((x): x is number => typeof x === "number" && isFinite(x));
+  const lo = Math.min(0, ...v);
+  const hi = Math.max(0, ...v);
+  const pad = (hi - lo || 1) * 0.1;
+  return [lo < 0 ? Math.floor(lo - pad) : 0, hi > 0 ? Math.ceil(hi + pad) : 0];
+}
+
 export function HourlyBars({ bars }: { bars: HourBar[] }) {
   const data = bars.map((b) => ({ ...b, x: b.jst }));
   return (
@@ -109,7 +118,8 @@ export function HourlyBars({ bars }: { bars: HourBar[] }) {
             <ReferenceArea key={i} x1={a.x1} x2={a.x2} fill={US} strokeOpacity={0} ifOverflow="extendDomain" />
           ))}
           <XAxis dataKey="x" tick={TICK} interval={11} axisLine={{ stroke: GRID }} tickLine={false} />
-          <YAxis tick={TICK} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}`} width={44} />
+          <YAxis tick={TICK} axisLine={false} tickLine={false} tickFormatter={(v) => `$${v}`} width={44}
+            domain={yDomain(data.flatMap((d) => [d.net_usd, d.ma24_usd]))} />
           <Tooltip {...TIP} formatter={(v: number, n: string) => [usd(v), n === "ma24_usd" ? "24時間平均" : "その1時間"]} />
           <ReferenceLine y={0} stroke={GRID} />
           <Bar dataKey="net_usd" isAnimationActive={false}>

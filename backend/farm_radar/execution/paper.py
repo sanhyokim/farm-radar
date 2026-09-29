@@ -221,6 +221,8 @@ class PaperExecutor:
         up_price = self._reward_price(prices)
         state = _new_state(snap, costs, up_price, gas)
         ts = _iso(self.now)
+        # 報酬などは「開いた時刻」から数える（最新の記録が少し前のものでも、その間の分は数えない）
+        state["prev"]["ts"] = max(ts, snap["ts"])
         cur = self.conn.execute(
             """INSERT INTO positions(pool_id, is_paper, opened_at, capital, r, lower, upper, status, venue_id, mode,
                  liquidity, amount0, amount1, price_open, usd0_open, usd1_open, c_lp, hedges_json, started_red,
@@ -240,7 +242,7 @@ class PaperExecutor:
         for kind, token, amount, usd, note in led:
             self._ledger(ts, pid, kind, token, amount, usd, note)
         # 開いた時の行（その他 = 開く時の費用）
-        self._pnl_row(pid, snap["ts"], {**{c: 0.0 for c in CATS}, "other": -costs}, 0.0,
+        self._pnl_row(pid, state["prev"]["ts"], {**{c: 0.0 for c in CATS}, "other": -costs}, 0.0,
                       in_range=1.0 if lower <= price <= upper else 0.0, reward_amount=0.0,
                       value=capital - costs, estimated=False, detail={"event": "open"})
         self.conn.commit()
