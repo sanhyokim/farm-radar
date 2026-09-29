@@ -43,3 +43,16 @@ export const jpUsd = (v: number | null | undefined) => {
     a.toLocaleString("en-US", { maximumFractionDigits: 0 });
   return `${v < 0 ? "−" : ""}$${s}`;
 };
+
+/** 値段（桁が大きく違うので、大きさに合わせて小数の桁を決める） */
+export const price = (v: number) =>
+  v >= 1000 ? v.toLocaleString("en-US", { maximumFractionDigits: 0 }) :
+  v >= 1 ? v.toFixed(2) : v >= 0.01 ? v.toFixed(4) : v.toPrecision(3);
+
+/** 最適レンジの値段の範囲（例: NVDA $176.40〜$194.94） */
+export const rangeText = (r: { kind: string; symbol: string; quote?: string; low: number; high: number;
+  usd_low?: number; usd_high?: number } | null | undefined) =>
+  !r ? "" : r.kind === "usd" ? `${r.symbol} $${price(r.low)}〜$${price(r.high)}`
+    : r.usd_low != null && r.usd_high != null
+      ? `${r.symbol} $${price(r.usd_low)}〜$${price(r.usd_high)} 相当（${r.quote ?? ""} が今の値段のままなら）`
+      : `1 ${r.symbol} = ${price(r.low)}〜${price(r.high)} ${r.quote ?? ""}`;

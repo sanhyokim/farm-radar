@@ -15,6 +15,20 @@ export interface PoolRow {
   net_daily_pct: number | null; net_daily_pct_lp: number | null; best_r: number | null;
   reason_ja: string; is_stock_pair?: number; has_perp: number | null; tvl_usd: number | null;
   warnings?: Warn[]; mode?: string | null;
+  hedge_info?: HedgeInfo; range_prices?: RangePrices | null;
+}
+
+/** 保険あり/なしと、使うヘッジ先の名前（2026-09-29 オーナー追加） */
+export interface HedgeInfo { has: boolean; venues: string[]; tokens: Record<string, string | null>; label: string }
+
+/** 最適レンジの実際の値段の範囲 */
+export interface RangePrices { kind: "usd" | "ratio"; symbol: string; quote?: string; now: number; low: number; high: number;
+  usd_now?: number; usd_low?: number; usd_high?: number }
+
+/** 両替のずれと、費用に含まれる額 */
+export interface SwapCosts {
+  trade_usd: number; slippage_pct: number; source: string | null; fee_pct: number; swap_usd: number;
+  swap_fee: number; slippage: number; gas: number; hedge_fee: number; open_total: number; rebalance_total: number;
 }
 
 export interface Home {
@@ -74,6 +88,7 @@ export interface PoolDetail {
     net_daily_pct: number | null; net_daily_pct_lp: number | null; judge_basis: string;
     apy_display: number | null; apy_net: number | null; apy_note: string; realized_note: string;
   };
+  swap?: SwapCosts | null;
   sell_now: {
     hours: number; best_r: number; net_daily_pct: number; net_usd: number; income: number; haircut: number;
     mode: string; hold_net_daily_pct: number | null; hold_haircut: number | null; diff_pct: number | null; note: string;
@@ -104,7 +119,10 @@ export interface PaperCard {
   compare_enabled: boolean; compare_min_hours: number;
   payback_total_hours: number | null; payback_left_hours: number | null;
   rebalances: number; cautions: string[]; skipped: string[];
-  rebalance_cost: number; close_cost_usd: number | null;
+  rebalance_cost: number;
+  swap?: { slippage_pct_now: number | null; rebalance_slippage_total: number; rebalance_slippage_next: number | null;
+    open: { swap_usd: number; slippage_pct: number; slippage: number; swap_fee?: number; gas?: number; hedge_fee?: number;
+      total?: number; estimated?: boolean } | null }; close_cost_usd: number | null;
 }
 
 export interface Watch {
@@ -143,7 +161,17 @@ export interface Evaluation {
   predicted_net_day?: number | null; actual_net_day?: number | null; gap_pct?: number | null;
   hold_net_day?: number | null; sell_net_day?: number | null; closer?: "hold" | "sell" | null;
   events?: { level: string; level_ja: string; n: number }[]; note?: string;
+  predicted_sell_net_day?: number | null; disclaimer?: string;
+  criteria?: {
+    min_coverage_pct: number; coverage_pct: number | null; coverage_ok: boolean; day_gap_pct: number;
+    day_gap_capital_pct: number; pass_days_pct: number; days: number; done_days: number;
+    hold: EvalVerdict; sell: EvalVerdict;
+  };
+  days?: { day: number; start: string; done: boolean; hours: number; capital: number; predicted: number | null;
+    predicted_sell: number | null; hold: number | null; sell: number | null; hold_ok: boolean; sell_ok: boolean }[];
 }
+
+export interface EvalVerdict { ok_days: number; need_days: number; result: "running" | "stopped" | "pass" | "fail" }
 
 export interface Outlook {
   value_now: number; capital: number; daily_usd: number | null; daily_pct: number | null;
@@ -202,4 +230,16 @@ export function useApi<T>(path: string): { data: T | null; error: string | null;
     return () => { alive = false; };
   }, [path, n]);
   return { data, error, reload: () => setN((x) => x + 1) };
+}
+
+/** ヘッジ先と担保の状態（SPEC 5.2.1章。読み取りのみ） */
+export interface HedgeStatus {
+  state: "ok" | "short" | "none" | "error" | "waiting"; state_ja: string; collateral_usd?: number | null;
+  available_usd?: number | null; paper?: boolean; note?: string; read_at?: string;
+  positions?: { symbol: string; size: number; value_usd: number | null }[];
+}
+export interface Hedges {
+  mode: string; need_usd: number;
+  venues: { hedge_id: string; name: string; address: string | null; markets: number; fees_at: string | null;
+    max_taker_pct: number | null; need_usd: number; status: HedgeStatus; real: HedgeStatus | null }[];
 }

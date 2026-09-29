@@ -10,7 +10,7 @@ from typing import Any
 from .. import views
 from ..config import RiskSettings
 from ..risk.rules import LEVEL_JA
-from .paper import CATS, lp_amounts
+from .paper import CATS, latest_score, lp_amounts
 
 RED_START_LABEL = "🔴で開始した練習"
 RED_START_NOTE = ("判定が🔴のプールで始めた練習です。「判定が🔴になったら離脱」のルールは当てはめません"
@@ -99,6 +99,35 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
         "rebalance_cost": round(float(st.get("rebalance_cost", 0.0)), 2),
         "cautions": [CAUTION_JA.get(k, k) for k in st.get("risk_active") or [] if not k.startswith("skip:")],
         "skipped": [k[5:] for k in st.get("risk_active") or [] if k.startswith("skip:")],
+        "swap": _swap_info(conn, pos, st, x, y),
+    }
+
+
+def _swap_info(conn: sqlite3.Connection, pos: sqlite3.Row, st: dict[str, Any], x: float, y: float) -> dict[str, Any]:
+    """両替のずれ（%）と、始めた費用・置き直しの費用に含まれた額（2026-09-29 オーナー追加）。
+
+    始めた時の内訳は開いた時に記録したもの（M5d より前に始めた建玉は記録がないので、今のプールで見積もる）。
+    置き直し1回の見込みは、今のプールのずれで、今の LP の額を両替した場合。
+    """
+    sc = latest_score(conn, pos["pool_id"])
+    inp = (json.loads(sc["details_json"] or "{}").get("inputs") or {}) if sc else {}
+    slip_now = inp.get("slippage")
+    ob = st.get("open_breakdown")
+    c_lp = float(pos["c_lp"] or 0.0)
+    ratio = 0.5
+    if ob and ob.get("swap_usd") and c_lp:
+        ratio = ob["swap_usd"] / c_lp
+    est_open = None
+    if not ob and slip_now is not None:
+        est_open = {"swap_usd": c_lp * ratio, "slippage_pct": float(slip_now) * 100,
+                    "slippage": c_lp * ratio * float(slip_now), "estimated": True}
+    prev = st.get("prev") or {}
+    return {
+        "slippage_pct_now": float(slip_now) * 100 if slip_now is not None else None,
+        "open": ob or est_open,
+        "rebalance_slippage_total": round(float(st.get("rebalance_slippage", 0.0)), 4),
+        "rebalance_slippage_next": (c_lp * ratio * float(slip_now) if slip_now is not None else None),
+        "price": prev.get("price"),
     }
 
 

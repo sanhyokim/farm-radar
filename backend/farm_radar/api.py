@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -25,6 +26,7 @@ from .execution import views as paper_views
 from .execution.paper import PaperError, PaperExecutor
 from .execution.base import PositionRef
 from .execution import evaluation as paper_evaluation_mod
+from .hedges import status as hedge_status
 from .execution import review as paper_review
 from .execution import risk_job
 from . import market_calendar
@@ -205,18 +207,13 @@ def alerts(days: int = 7) -> dict:
 @app.get("/api/scores")
 def scores(venue: str | None = None) -> dict:
     """プールごとの最新の判定（M2）。net_daily_pct は総資産あたりの%で、判定に使う値。"""
-    import json
-
     config = load_config()
     conn = db.connect(config.database_path)
     try:
         rows = db.latest_scores(conn, venue)
         out, counts = [], {"green": 0, "yellow": 0, "red": 0}
         for r in rows:
-            d = dict(r)
-            d["warnings"] = json.loads(d.pop("warnings_json") or "[]")
-            d["details"] = json.loads(d.pop("details_json") or "{}")
-            d["pair"] = f"{d.get('token0_symbol')}/{d.get('token1_symbol')}"
+            d = _score_dict(r)
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
             out.append(d)
         return {"counts": counts, "judge_basis": "総資産あたりの純日利（%）", "scores": out}
@@ -231,6 +228,9 @@ def _score_dict(r) -> dict:
     d["warnings"] = json.loads(d.pop("warnings_json") or "[]")
     d["details"] = json.loads(d.pop("details_json") or "{}")
     d["pair"] = f"{d.get('token0_symbol')}/{d.get('token1_symbol')}"
+    # カードの表示（2026-09-29 オーナー追加）: 保険あり/なしとヘッジ先の名前、最適レンジの値段の範囲
+    d["hedge_info"] = views.hedge_label(d["details"], d.get("has_perp"))
+    d["range_prices"] = views.range_prices(d["details"], d.get("best_r"), d.get("token0_symbol"), d.get("token1_symbol"))
     return d
 
 
@@ -270,7 +270,7 @@ def home() -> dict:
         for d in rows:
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
         slim = ["pool_id", "pair", "venue_id", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
-                "is_stock_pair", "has_perp", "tvl_usd"]
+                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices"]
         greens = [{k: d.get(k) for k in slim} for d in rows if d["signal"] == "green"]
         # 🟢がないときの参考: 判定できたプールを純日利の高い順に3件
         near = [{k: d.get(k) for k in slim} for d in rows
@@ -342,6 +342,7 @@ def pool(pool_id: str) -> dict:
             "realized_note": "今は予測だけです。実現損益と未実現損益は「練習」（M5）で表示します。",
         },
         "sell_now": _sell_now(d, b),
+        "swap": _swap(d, config),
         "today": views.today_breakdown(history, now),
         "since_start": views.daily_average_since_start(all_hist),
         "hourly": views.hourly_bars(history, now),
@@ -349,6 +350,19 @@ def pool(pool_id: str) -> dict:
                                      history, now),
         "history": history,
     }
+
+
+def _swap(d: dict, config) -> dict | None:
+    """$550 を両替したときのずれと、始めた費用・置き直し1回の費用に含まれる額（2026-09-29 オーナー追加）。"""
+    s = config.scoring
+    c_lp = s.total_capital_usd * s.allocation_lp
+    trade = s.slippage_trade_usd if s.slippage_trade_usd is not None else c_lp
+    hedged = [ch for ch in (d["hedge_info"].get("tokens") or {}).values() if ch]
+    taker = max((float((c or {}).get("taker_pct") or 0.0)
+                 for c in ((d["details"].get("inputs") or {}).get("hedge") or {}).values() if c), default=0.0)
+    # ヘッジする量: 値動きするトークン1つにつき、LPに置く額の約半分
+    return views.swap_costs(d["details"], c_lp, s.swap_ratio, trade, c_lp * 0.5 * len(hedged),
+                            taker if hedged else 0.0)
 
 
 def _sell_now(d: dict, b: dict | None) -> dict | None:
@@ -463,7 +477,7 @@ def paper_evaluation_start(req: ConfirmRequest) -> dict:
             r = paper_evaluation_mod.start(conn, config, _now())
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        return {"message": f"評価を始めました（{config.review.evaluation_days}日間）。", **r}
+        return {"message": f"評価を始めました（{config.evaluation.days}日間）。", **r}
 
 
 @app.post("/api/paper/evaluation/stop")
@@ -473,6 +487,32 @@ def paper_evaluation_stop(req: ConfirmRequest) -> dict:
     with _open() as (config, conn):
         paper_evaluation_mod.stop(conn, _now())
         return {"message": "評価をやめました（ここまでの記録は残ります）。"}
+
+
+@app.get("/api/faq")
+def faq() -> dict:
+    """「学ぶ」タブのよくある質問（SPEC 7.5章）。docs/faq.md を「## Q. 質問」ごとに分けて返す。"""
+    config = load_config()
+    path = config.root / "docs" / "faq.md"
+    return {"items": parse_faq(path.read_text(encoding="utf-8")) if path.exists() else []}
+
+
+def parse_faq(text: str) -> list[dict]:
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    items: list[dict] = []
+    for block in re.split(r"^## ", text, flags=re.M)[1:]:
+        head, _, body = block.partition("\n")
+        q = re.sub(r"^Q[.．]\s*", "", head.strip())
+        paras = [p.strip() for p in re.split(r"\n\s*\n", body.strip()) if p.strip()]
+        items.append({"q": q, "paragraphs": [{"text": p, "analogy": p.startswith("たとえ")} for p in paras]})
+    return items
+
+
+@app.get("/api/hedges")
+def hedges() -> dict:
+    """ヘッジ先の一覧と担保の状態（SPEC 5.2.1章。読み取りのみ。アドレスは省略形だけ出す）。"""
+    with _open() as (config, conn):
+        return hedge_status.summary(conn, config)
 
 
 @app.get("/api/paper/timeline")

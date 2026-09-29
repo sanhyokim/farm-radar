@@ -241,3 +241,91 @@ def hourly_downsample(points: list[tuple[int, float]]) -> list[dict[str, Any]]:
 
 def median_or_none(xs: list[float]) -> float | None:
     return median(xs) if xs else None
+
+
+# --- ホーム・プールのカードの表示（2026-09-29 オーナー追加。SPEC 7.1章・7.3章） ------------------------------
+
+def _stable_syms(inputs: dict[str, Any]) -> set[str]:
+    """ステーブルコインの記号。スコアの hedge 欄（ステーブルコイン以外だけが入る）から分かる。古いスコアは価格で見る。"""
+    usd = inputs.get("usd") or {}
+    if "hedge" in inputs:
+        return {s for s in usd if s not in (inputs.get("hedge") or {})}
+    return {s for s, v in usd.items() if v is not None and abs(float(v) - 1) < 0.03}
+
+
+def hedge_label(details: dict[str, Any] | None, has_perp: int | bool | None) -> dict[str, Any]:
+    """「保険あり（ヘッジ先の名前）」か「保険なし」。値動きするトークンが全部ヘッジできるときだけ「あり」。"""
+    inp = (details or {}).get("inputs") or {}
+    names: list[str] = []
+    per_token: dict[str, str | None] = {}
+    if "hedge" in inp:
+        for sym, ch in (inp.get("hedge") or {}).items():
+            name = (ch or {}).get("name") if (ch or {}).get("hedge_id") else None
+            per_token[sym] = name
+            if name and name not in names:
+                names.append(name)
+    else:   # 古いスコア（Lighter だけの頃）
+        stable = _stable_syms(inp)
+        for sym, perp in (inp.get("perp") or {}).items():
+            if sym in stable:
+                continue
+            per_token[sym] = "Lighter" if perp else None
+            if perp and "Lighter" not in names:
+                names.append("Lighter")
+    has = bool(has_perp) and bool(per_token) and all(per_token.values())
+    return {"has": has, "venues": names if has else [], "tokens": per_token,
+            "label": f"保険あり（{'・'.join(names)}）" if has else "保険なし"}
+
+
+def range_prices(details: dict[str, Any] | None, r_pct: float | None, sym0: str | None, sym1: str | None
+                 ) -> dict[str, Any] | None:
+    """最適レンジ ±r% を、実際の値段の範囲にする（2026-09-29 オーナー追加）。
+
+    片方がステーブルコインなら、もう片方のドルの値段の範囲（例: NVDA $176.4〜$194.9）。
+    プールの値段は token1 / token0 なので、値動きする側が token1 のときは 1/(1+r)〜1/(1−r) 倍になる。
+    どちらもステーブルでないときは「1 token0 = x〜y token1」。
+    """
+    if r_pct is None or not details:
+        return None
+    inp = details.get("inputs") or {}
+    price = inp.get("price")
+    usd = inp.get("usd") or {}
+    r = float(r_pct) / 100
+    if price is None or r >= 1:
+        return None
+    stable = _stable_syms(inp)
+    if sym1 in stable and sym0 not in stable and usd.get(sym0):
+        u = float(usd[sym0])
+        return {"kind": "usd", "symbol": sym0, "now": u, "low": u * (1 - r), "high": u * (1 + r)}
+    if sym0 in stable and sym1 not in stable and usd.get(sym1):
+        u = float(usd[sym1])
+        return {"kind": "usd", "symbol": sym1, "now": u, "low": u / (1 + r), "high": u / (1 - r)}
+    p = float(price)
+    out = {"kind": "ratio", "symbol": sym0, "quote": sym1, "now": p, "low": p * (1 - r), "high": p * (1 + r)}
+    if usd.get(sym0):
+        # どちらも値動きするペア: token1 の値段が今のままなら、token0 はドルでこの範囲（目安）
+        u = float(usd[sym0])
+        out.update({"usd_now": u, "usd_low": u * (1 - r), "usd_high": u * (1 + r)})
+    return out
+
+
+def swap_costs(details: dict[str, Any] | None, c_lp: float, swap_ratio: float, trade_usd: float,
+               hedge_notional: float = 0.0, hedge_taker_pct: float = 0.0) -> dict[str, Any] | None:
+    """両替のずれと、それが「始めた費用」「置き直し1回の費用」にいくら含まれるか（2026-09-29 オーナー追加）。
+
+    計算はスコア・練習と同じ: 両替する額 = LPに置く額 × swap_ratio。費用 = 両替する額 × (プールの手数料 + ずれ) + ガス代2回
+    （+ ヘッジの取引手数料）。ずれ（%）は trade_usd（既定 $550）を両替したときの見積もり。
+    """
+    inp = (details or {}).get("inputs") or {}
+    if inp.get("slippage") is None:
+        return None
+    slip, fee, gas = float(inp["slippage"]), float(inp.get("fee") or 0.0), float(inp.get("gas_usd_per_tx") or 0.0)
+    swap = c_lp * swap_ratio
+    hedge_fee = hedge_notional * hedge_taker_pct / 100
+    parts = {"swap_fee": swap * fee, "slippage": swap * slip, "gas": 2 * gas}
+    return {
+        "trade_usd": trade_usd, "slippage_pct": slip * 100, "source": inp.get("slippage_source"),
+        "fee_pct": fee * 100, "swap_usd": swap, **parts, "hedge_fee": hedge_fee,
+        "open_total": sum(parts.values()) + hedge_fee,
+        "rebalance_total": sum(parts.values()),
+    }

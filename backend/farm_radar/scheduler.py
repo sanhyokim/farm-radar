@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import threading
 from datetime import UTC, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -16,7 +15,7 @@ from .collectors.snapshot import collect_venue, record_failed_run
 from .db import database as db
 from .execution.review import make_review
 from .external.geckoterminal import GeckoTerminal
-from .external.lighter import Lighter
+from . import hedges as hedge_mod
 from .logging_setup import setup_logging
 from .execution.jobs import run_paper
 from .notify.events import detect_signal_changes
@@ -28,11 +27,12 @@ log = logging.getLogger(__name__)
 
 
 def in_fast_window(now: datetime, window: tuple[str, str], trading_days_only: bool = True) -> bool:
-    """日本時間で window（"22:00", "23:30"）の中か。日をまたぐ窓（"23:00", "01:00"）にも対応する。
+    """ニューヨーク時間で window（"09:00", "10:30"）の中か。日をまたぐ窓（"23:00", "01:00"）にも対応する。
 
+    夏時間・冬時間はニューヨークの時計で数えるので自動で合う（2026-09-29 オーナー決定）。
     trading_days_only なら、米国市場が開く日（ニューヨークの日付で。土日・休日は除く。M5d）だけ True。
     """
-    local = now.astimezone(ZoneInfo("Asia/Tokyo"))
+    local = now.astimezone(market_calendar.NY)
     cur = local.hour * 60 + local.minute
     a, b = ((int(x.split(":")[0]) * 60 + int(x.split(":")[1])) for x in window)
     inside = a <= cur <= b if a <= b else (cur >= a or cur <= b)
@@ -71,7 +71,7 @@ def main() -> None:
             # 練習（M5a・M5b）: 新しい記録の分だけ損益を計算し、見張りのルールで調べる（mode が paper のときだけ）
             try:
                 v0 = venues[0]
-                run_paper(conn, config, paper_tokens, lighter=lighter, rpc=v0.rpc, venue=v0.venue,
+                run_paper(conn, config, paper_tokens, hedges=hedges, rpc=v0.rpc, venue=v0.venue,
                           gt=contexts[0].gt if contexts else None, fast=fast)
             except Exception as exc:
                 log.exception("paper job failed")
@@ -81,8 +81,8 @@ def main() -> None:
             lock.release()
 
     def fast_job() -> None:
-        """米国市場の開場前後（config の risk.fast_window_jst）だけ、練習の建玉があれば短い間隔で記録して見張る（SPEC 5.1章）。"""
-        if config.mode != "paper" or not in_fast_window(datetime.now(UTC), config.risk.fast_window_jst):
+        """米国市場の開場前後（config の risk.fast_window_ny。ニューヨーク時間）だけ、練習の建玉があれば短い間隔で記録して見張る（SPEC 5.1章）。"""
+        if config.mode != "paper" or not in_fast_window(datetime.now(UTC), config.risk.fast_window_ny):
             return
         conn = db.connect(config.database_path)
         try:
@@ -92,12 +92,13 @@ def main() -> None:
         if n:
             snapshot_job(fast=True)
 
-    lighter = Lighter()
+    # ヘッジ先（SPEC 5.2.1章。config.yaml の hedge_venues。読み取りだけ）
+    hedges = hedge_mod.build([h.hedge_id for h in config.hedge_venues])
     paper_tokens = load_tokens(venues[0].venue["chain"]["id"], config.root) if venues else None
     contexts = [
         ScoreContext(
             venue=v.venue, tokens=load_tokens(v.venue["chain"]["id"], config.root), settings=config.scoring,
-            stale_after_minutes=config.stale_after_minutes, rpc=v.rpc, lighter=lighter,
+            stale_after_minutes=config.stale_after_minutes, rpc=v.rpc, hedges=hedges,
             gt=GeckoTerminal(v.venue["chain"]["geckoterminal_network"])
             if v.venue["chain"].get("geckoterminal_network") else None,
         )
@@ -166,10 +167,10 @@ def main() -> None:
     r = config.risk
     fast_minutes = [m for m in range(0, 60, r.fast_minutes) if m % minutes]
     if config.mode == "paper" and fast_minutes and 60 % minutes == 0:
-        h0, h1 = int(r.fast_window_jst[0].split(":")[0]), int(r.fast_window_jst[1].split(":")[0])
+        h0, h1 = int(r.fast_window_ny[0].split(":")[0]), int(r.fast_window_ny[1].split(":")[0])
         hours = f"{h0}-{h1}" if h0 <= h1 else f"{h0}-23,0-{h1}"
         sched.add_job(fast_job, CronTrigger(minute=",".join(map(str, fast_minutes)), hour=hours,
-                                            timezone="Asia/Tokyo"),
+                                            timezone="America/New_York"),
                       id="paper_fast", max_instances=1, coalesce=True, misfire_grace_time=60)
     # 定時レビュー（M5c）: 収集と練習の計算が終わったあと（毎時2分・32分など）に作る
     if config.mode == "paper":

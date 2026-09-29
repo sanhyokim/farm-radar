@@ -132,7 +132,9 @@ def _notify(raw: dict[str, Any]) -> NotifySettings:
 @dataclass(frozen=True)
 class RiskSettings:
     """練習の建玉の見張り（M5b。SPEC 12.2章・付録A 3章の初期値）。config.yaml の risk から読む。"""
-    fast_window_jst: tuple[str, str] = ("22:00", "23:30")   # 米国市場の開場前後。この間は見張りの間隔を短くする
+    # 米国市場の開場前後（ニューヨーク時間。夏時間・冬時間に自動で合わせる）。この間は見張りの間隔を短くする
+    # 2026-09-29 オーナー決定: 開く30分前〜開いた1時間後
+    fast_window_ny: tuple[str, str] = ("09:00", "10:30")
     fast_minutes: int = 5
     caution_edge_pct: float = 1.0               # 注意: レンジの端までこの%未満
     caution_reward_shortfall_pct: float = 40.0  # 注意: 報酬の実績が予測よりこの%以上少ない
@@ -159,11 +161,11 @@ class RiskSettings:
 def _risk(raw: dict[str, Any]) -> RiskSettings:
     r = raw.get("risk") or {}
     d = RiskSettings()
-    win = str(r.get("fast_window_jst", "-".join(d.fast_window_jst))).split("-")
+    win = str(r.get("fast_window_ny", "-".join(d.fast_window_ny))).split("-")
     if len(win) != 2:
-        raise ConfigError("risk.fast_window_jst は \"22:00-23:30\" のように書いてください。")
+        raise ConfigError("risk.fast_window_ny は \"09:00-10:30\" のように書いてください。")
     out = RiskSettings(
-        fast_window_jst=(win[0].strip(), win[1].strip()),
+        fast_window_ny=(win[0].strip(), win[1].strip()),
         **{k: type(getattr(d, k))(r.get(k, getattr(d, k))) for k in (
             "fast_minutes", "caution_edge_pct", "caution_reward_shortfall_pct", "caution_min_hours",
             "rebalance_after_minutes", "rebalance_min_net_pct", "exit_reward_token_24h_pct",
@@ -171,10 +173,10 @@ def _risk(raw: dict[str, Any]) -> RiskSettings:
             "max_gas_usd_per_tx", "actual_min_hours", "compare_min_hours", "exit_dump_1h_pct", "exit_dump_24h_pct",
             "emergency_usdg_below", "emergency_usdg_times", "caution_hedge_cost_pct", "contract_watch")},
     )
-    for hm in out.fast_window_jst:
+    for hm in out.fast_window_ny:
         hh, _, mm = hm.partition(":")
         if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
-            raise ConfigError("risk.fast_window_jst は \"22:00-23:30\" のように書いてください。")
+            raise ConfigError("risk.fast_window_ny は \"09:00-10:30\" のように書いてください。")
     if out.fast_minutes <= 0 or 60 % out.fast_minutes:
         raise ConfigError("risk.fast_minutes は60を割り切れる数（5 など）にしてください。")
     return out
@@ -186,7 +188,28 @@ class ReviewSettings:
     every_minutes: int = 30                 # 定時レビューを作る間隔（分）
     outlook_conservative_pct: float = 30.0  # 資産の見通しの下限: プラスの項目はこの%控えめ、マイナスの項目はこの%厳しめ
     outlook_min_hours: float = 24.0         # 始めてからこの時間未満は見通しを出さず「データ不足」（2026-09-29 オーナー指示）
-    evaluation_days: int = 14               # 評価の期間（日）。SPEC 11章「2週間のペーパートレードで評価」
+
+
+@dataclass(frozen=True)
+class EvaluationSettings:
+    """2週間の評価（M5d。SPEC 11章）。config.yaml の evaluation から読む。合格の基準は 2026-09-29 オーナー決定。"""
+    days: int = 14                          # 評価の期間（日）
+    min_coverage_pct: float = 95.0          # データの集まり具合がこの%以上
+    day_gap_pct: float = 30.0               # 1日の純損益の差が予測の ±この% 以内なら、その日は満たす
+    day_gap_capital_pct: float = 0.1        #   または、差が総資産のこの% 以内なら満たす
+    pass_days_pct: float = 70.0             # 満たす日が評価日数のこの%以上
+
+
+def _evaluation(raw: dict[str, Any]) -> EvaluationSettings:
+    e = raw.get("evaluation") or {}
+    d = EvaluationSettings()
+    out = EvaluationSettings(
+        days=int(e.get("days", (raw.get("review") or {}).get("evaluation_days", d.days))),
+        **{k: float(e.get(k, getattr(d, k))) for k in ("min_coverage_pct", "day_gap_pct", "day_gap_capital_pct",
+                                                        "pass_days_pct")})
+    if out.days <= 0:
+        raise ConfigError("evaluation.days は1以上にしてください。")
+    return out
 
 
 def _review(raw: dict[str, Any]) -> ReviewSettings:
@@ -194,11 +217,36 @@ def _review(raw: dict[str, Any]) -> ReviewSettings:
     d = ReviewSettings()
     out = ReviewSettings(every_minutes=int(r.get("every_minutes", d.every_minutes)),
                          outlook_conservative_pct=float(r.get("outlook_conservative_pct", d.outlook_conservative_pct)),
-                         outlook_min_hours=float(r.get("outlook_min_hours", d.outlook_min_hours)),
-                         evaluation_days=int(r.get("evaluation_days", d.evaluation_days)))
+                         outlook_min_hours=float(r.get("outlook_min_hours", d.outlook_min_hours)))
     if out.every_minutes <= 0 or 60 % out.every_minutes and out.every_minutes % 60:
         raise ConfigError("review.every_minutes は 60 を割り切れる数か、60 の倍数（30 など）にしてください。")
     return out
+
+
+@dataclass(frozen=True)
+class HedgeVenueSettings:
+    """ヘッジ先（SPEC 5.2.1章）。config.yaml の hedge_venues。読み取りだけに使う。"""
+    hedge_id: str
+    account_address: str | None = None      # 担保の残高を読むアドレス（公開情報。秘密鍵ではない）
+
+
+def _hedge_venues(raw: dict[str, Any]) -> tuple[HedgeVenueSettings, ...]:
+    hv = raw.get("hedge_venues")
+    if hv is None:
+        hv = {"lighter": {}}
+    out = []
+    for hid, v in (hv or {}).items():
+        v = v or {}
+        if v.get("enabled", True) is False:
+            continue
+        # .env の <ID>_ACCOUNT_ADDRESS（例: LIGHTER_ACCOUNT_ADDRESS）があればそちらを使う
+        addr = os.environ.get(f"{hid.upper()}_ACCOUNT_ADDRESS") or v.get("account_address") or None
+        if addr is not None:
+            addr = str(addr).strip() or None
+        if addr and not (addr.startswith("0x") and len(addr) == 42):
+            raise ConfigError(f"hedge_venues.{hid}.account_address は 0x で始まる42文字のアドレスにしてください。")
+        out.append(HedgeVenueSettings(str(hid), addr))
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -216,6 +264,8 @@ class Config:
     notify: NotifySettings = field(default_factory=NotifySettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
     review: ReviewSettings = field(default_factory=ReviewSettings)
+    evaluation: EvaluationSettings = field(default_factory=EvaluationSettings)
+    hedge_venues: tuple[HedgeVenueSettings, ...] = (HedgeVenueSettings("lighter"),)
     root: Path = REPO_ROOT
 
 
@@ -264,6 +314,8 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         notify=_notify(raw),
         risk=_risk(raw),
         review=_review(raw),
+        evaluation=_evaluation(raw),
+        hedge_venues=_hedge_venues(raw),
         root=root,
     )
 

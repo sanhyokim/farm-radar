@@ -231,6 +231,21 @@ CREATE TABLE IF NOT EXISTS evaluations (
 CREATE TABLE IF NOT EXISTS perp_fees (
   market_id INTEGER PRIMARY KEY, taker_pct REAL NOT NULL, maker_pct REAL, ts TEXT NOT NULL
 );
+-- ヘッジ先ごとの手数料と資金調達（SPEC 5.2.1章。ヘッジ先を差し替えられるように hedge_id を持つ。
+-- 前の perp_fees・funding_rates は Lighter だけの古い記録として読むだけ）
+CREATE TABLE IF NOT EXISTS hedge_fees (
+  hedge_id TEXT NOT NULL, market_id INTEGER NOT NULL, symbol TEXT, taker_pct REAL, maker_pct REAL, ts TEXT NOT NULL,
+  PRIMARY KEY (hedge_id, market_id)
+);
+CREATE TABLE IF NOT EXISTS hedge_funding (
+  hedge_id TEXT NOT NULL, market_id INTEGER NOT NULL, ts INTEGER NOT NULL, short_rate REAL NOT NULL,
+  PRIMARY KEY (hedge_id, market_id, ts)
+);
+-- ヘッジ先の担保の読み取り（アドレスを設定したときだけ。読み取りのみ）
+CREATE TABLE IF NOT EXISTS hedge_accounts (
+  hedge_id TEXT PRIMARY KEY, ts TEXT NOT NULL, collateral_usd REAL, available_usd REAL, positions_json TEXT,
+  error TEXT
+);
 
 -- 毎朝のレポート（M4。SPEC 8章）。1日1通。送れたら sent_at が入る
 CREATE TABLE IF NOT EXISTS daily_reports (

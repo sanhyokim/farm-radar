@@ -160,7 +160,7 @@ def test_hourly_update_parts_add_up_and_match_value(world):
     # ガンマ（LP の中身の入れかわり）は損にしかならない
     assert sum(r["gamma"] for r in rows) <= 1e-9
     # 資金調達の支払い（FakeLighter は1時間 0.001%）がヘッジに入る
-    assert conn.execute("SELECT COUNT(*) FROM funding_rates").fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM hedge_funding").fetchone()[0] > 0
     st = __import__("json").loads(conn.execute("SELECT state_json FROM positions").fetchone()[0])
     assert st["funding_paid"] > 0
 
