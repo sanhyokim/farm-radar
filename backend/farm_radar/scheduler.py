@@ -63,7 +63,9 @@ def main() -> None:
                     notifier.error(v.adapter.venue_id, "データ収集の失敗", res.error or "全プールで読み取りに失敗")
             # 練習（M5a・M5b）: 新しい記録の分だけ損益を計算し、見張りのルールで調べる（mode が paper のときだけ）
             try:
-                run_paper(conn, config, paper_tokens, lighter=lighter)
+                v0 = venues[0]
+                run_paper(conn, config, paper_tokens, lighter=lighter, rpc=v0.rpc, venue=v0.venue,
+                          gt=contexts[0].gt if contexts else None, fast=fast)
             except Exception as exc:
                 log.exception("paper job failed")
                 notifier.error("-", "練習の損益の計算・見張りに失敗", f"{type(exc).__name__}: {exc}")

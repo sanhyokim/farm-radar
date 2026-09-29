@@ -423,7 +423,8 @@ def paper() -> dict:
                 "open": [c for c in cards if c["status"] == "open"],
                 "closed": [c for c in cards if c["status"] != "open"][:20],
                 "events": paper_views.events(conn, None, limit=20),
-                "risk": paper_views.risk_rules(config.risk)}
+                "risk": paper_views.risk_rules(config.risk),
+                "watch": paper_views.watch(conn)}
 
 
 @app.get("/api/paper/positions/{position_id}")

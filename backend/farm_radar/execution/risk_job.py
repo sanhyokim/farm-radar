@@ -77,7 +77,7 @@ def close_all(conn: sqlite3.Connection, ex: PaperExecutor, reason: str) -> list[
 
 
 def reward_change_24h(conn: sqlite3.Connection, config: Config, tokens: TokenBook, venue_id: str,
-                      now: datetime) -> tuple[str, float | None]:
+                      now: datetime, own: dict[str, list[tuple[int, float]]] | None = None) -> tuple[str, float | None]:
     """報酬トークンの24時間の変化（画面のホームと同じ作り方）。"""
     try:
         v = load_venue(venue_id, config.root)
@@ -87,7 +87,8 @@ def reward_change_24h(conn: sqlite3.Connection, config: Config, tokens: TokenBoo
     if not token:
         return "報酬トークン", None
     since = now - timedelta(days=2)
-    own, _ = own_series(conn, venue_id, tokens.stablecoins, since)
+    if own is None:
+        own, _ = own_series(conn, venue_id, tokens.stablecoins, since)
     series = merge_series(db.token_price_series(conn, token, EXTERNAL_SOURCE, since), own.get(token, []))
     row = conn.execute("""SELECT CASE WHEN lower(token0)=? THEN token0_symbol ELSE token1_symbol END FROM pools
                           WHERE lower(token0)=? OR lower(token1)=? LIMIT 1""", (token, token, token)).fetchone()
@@ -107,7 +108,32 @@ def _liquidity_at(conn: sqlite3.Connection, pool_id: str, before: str) -> float 
     return float(int(row[0])) if row and row[0] is not None else None
 
 
-def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime) -> PositionInput | None:
+def token_moves(conn: sqlite3.Connection, pos: sqlite3.Row, tokens: TokenBook, snap_ts: str,
+                own_tok: dict[str, list[tuple[int, float]]], own_pool: dict[str, list[tuple[int, float]]]
+                ) -> tuple[tuple[str, float | None, float | None], ...]:
+    """値動きする側（ステーブル以外）のトークンの、1時間と24時間の変化（プール価格から。投げ売りの判定用）。"""
+    pool = conn.execute("SELECT token0, token1, token0_symbol, token1_symbol FROM pools WHERE id=?",
+                        (pos["pool_id"],)).fetchone()
+    if pool is None:
+        return ()
+    now_s = int(datetime.fromisoformat(snap_ts).timestamp())
+    t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+    ps = own_pool.get(pos["pool_id"], [])
+    out = []
+    for tok, sym, other in ((t0, pool["token0_symbol"], t1), (t1, pool["token1_symbol"], t0)):
+        if tokens.is_stable(tok):
+            continue
+        if tokens.is_stable(other) and ps:
+            # 相手がステーブルなら、このプールの価格そのもの（token1 建ての token0 の値段）で見る
+            series = ps if tok == t0 else [(t, 1 / p) for t, p in ps if p > 0]
+        else:
+            series = own_tok.get(tok, [])
+        out.append((sym or tok[:8], series_change(series, now_s, 1), series_change(series, now_s, 24)))
+    return tuple(out)
+
+
+def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, tokens: TokenBook | None = None,
+                   own_tok: dict | None = None, own_pool: dict | None = None) -> PositionInput | None:
     snap = conn.execute("SELECT * FROM pool_snapshots WHERE pool_id=? AND price IS NOT NULL ORDER BY ts DESC LIMIT 1",
                         (pos["pool_id"],)).fetchone()
     if snap is None:
@@ -137,11 +163,47 @@ def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime) ->
         income_hours=window,
         liquidity_now=float(int(snap["liquidity_total"])) if snap["liquidity_total"] is not None else None,
         liquidity_1h_ago=_liquidity_at(conn, pos["pool_id"], one_h_ago) if hours >= 55 / 60 else None,
+        token_moves=token_moves(conn, pos, tokens, snap["ts"], own_tok or {}, own_pool or {}) if tokens else (),
+        hedge_cost_day=(float(st.get("funding_paid", 0.0)) / hours * 24) if hours > 0 and pos["hedges_json"]
+        and json.loads(pos["hedges_json"]) else None,
     )
 
 
+def usdg_prices(conn: sqlite3.Connection, tokens: TokenBook, now: datetime, n: int) -> tuple[float, ...]:
+    """USDG（ステーブルコイン）の外部の価格の、新しい順の直近 n 回（1時間より古いものは使わない）。"""
+    since = (now - timedelta(hours=1)).astimezone(UTC).isoformat(timespec="seconds")
+    out = []
+    for tok in sorted(tokens.stablecoins):
+        rows = conn.execute("SELECT price FROM stable_prices WHERE token=? AND ts>=? ORDER BY ts DESC LIMIT ?",
+                            (tok, since, n)).fetchall()
+        prices = tuple(float(r[0]) for r in rows)
+        if len(prices) >= n and (not out or max(prices) < max(out)):
+            out = list(prices)
+    return tuple(out)
+
+
+def record_stable_price(conn: sqlite3.Connection, gt, tokens: TokenBook, now: datetime) -> dict[str, float]:
+    """USDG の外部の価格を GeckoTerminal から取って記録する（取れなければ何もしない＝回数に数えない）。"""
+    if gt is None or not tokens.stablecoins:
+        return {}
+    try:
+        got = gt.tokens(tokens.stablecoins)
+    except Exception as exc:
+        log.warning("stable price fetch failed", extra={"data": {"error": str(exc)}})
+        return {}
+    ts = now.astimezone(UTC).isoformat(timespec="seconds")
+    out = {}
+    for tok, m in got.items():
+        if m.price_usd:
+            conn.execute("INSERT OR REPLACE INTO stable_prices(ts, token, price, source) VALUES (?,?,?,?)",
+                         (ts, tok, m.price_usd, "geckoterminal"))
+            out[tok] = m.price_usd
+    conn.commit()
+    return out
+
+
 def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: PaperExecutor,
-             now: datetime | None = None) -> list[int]:
+             now: datetime | None = None, contract_changes: list[str] | None = None) -> list[int]:
     """持っている建玉を見張る。記録した risk_events の id を返す。"""
     if config.mode != "paper":
         return []
@@ -149,14 +211,21 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
     s = config.risk
     positions = conn.execute("SELECT * FROM positions WHERE is_paper=1 AND status='open' ORDER BY id").fetchall()
     if not positions:
+        # 建玉がなくても、会場プログラムの変化は記録して、新しく始めるのを止める
+        if contract_changes:
+            f = check_portfolio(PortfolioInput(contract_changes=tuple(contract_changes)), s)[0]
+            return [_emergency(conn, ex, f, now, None, "-", None)]
         return []
     venue_id = positions[0]["venue_id"]
-    symbol, change = reward_change_24h(conn, config, tokens, venue_id, now)
+    own_tok, own_pool = own_series(conn, venue_id, tokens.stablecoins, now - timedelta(days=2))
+    symbol, change = reward_change_24h(conn, config, tokens, venue_id, now, own_tok)
     pf = PortfolioInput(reward_symbol=symbol, reward_change_24h=change, today_net_usd=today_net(conn, now),
-                        open_capital_usd=sum(p["capital"] for p in positions))
+                        open_capital_usd=sum(p["capital"] for p in positions),
+                        usdg_prices=usdg_prices(conn, tokens, now, s.emergency_usdg_times),
+                        contract_changes=tuple(contract_changes or ()))
     events: list[int] = []
 
-    # 全体の緊急離脱（今日の損）
+    # 全体の緊急離脱（会場プログラムの変化・USDG・今日の損）
     for f in check_portfolio(pf, s):
         events.append(_emergency(conn, ex, f, now, None, venue_id, None))
         return events
@@ -165,7 +234,7 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
         pos = conn.execute("SELECT * FROM positions WHERE id=?", (pos["id"],)).fetchone()
         if pos["status"] != "open":
             continue
-        inp = position_input(conn, pos, now)
+        inp = position_input(conn, pos, now, tokens, own_tok, own_pool)
         if inp is None:
             continue
         findings = check_position(inp, pf, s)

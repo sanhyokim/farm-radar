@@ -30,6 +30,7 @@ READ_ONLY_METHODS = frozenset({
     "eth_call",
     "eth_getLogs",
     "eth_getCode",
+    "eth_getStorageAt",
     "eth_gasPrice",
 })
 
@@ -184,6 +185,9 @@ class RpcClient:
 
     def get_code(self, address: str, block: int | str = "latest") -> str:
         return self.request("eth_getCode", [address, _block_param(block)])
+
+    def get_storage(self, address: str, slot: str, block: int | str = "latest") -> str:
+        return self.request("eth_getStorageAt", [address, slot, _block_param(block)])
 
     def get_logs(
         self, address: str, topics: list[Any], from_block: int, to_block: int, *, chunk: int = 10_000,

@@ -141,7 +141,14 @@ class RiskSettings:
     rebalance_min_net_pct: float = 0.0          # 置き直し先の純日利（総資産あたり%）がこれ以下なら、置き直さずに離脱
     exit_reward_token_24h_pct: float = -20.0    # 離脱: 報酬トークンが24時間でこの%以下
     emergency_liquidity_drop_1h_pct: float = 50.0   # 緊急離脱: プールの流動性が1時間でこの%以上減った
-    emergency_daily_loss_pct: float = 5.0       # 緊急離脱: 今日（日本時間）の損がこの%に達した（持っている建玉の合計額に対して）
+    emergency_daily_loss_pct: float = 5.0       # 緊急離脱: 今日（日本時間）の損が総資産（建玉の投入額の合計）のこの%に達した
+    # 2026-09-29 オーナー決定（SPEC 12.2章）
+    exit_dump_1h_pct: float = -15.0             # 離脱（投げ売り）: 値動きする側のトークンがプール価格で1時間でこの%以下
+    exit_dump_24h_pct: float = -30.0            #   または24時間でこの%以下
+    emergency_usdg_below: float = 0.98          # 緊急離脱: USDG の外部の価格がこの値未満
+    emergency_usdg_times: int = 2               #   が、この回数続いた
+    caution_hedge_cost_pct: float = 50.0        # 注意: ヘッジの1日の費用が、報酬（1日あたり）のこの%を超えた
+    contract_watch: bool = True                 # 会場プログラムの停止・持ち主・入れ替えを読み取りで見張る（変わったら緊急離脱）
     max_swap_slippage_pct: float = 1.0          # 離脱の両替: ずれがこの%を超えるなら分けて売る
     max_gas_usd_per_tx: float = 1.0             # ふつうの離脱と置き直しは、ガス代がこれを超えたら見送る（緊急離脱は実行する）
     # 実績の日利の見せ方（2026-09-29 オーナー指示）
@@ -161,7 +168,8 @@ def _risk(raw: dict[str, Any]) -> RiskSettings:
             "fast_minutes", "caution_edge_pct", "caution_reward_shortfall_pct", "caution_min_hours",
             "rebalance_after_minutes", "rebalance_min_net_pct", "exit_reward_token_24h_pct",
             "emergency_liquidity_drop_1h_pct", "emergency_daily_loss_pct", "max_swap_slippage_pct",
-            "max_gas_usd_per_tx", "actual_min_hours", "compare_min_hours")},
+            "max_gas_usd_per_tx", "actual_min_hours", "compare_min_hours", "exit_dump_1h_pct", "exit_dump_24h_pct",
+            "emergency_usdg_below", "emergency_usdg_times", "caution_hedge_cost_pct", "contract_watch")},
     )
     for hm in out.fast_window_jst:
         hh, _, mm = hm.partition(":")

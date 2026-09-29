@@ -102,6 +102,13 @@ export interface PaperCard {
   compare_enabled: boolean; compare_min_hours: number;
   payback_total_hours: number | null; payback_left_hours: number | null;
   rebalances: number; cautions: string[]; skipped: string[];
+  rebalance_cost: number;
+}
+
+export interface Watch {
+  contracts: { address: string; label: string; checked_at: string | null; ok: string[]; unconfirmed: string[];
+    changed_at: string | null }[];
+  usdg: { ts: string; price: number; source: string } | null;
 }
 
 export interface RiskEvent {
@@ -116,6 +123,7 @@ export interface Paper {
   open: PaperCard[]; closed: PaperCard[];
   stopped_reason: string | null; stopped_since: string | null; events: RiskEvent[];
   risk: { level: RiskEvent["level"]; level_ja: string; rule: string; action: string }[];
+  watch: Watch;
 }
 
 export interface PaperDetail extends PaperCard {

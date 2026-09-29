@@ -4,6 +4,7 @@
 - 新しい記録の分だけ、建玉の損益を計算する
 - 円のレートが取れていなかった台帳の行を埋める
 - 危険判定のルールで見張り、仮想的に置き直す・閉じる（M5b。risk_job.py）
+- 15分ごとの回だけ: 会場プログラムの見張り（contract_watch.py）と、USDG の外部の価格（2026-09-29 オーナー決定）
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ from ..config import Config
 from ..fx import Frankfurter, fill_ledger_jpy
 from ..tokens import TokenBook
 from .paper import PaperExecutor
-from .risk_job import run_risk
+from . import contract_watch
+from .risk_job import record_stable_price, run_risk
 
 log = logging.getLogger(__name__)
 
@@ -39,14 +41,32 @@ def refresh_funding(conn: sqlite3.Connection, lighter, market_ids: set[int], now
     return n
 
 
+def run_watch(conn: sqlite3.Connection, config: Config, tokens: TokenBook, rpc=None, venue=None, gt=None,
+              now: datetime | None = None) -> list[str]:
+    """会場プログラムの見張りと USDG の外部の価格（読み取りだけ）。変わったことの説明を返す。"""
+    now = now or datetime.now(UTC)
+    changes: list[str] = []
+    if config.risk.contract_watch and rpc is not None and venue is not None:
+        try:
+            changes = contract_watch.check(conn, rpc, venue, tokens, now)
+        except Exception:
+            log.exception("contract watch failed")
+    record_stable_price(conn, gt, tokens, now)
+    return changes
+
+
 def run_paper(conn: sqlite3.Connection, config: Config, tokens: TokenBook, lighter=None,
-              fx: Frankfurter | None = None, now: datetime | None = None) -> int:
+              fx: Frankfurter | None = None, now: datetime | None = None, rpc=None, venue=None, gt=None,
+              fast: bool = False) -> int:
     """練習モードのときだけ動く。計算した行の数を返す。"""
     if config.mode != "paper":
         return 0
     now = now or datetime.now(UTC)
+    changes = [] if fast else run_watch(conn, config, tokens, rpc, venue, gt, now)
     positions = conn.execute("SELECT * FROM positions WHERE is_paper=1 AND status='open'").fetchall()
     if not positions:
+        if changes:
+            run_risk(conn, config, tokens, PaperExecutor(conn, config, tokens, fx=fx, now=now), now, changes)
         return 0
     if lighter is not None:
         markets = {int(h["market_id"]) for p in positions for h in json.loads(p["hedges_json"] or "[]")}
@@ -67,7 +87,7 @@ def run_paper(conn: sqlite3.Connection, config: Config, tokens: TokenBook, light
     except Exception:
         log.exception("fx fill failed")
     # 見張り（失敗したら scheduler がエラーとして通知する）
-    run_risk(conn, config, tokens, ex, now)
+    run_risk(conn, config, tokens, ex, now, changes)
     if n:
         log.info("paper positions updated", extra={"data": {"positions": len(positions), "rows": n}})
     return n
