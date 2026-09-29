@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  -webkit-text-size-adjust: 100%;
+}
+html, body {
+  background: #020617;
+  color: #e2e8f0;
+  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  overflow-x: hidden;
+}
+.num {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+.pb-safe { padding-bottom: calc(env(safe-area-inset-bottom) + 4.5rem); }
+.tabbar { padding-bottom: env(safe-area-inset-bottom); }

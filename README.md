@@ -29,6 +29,21 @@
 - 値動きの大きさは、自分の記録が7日分たまるまで、外部の価格サイト（GeckoTerminal）の1時間足で補います。理由文にそう書きます。
 - 株トークン・ステーブルコイン・ヘッジ先の一覧は `venues/tokens-robinhood.yaml`（公式の情報から自動で作成）にあります。
 
+## 今できること（M3）
+
+- スマホ向けの画面ができました。ブラウザで **http://localhost:18000** を開きます（ダークテーマ・iPhone の縦画面向け）。
+- 下のタブ: ホーム（今日の結論・信号の件数・市場の状態）/ 会場（4つの条件のランプ・報酬トークンと TVL の推移）/
+  プール（一覧と詳細）/ 練習（M5 で作ります）/ 学ぶ（用語集）。
+- プール詳細: 1日の見込みを6つに分けた表とグラフ、本業の稼ぎ、日利2つ（総資産あたり・建玉あたり）、
+  1時間ごとの純損益（米国市場の時間は青い背景）、総資産の推定、レンジ、7日の推移、くわしい数字。
+  今はまだ建玉がないので、どれも「予測」です。
+- 専門用語の横の「?」をタップすると、やさしい説明が出ます。
+
+**iPhone で見るとき（任意）**: 同じ Wi-Fi にいる iPhone から見るには、`.env` に `FARM_RADAR_BIND=0.0.0.0` と書いて
+`docker compose up -d` をやり直し、iPhone の Safari で `http://<パソコンのIPアドレス>:18000` を開きます。
+初回は Windows のファイアウォールの確認が出ることがあります（「プライベート ネットワーク」だけ許可）。
+家の Wi-Fi の中だけで使い、外のネットワークには公開しないでください。
+
 ## 必要なもの
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)（Mac / Windows）。アプリを入れて起動しておきます。
@@ -68,7 +83,11 @@ docker compose logs -f collector
 
 `"collection finished"` という行が15分ごとに出ていれば動いています。`Ctrl + C` で表示を終えます（止まるのは表示だけです）。
 
-**状態をブラウザで見る**
+**画面で見る**
+
+http://localhost:18000 を開きます（ホームの「データ集め」に、収集が止まっていないかと欠損が出ます）。
+
+**状態をブラウザで見る（データそのもの）**
 
 http://localhost:18000/api/health を開きます。
 
@@ -80,6 +99,7 @@ http://localhost:18000/api/venues では会場の警告（例: C4「報酬の上
 コントラクトごとの確認状況（Sourcify の照合が full / partial か）を見られます。
 http://localhost:18000/api/alerts では、記録された通知（報酬の急減など）を見られます。
 http://localhost:18000/api/scores では、プールごとの最新の判定（信号・純日利・理由）を見られます。
+画面用に /api/home、/api/pools/<プールID> もあります。
 
 **24時間の欠けチェック（M1の完了条件）**
 
@@ -135,4 +155,13 @@ RPC を使う順番: `.env` に Alchemy のキーがあれば Alchemy → 公式
 cd backend
 python3.12 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/pytest
+```
+
+画面（React + Vite + TypeScript + Tailwind + Recharts）:
+
+```bash
+cd frontend
+npm ci
+npm run dev      # http://localhost:5173 。API は動いている Farm Radar（18000番）に転送
+npm run build    # frontend/dist に作る。Docker では自動で作る
 ```
