@@ -50,7 +50,8 @@ def _addr_from_id(rel: dict | None) -> str | None:
 class GeckoTerminal:
     def __init__(self, network: str, getter: JsonGetter | None = None):
         self.network = network
-        self.http = getter or JsonGetter(BASE_URL, min_interval=2.2, backoff_seconds=10.0)
+        # 公開APIの回数制限は公称1分30回だが、実際はもっと早く 429 が返ることがあるので、6秒に1回にする
+        self.http = getter or JsonGetter(BASE_URL, min_interval=6.0, backoff_seconds=20.0)
 
     def pools(self, addresses: Iterable[str]) -> dict[str, PoolMarket]:
         out: dict[str, PoolMarket] = {}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -80,9 +81,11 @@ def main() -> None:
         score_trigger = CronTrigger(minute=f"{5 % sm}-59/{sm}", timezone="UTC")
     else:
         score_trigger = IntervalTrigger(minutes=sm)
-    sched.add_job(score_job, score_trigger, id="score", max_instances=1, coalesce=True, misfire_grace_time=None)
+    # 起動直後のスコア計算も、ここで直接呼ばずにスケジューラーに任せる。
+    # 最初の計算は外部サイトから7日分の足を取り寄せるので数分かかり、直接呼ぶと15分ごとの収集が待たされるため
+    sched.add_job(score_job, score_trigger, id="score", max_instances=1, coalesce=True, misfire_grace_time=None,
+                  next_run_time=datetime.now(UTC) + timedelta(seconds=30))
     snapshot_job()  # 起動直後にも1回実行して動作を確認する
-    score_job()
     sched.start()
 
 

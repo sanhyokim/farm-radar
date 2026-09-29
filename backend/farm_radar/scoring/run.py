@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -94,33 +95,65 @@ def own_series(conn: sqlite3.Connection, venue_id: str, stables: frozenset[str],
     return dict(tok), dict(pool)
 
 
+def merge_series(ext: list[tuple[int, float]], own: list[tuple[int, float]]) -> list[tuple[int, float]]:
+    """自分の記録を優先し、それより前の時間だけ外部の足で補う。"""
+    if not own:
+        return list(ext)
+    first = own[0][0]
+    return [p for p in ext if p[0] < first] + list(own)
+
+
 def external_series(conn: sqlite3.Connection, gt: GeckoTerminal | None, tokens: set[str], now: datetime,
-                    days: float, refresh_hours: float) -> dict[str, list[tuple[int, float]]]:
-    """GeckoTerminal の1時間足（token_prices 表にためて、refresh_hours ごとに取り直す）。"""
+                    days: float, refresh_hours: float, own: dict[str, list[tuple[int, float]]] | None = None,
+                    max_fetch_seconds: float = 900) -> dict[str, list[tuple[int, float]]]:
+    """GeckoTerminal の1時間足で補った価格の並び（token_prices 表にためる）。
+
+    自分の記録がある時間は自分の記録を使い、足りない昔の分だけ外部の足を使う。
+    一度ためた足で7日分がそろえば、外部サイトにはもう聞かない（自分の記録がない
+    トークンだけ、refresh_hours ごとに取り直す）。GeckoTerminal は回数制限が厳しいため。
+    """
+    own = own or {}
     since = now - timedelta(days=days, hours=2)
     now_s = int(now.timestamp())
     stale = []
     for t in sorted(tokens):
-        s = db.token_price_series(conn, t, EXTERNAL_SOURCE, since)
-        if not s or s[-1][0] < now_s - refresh_hours * 3600 or not vol.covers(s, now_s, days):
+        m = merge_series(db.token_price_series(conn, t, EXTERNAL_SOURCE, since), own.get(t, []))
+        if not vol.covers(m, now_s, days) or m[-1][0] < now_s - refresh_hours * 3600:
             stale.append(t)
     if stale and gt is not None:
+        log.info("fetching external hourly prices", extra={"data": {"tokens": len(stale)}})
+        started = time.monotonic()
+        fetched = failures = 0
         try:
             markets = gt.tokens(stale)
-            for t in stale:
-                m = markets.get(t)
-                if not m or not m.top_pool:
-                    continue
-                bars = gt.hourly_usd(m.top_pool, t, limit=int(days * 24) + 3)
-                # 足の時刻は始まりなので、終値の時刻（1時間後）で保存する
-                db.insert_token_prices(conn, [
-                    (t, datetime.fromtimestamp(ts + 3600, UTC).isoformat(timespec="seconds"), px, EXTERNAL_SOURCE, None)
-                    for ts, px in bars
-                ])
-                conn.commit()
         except Exception as exc:
-            log.warning("geckoterminal ohlcv failed", extra={"data": {"error": str(exc)}})
-    return {t: db.token_price_series(conn, t, EXTERNAL_SOURCE, since) for t in tokens}
+            log.warning("geckoterminal tokens failed", extra={"data": {"error": str(exc)}})
+            markets = {}
+        for t in stale:
+            m = markets.get(t)
+            if not m or not m.top_pool:
+                continue
+            # 外部サイトの調子が悪いときに、計算全体が長く止まらないようにする（残りは次の回に取る）
+            if failures >= 3 or time.monotonic() - started > max_fetch_seconds:
+                log.warning("external fetch stopped early", extra={"data": {"fetched": fetched, "failures": failures}})
+                break
+            try:
+                bars = gt.hourly_usd(m.top_pool, t, limit=int(days * 24) + 3)
+            except Exception as exc:
+                failures += 1
+                log.warning("geckoterminal ohlcv failed", extra={"data": {"token": t, "error": str(exc)}})
+                continue
+            failures = 0
+            fetched += 1
+            # 足の時刻は始まりなので、終値の時刻（1時間後）で保存する
+            db.insert_token_prices(conn, [
+                (t, datetime.fromtimestamp(ts + 3600, UTC).isoformat(timespec="seconds"), px, EXTERNAL_SOURCE, None)
+                for ts, px in bars
+            ])
+            conn.commit()
+        log.info("external hourly prices fetched", extra={"data": {
+            "fetched": fetched, "seconds": round(time.monotonic() - started)}})
+    return {t: merge_series(db.token_price_series(conn, t, EXTERNAL_SOURCE, since), own.get(t, [])) for t in tokens}
 
 
 def _grid(series: list[tuple[int, float]] | None, now_s: int, days: float, stable: bool) -> list[tuple[int, float]]:
@@ -172,6 +205,7 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
     if run is None:
         log.info("no snapshots to score", extra={"data": {"venue": venue_id}})
         return []
+    log.info("scoring started", extra={"data": {"venue": venue_id, "run_id": run["id"]}})
     latest = conn.execute(_SNAP_SQL + " WHERE s.run_id=?", (run["id"],)).fetchall()
     age_min = (now - datetime.fromisoformat(run["finished_at"] or run["started_at"])).total_seconds() / 60
     stale = age_min > ctx.stale_after_minutes
@@ -198,7 +232,7 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
     reward_own = vol.covers(tok_own.get(reward_token, []), now_s, days)
     if reward_token and not reward_own:
         need_ext.add(reward_token)
-    ext = external_series(conn, ctx.gt, need_ext, now, days, s.external_refresh_hours) if need_ext else {}
+    ext = external_series(conn, ctx.gt, need_ext, now, days, s.external_refresh_hours, tok_own) if need_ext else {}
 
     grids: dict[tuple[str, str], list[tuple[int, float]]] = {}
 

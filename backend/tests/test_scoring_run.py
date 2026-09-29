@@ -160,3 +160,22 @@ def test_reward_token_crash_is_major():
     rows = {r["pool_id"].split(":")[1]: r for r in score_venue(conn, _ctx(), now=NOW)}
     assert rows["p-weth"]["signal"] == "red"
     assert "報酬トークンが7日で" in rows["p-weth"]["reason_ja"]
+
+
+def test_merge_prefers_own_data_and_fills_older_hours_from_external():
+    from farm_radar.scoring.run import merge_series
+    ext = [(1, 10.0), (2, 11.0), (3, 12.0), (4, 13.0)]
+    own = [(3, 99.0), (4, 98.0)]
+    assert merge_series(ext, own) == [(1, 10.0), (2, 11.0), (3, 99.0), (4, 98.0)]
+    assert merge_series(ext, []) == ext
+
+
+def test_external_data_fetched_once_then_own_data_takes_over():
+    conn = db.connect(":memory:")
+    _fill(conn, 24)
+    gt = FakeGT()
+    score_venue(conn, _ctx(gt), now=NOW)
+    assert gt.ohlcv_calls == 3
+    # 次の回では、ためた足と自分の記録で7日分がそろっているので、外部サイトには聞き直さない
+    score_venue(conn, _ctx(gt), now=NOW + timedelta(minutes=10))
+    assert gt.ohlcv_calls == 3
