@@ -102,3 +102,40 @@ def test_get_logs_halves_range_on_error(node, settings):
 
 def test_api_key_redacted_in_logs():
     assert "secretkey123" not in redact("https://robinhood-mainnet.g.alchemy.com/v2/secretkey123 failed")
+
+
+def test_rate_limit_is_recorded_without_secrets(tmp_path, node, settings):
+    # 429 を受けたら、サイト名だけを rate_limits 表に書く（URL の鍵は書かない。M6）
+    from farm_radar import ratelimit
+    from farm_radar.db import database as db
+    from datetime import UTC, datetime
+    path = tmp_path / "r.sqlite3"
+    db.connect(path).close()
+    ratelimit.set_sink(path)
+    url = "https://robinhood-mainnet.g.alchemy.com/v2/SECRETKEY"
+    node.on(url, lambda body: httpx.Response(429))
+    node.on("https://public/", lambda body: {"result": "0x10"})
+    rpc = RpcClient([Endpoint("alchemy", url), Endpoint("public", "https://public/")], settings,
+                    transport=node.transport(), sleep=lambda s: None)
+    assert rpc.block_number() == 16
+    conn = db.connect(path)
+    rows = conn.execute("SELECT host, kind FROM rate_limits").fetchall()
+    assert rows and all(tuple(r) == ("robinhood-mainnet.g.alchemy.com", "rpc") for r in rows)
+    assert "SECRETKEY" not in str([tuple(r) for r in rows])
+    assert ratelimit.counts_24h(conn, datetime.now(UTC)) == {"robinhood-mainnet.g.alchemy.com": len(rows)}
+
+
+def test_same_host_shares_one_interval():
+    # 別の読み手（会場ごとの GeckoTerminal など）でも、同じサイトなら間隔を共有する
+    from farm_radar import ratelimit
+    t = [100.0]
+    slept = []
+
+    def sleep(s):
+        slept.append(round(s, 3))
+        t[0] += s
+
+    for _ in range(3):
+        ratelimit.wait_turn("api.geckoterminal.com", 6.0, sleep, lambda: t[0])
+    ratelimit.wait_turn("api.llama.fi", 1.0, sleep, lambda: t[0])   # 別のサイトは待たない
+    assert slept == [6.0, 6.0]

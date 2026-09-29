@@ -17,6 +17,8 @@ def test_repo_config_loads():
     assert cfg.mode == "observe"
     assert cfg.snapshot_minutes == 15
     assert cfg.venues == ("up-robinhood",)
+    assert cfg.observe_venues.defer_below_coverage_pct == 97.0
+    assert load_venue("up-robinhood").get("practice", True) is not False
 
 
 @pytest.mark.parametrize("mode", ["dryrun", "exit_only", "full", None, "live"])

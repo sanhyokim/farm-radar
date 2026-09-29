@@ -16,7 +16,23 @@ export interface PoolRow {
   reason_ja: string; is_stock_pair?: number; has_perp: number | null; tvl_usd: number | null;
   warnings?: Warn[]; mode?: string | null;
   hedge_info?: HedgeInfo; range_prices?: RangePrices | null;
+  /** 次の切り替え（木曜 9:00 JST）と「来週ボーナスがなくなることがある」注意（2026-09-30 オーナー追加） */
+  epoch_flip?: EpochFlip | null;
 }
+
+/** 運営が手で足したボーナス（プール全体・今のエポック）。判定には入れない（2026-09-30 オーナー条件4） */
+export interface ManualBonus {
+  symbol: string | null;
+  amount: number;
+  usd: number | null;
+  epoch_total: number | null;
+  regular: number | null;
+  usd_day_spread: number | null;
+  your_extra_usd_day: number | null;
+  epoch_start: string | null;
+}
+
+export interface EpochFlip { at: string; note_ja: string; why_ja?: string | null }
 
 /** 保険あり/なしと、使うヘッジ先の名前（2026-09-29 オーナー追加） */
 export interface HedgeInfo { has: boolean; venues: string[]; tokens: Record<string, string | null>; label: string }
@@ -80,7 +96,7 @@ export interface PoolDetail {
   score: PoolRow & {
     ts: string; in_range_ratio: number | null; in_range_ratio_hold: number | null; sigma_pair: number | null;
     vol_source: string | null; is_stock_pair: number; address: string;
-    details: { inputs?: Record<string, any>; ranges?: RangeRow[] };
+    details: { inputs?: Record<string, any> & { manual_bonus?: ManualBonus | null }; ranges?: RangeRow[] };
   };
   venue?: { id: string; name: string | null; practice: boolean; practice_note: string };
   price: { price: number; tick: number; ts: string } | null;

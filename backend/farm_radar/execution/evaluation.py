@@ -22,7 +22,7 @@ from typing import Any
 
 from .. import views
 from ..collectors.completeness import check
-from ..config import Config
+from ..config import Config, ConfigError, load_venue, practice_allowed
 from ..risk.rules import LEVEL_JA
 from .paper import CATS
 
@@ -60,6 +60,23 @@ def stop(conn: sqlite3.Connection, now: datetime) -> None:
         conn.commit()
 
 
+def evaluation_venues(conn: sqlite3.Connection, config: Config, start: datetime, until: datetime) -> list[str]:
+    """評価の期間に練習の建玉があった会場。建玉がまだなければ、練習のできる会場（practice: false でないもの）。"""
+    rows = conn.execute(
+        """SELECT DISTINCT venue_id FROM positions WHERE is_paper=1 AND opened_at<=?
+           AND (closed_at IS NULL OR closed_at>=?) ORDER BY venue_id""", (_iso(until), _iso(start))).fetchall()
+    if rows:
+        return [r[0] for r in rows if r[0]]
+    out = []
+    for vid in config.venues:
+        try:
+            if practice_allowed(load_venue(vid, config.root)):
+                out.append(vid)
+        except (OSError, ConfigError):
+            continue
+    return out
+
+
 def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str, Any]:
     cur = current(conn)
     base = {"evaluation_days": config.evaluation.days, "mode": config.mode}
@@ -72,9 +89,10 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         "stopped" if cur["status"] == "stopped" else "finished")
     hours = max(0.0, (until - start_t).total_seconds() / 3600)
 
-    # データの集まり具合（会場ごと）
+    # データの集まり具合（会場ごと）。数えるのは評価の建玉がある会場だけ（2026-09-30 オーナー条件:
+    # 観察だけの会場 Alandale は評価に入れない。途中から増えた会場の収集は、評価の合否に関係しない）
     coverage = []
-    for (vid,) in conn.execute("SELECT id FROM venues ORDER BY id"):
+    for vid in evaluation_venues(conn, config, start_t, until):
         h = int(math.floor(hours))
         if h <= 0:
             continue

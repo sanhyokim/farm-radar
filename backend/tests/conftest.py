@@ -3,7 +3,16 @@ import json
 import httpx
 import pytest
 
+from farm_radar import ratelimit
 from farm_radar.config import RpcSettings
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limits():
+    ratelimit.reset()
+    ratelimit.set_sink(None)
+    yield
+    ratelimit.set_sink(None)
 
 
 class FakeNode:

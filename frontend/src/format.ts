@@ -56,3 +56,22 @@ export const rangeText = (r: { kind: string; symbol: string; quote?: string; low
     : r.usd_low != null && r.usd_high != null
       ? `${r.symbol} $${price(r.usd_low)}〜$${price(r.usd_high)} 相当（${r.quote ?? ""} が今の値段のままなら）`
       : `1 ${r.symbol} = ${price(r.low)}〜${price(r.high)} ${r.quote ?? ""}`;
+
+/** 次の時刻までの残り（「あと1日9時間」「あと35分」）。過ぎていれば「まもなく」 */
+export const untilText = (iso: string, now: number = Date.now()) => {
+  const m = Math.floor((new Date(iso).getTime() - now) / 60000);
+  if (m <= 0) return "まもなく";
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60);
+  if (d > 0) return `あと${d}日${h}時間`;
+  if (h > 0) return `あと${h}時間${m % 60}分`;
+  return `あと${m}分`;
+};
+
+/** 「10/1(木) 9:00」の形（日本時間） */
+export const jstDay = (iso: string) => {
+  const d = new Date(iso);
+  const md = d.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", month: "numeric", day: "numeric" });
+  const wd = d.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", weekday: "short" });
+  const hm = d.toLocaleString("ja-JP", { timeZone: "Asia/Tokyo", hour: "numeric", minute: "2-digit" });
+  return `${md}(${wd}) ${hm}`;
+};

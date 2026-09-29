@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { postApi, useApi, type Breakdown, type Paper, type PoolDetail as Detail, type RangeRow } from "../api";
+import { postApi, useApi, type Breakdown, type ManualBonus, type Paper, type PoolDetail as Detail, type RangeRow } from "../api";
 import { AssetsLine, HourlyBars, RangeNet, Series, Waterfall } from "../charts";
-import { bigUsd, jst, pct, rangeText, ratioPct, signedUsd, tone, usd } from "../format";
+import { bigUsd, jst, jstDay, pct, rangeText, ratioPct, signedUsd, tone, untilText, usd } from "../format";
 import { HedgeBadge } from "./Home";
 import type { SwapCosts } from "../api";
 import { Badge, Card, Loading, Note, SignalBadge, Term } from "../ui";
@@ -48,6 +48,18 @@ export default function PoolDetail() {
           </div>
         )}
       </Card>
+
+      {s.epoch_flip && (
+        <Card title={<Term k="エポック">次の切り替え</Term>}>
+          <div className="text-sm text-slate-100">
+            ⏰ <span className="num">{jstDay(s.epoch_flip.at)}</span>（{untilText(s.epoch_flip.at)}）
+          </div>
+          <p className="mt-1 text-sm text-amber-200/90">{s.epoch_flip.note_ja}</p>
+          {s.epoch_flip.why_ja && <Note>{s.epoch_flip.why_ja}</Note>}
+        </Card>
+      )}
+
+      {inp.manual_bonus && <ManualBonusCard m={inp.manual_bonus} />}
 
       {data.venue && !data.venue.practice ? (
         <Card title={<Term k="練習">練習</Term>}>
@@ -180,6 +192,24 @@ export default function PoolDetail() {
         <p className="mt-2 break-all text-[10px] text-slate-500">{s.address}</p>
       </Card>
     </div>
+  );
+}
+
+/** 運営が手で足したボーナス。いつものボーナスと分けて見せ、判定には入れない（2026-09-30 オーナー条件4） */
+function ManualBonusCard({ m }: { m: ManualBonus }) {
+  const sym = m.symbol ?? "";
+  const amt = (v: number | null) => (v == null ? "—" : `${Math.round(v).toLocaleString("en-US")} ${sym}`);
+  return (
+    <Card title={<Term k="手で足したボーナス">運営が手で足したボーナス</Term>} right={<Badge tone="amber">判定に入れない</Badge>}>
+      <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1.5 text-sm">
+        <Row k="今週、手で足された分" v={amt(m.amount)} note={m.usd != null ? `約 ${usd(m.usd, 0)}` : undefined} />
+        <Row k="いつものボーナス（今週）" v={amt(m.regular)} note="判定はこちらだけで計算" />
+        {m.your_extra_usd_day != null && (
+          <Row k="もし入れたら、1日の見込み" v={signedUsd(m.your_extra_usd_day)} note="参考。7日に均等に割った場合" />
+        )}
+      </dl>
+      <Note>運営が、いつもの配り方とは別に、手でボーナスを足しています。来週も続く保証がないため、判定（🟢🟡🔴）の計算には入れていません。</Note>
+    </Card>
   );
 }
 

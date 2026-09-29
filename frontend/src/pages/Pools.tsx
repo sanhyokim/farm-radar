@@ -1,6 +1,6 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { useApi, type PoolRow, type Signal } from "../api";
-import { SIGNAL, bigUsd, pct, rangeText } from "../format";
+import { SIGNAL, bigUsd, jstDay, pct, rangeText, untilText } from "../format";
 import { HedgeBadge } from "./Home";
 import { Loading, Term } from "../ui";
 
@@ -45,6 +45,12 @@ export default function Pools() {
         {chip(null, `すべて ${inVenue.length}`)}
         {(["green", "yellow", "red"] as const).map((s) => chip(s, `${SIGNAL[s].emoji} ${counts[s] ?? 0}`))}
       </div>
+      {data.scores[0]?.epoch_flip && (
+        <p className="rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-100">
+          ⏰ 次の切り替えは {jstDay(data.scores[0].epoch_flip.at)}（{untilText(data.scores[0].epoch_flip.at)}）。
+          切り替えで、来週ボーナスが減ったり、なくなったりするプールがあります。
+        </p>
+      )}
       <p className="text-xs text-slate-400">純日利の高い順。数字は<Term k="総資産あたり日利" />。値段は最適レンジの<Term k="範囲（レンジ）">範囲</Term>、印は<Term k="保険（ヘッジ）">保険</Term>の有無。</p>
       <ul className="divide-y divide-slate-800 rounded-2xl bg-slate-900 ring-1 ring-slate-800">
         {rows.map((r) => (

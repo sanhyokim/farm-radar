@@ -11,8 +11,9 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from . import discovery as discovery_mod
-from . import market_calendar, runtime
-from .collectors.snapshot import collect_venue, record_failed_run
+from . import market_calendar, ratelimit, runtime
+from .collectors import priority
+from .collectors.snapshot import collect_venue, record_failed_run, slot_for
 from .db import database as db
 from .execution.review import make_review
 from .external.geckoterminal import GeckoTerminal
@@ -45,6 +46,10 @@ def in_fast_window(now: datetime, window: tuple[str, str], trading_days_only: bo
 def main() -> None:
     setup_logging()
     config, venues = runtime.build()
+    ratelimit.set_sink(config.database_path)   # 429 を受けたら記録する（SPEC 5.3章。M6）
+    # 練習と評価に使う会場（up.）を先に、観察だけの会場（Alandale）を後に（SPEC 5.1章。2026-09-30 オーナー条件）
+    main_venues, observe_venues = priority.split_venues(venues)
+    venues = main_venues + observe_venues
     log.info("scheduler starting", extra={"data": {"mode": config.mode, "snapshot_minutes": config.snapshot_minutes}})
     notifier = Notifier.from_env(config)
 
@@ -56,17 +61,33 @@ def main() -> None:
             return
         conn = db.connect(config.database_path)
         try:
+            slot = slot_for(datetime.now(UTC), config.snapshot_minutes)
+            main_results = {}
             for v in venues:
+                observe = v.venue["id"] in observe_ids
+                if observe and fast:
+                    continue   # 開場前後の5分ごとの記録は練習の見張り用。観察だけの会場では行わない
+                if observe:
+                    # 観察だけの会場は、up. の収集と評価を優先して、条件によってはこの回を休む
+                    reason = priority.defer_reason(conn, config, main_results, slot, datetime.now(UTC))
+                    if reason:
+                        priority.record_deferred(conn, v.adapter.venue_id, slot, datetime.now(UTC), reason,
+                                                 config.snapshot_minutes)
+                        continue
                 try:
                     v.ensure_chain()
                 except Exception as exc:
                     # 失敗の記録を残して、欠けチェックに「failed」として出るようにする
                     record_failed_run(conn, v.adapter.venue_id, config.snapshot_minutes, f"チェーンの確認に失敗: {exc}")
                     notifier.error(v.adapter.venue_id, "データ収集の失敗（チェーンにつながりません）", str(exc))
+                    if not observe:
+                        main_results[v.adapter.venue_id] = priority.RunResult(0, "failed", None, 0, 0, str(exc))
                     continue
                 res = collect_venue(conn, v.adapter, v.rpc, snapshot_minutes=config.snapshot_minutes,
                                     epoch_fresh_minutes=config.epoch_fresh_minutes,
                                     reward_drop_alert_pct=config.reward_drop_alert_pct)
+                if not observe:
+                    main_results[v.adapter.venue_id] = res
                 if res.status == "failed":
                     notifier.error(v.adapter.venue_id, "データ収集の失敗", res.error or "全プールで読み取りに失敗")
             # 練習（M5a・M5b）: 新しい記録の分だけ損益を計算し、見張りのルールで調べる（mode が paper のときだけ）
@@ -96,21 +117,34 @@ def main() -> None:
     # ヘッジ先（SPEC 5.2.1章。config.yaml の hedge_venues。読み取りだけ）
     hedges = hedge_mod.build([h.hedge_id for h in config.hedge_venues])
     paper_tokens = load_tokens(venues[0].venue["chain"]["id"], config.root) if venues else None
+    # GeckoTerminal の読み手はチェーンごとに1つだけ作って、会場どうしで使い回す（回数制限を守るため。M6）
+    gts: dict[str, GeckoTerminal] = {}
+    for v in venues:
+        net = v.venue["chain"].get("geckoterminal_network")
+        if net and net not in gts:
+            gts[net] = GeckoTerminal(net)
     contexts = [
         ScoreContext(
             venue=v.venue, tokens=load_tokens(v.venue["chain"]["id"], config.root), settings=config.scoring,
             stale_after_minutes=config.stale_after_minutes, rpc=v.rpc, hedges=hedges,
-            gt=GeckoTerminal(v.venue["chain"]["geckoterminal_network"])
-            if v.venue["chain"].get("geckoterminal_network") else None,
+            gt=gts.get(v.venue["chain"].get("geckoterminal_network") or ""),
         )
         for v in venues
     ]
+    observe_ids = {v.venue["id"] for v in observe_venues}
 
     def score_job() -> None:
         """スコア計算と判定（SPEC 5.1章: 1時間ごと）。外部サイトが落ちていても収集は止めない。"""
         conn = db.connect(config.database_path)
         try:
             for ctx in contexts:
+                if ctx.venue["id"] in observe_ids:
+                    hits = ratelimit.recent(conn, datetime.now(UTC), config.observe_venues.rate_limit_quiet_minutes)
+                    if hits:
+                        # 観察だけの会場の計算は外部データを読むので、429 のあとは次の回にまわす（M6）
+                        log.info("observe venue scoring deferred", extra={"data": {
+                            "venue": ctx.venue["id"], "rate_limits": len(hits)}})
+                        continue
                 try:
                     rows = score_venue(conn, ctx)
                     if rows:

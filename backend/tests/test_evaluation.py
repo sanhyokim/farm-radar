@@ -99,3 +99,20 @@ def test_day_without_records_does_not_count(world):  # noqa: F811
     assert [d["hold_ok"] for d in s["days"]][:2] == [False, False]
     assert s["criteria"]["hold"]["ok_days"] == 0 and s["criteria"]["hold"]["result"] == "running"
     assert s["criteria"]["hold"]["need_days"] == 10              # 14日 × 70% = 9.8 → 10日
+
+
+def test_coverage_counts_only_the_evaluated_venues(world):  # noqa: F811
+    # 途中から増えた観察だけの会場（M6 の Alandale）の収集は、評価の集まり具合に入れない（2026-09-30 オーナー条件）
+    from farm_radar.db import database as db
+    path, conn = world
+    cfg = _config(path)
+    evaluation.start(conn, cfg, NOW)
+    _open(conn, path)
+    _extend(conn, 6)
+    conn.execute("INSERT INTO venues(id, name, chain) VALUES ('alandale-robinhood', 'Alandale', 'robinhood')")
+    db.start_run(conn, "alandale-robinhood", NOW + timedelta(hours=6), NOW + timedelta(hours=6))
+    conn.commit()
+    s = evaluation.summary(conn, cfg, NOW + timedelta(hours=7))
+    assert [c["venue_id"] for c in s["coverage"]] == ["up-robinhood"]
+    # 建玉がまだないときは、練習のできる会場（config の venues のうち practice: false でないもの）で数える
+    assert evaluation.evaluation_venues(conn, cfg, NOW + timedelta(days=30), NOW + timedelta(days=31)) == ["up-robinhood"]

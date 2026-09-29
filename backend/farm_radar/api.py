@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -22,6 +23,8 @@ from fastapi.responses import FileResponse, Response
 from . import discovery as discovery_mod
 from . import views
 from .collectors.completeness import check
+from . import ratelimit
+from .collectors import priority
 from .config import REPO_ROOT, ConfigError, contract_address, load_config, load_venue, practice_allowed
 from .db import database as db
 from .execution import views as paper_views
@@ -38,6 +41,15 @@ from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
 from .tokens import load_tokens
 
 app = FastAPI(title="Farm Radar")
+
+
+@app.on_event("startup")
+def _rate_limit_sink() -> None:
+    # 画面の「今すぐ更新」（候補の一覧）などでこのプロセスが 429 を受けても記録する（SPEC 5.3章。M6）
+    try:
+        ratelimit.set_sink(load_config().database_path)
+    except Exception:
+        pass
 
 
 @contextmanager
@@ -74,15 +86,20 @@ def health() -> dict:
                 stale = age > timedelta(minutes=config.stale_after_minutes)
             r = check(conn, venue_id, minutes=config.snapshot_minutes)
             gaps = [dict(g) for g in db.list_gaps(conn, venue_id, datetime.now(UTC) - timedelta(days=7))]
+            deferred = [x for x in r.not_ok if x[1] == priority.DEFERRED]
             venues.append({
                 "venue_id": venue_id,
                 "last_run": dict(last) if last else None,
                 "last_ok_at": last_ok["finished_at"] if last_ok else None,
                 "stale": stale,
-                "last_24h": {"expected": r.expected, "ok": r.ok, "missing": len(r.missing), "not_ok": len(r.not_ok)},
+                "last_24h": {"expected": r.expected, "ok": r.ok, "missing": len(r.missing), "not_ok": len(r.not_ok),
+                             # 観察だけの会場を、up. と評価を優先して休んだ回（M6。欠損とは別）
+                             "deferred": len(deferred)},
                 "gaps_7d": gaps,   # 収集が止まっていた期間（M3の画面で「欠損」として表示する）
             })
-        return {"mode": config.mode, "venues": venues}
+        # 直近24時間に回数制限（429）を受けた回数（サイトごと。SPEC 5.3章。2026-09-30 オーナー条件）
+        return {"mode": config.mode, "venues": venues,
+                "rate_limits_24h": ratelimit.counts_24h(conn, datetime.now(UTC))}
     finally:
         conn.close()
 
@@ -226,6 +243,25 @@ def scores(venue: str | None = None) -> dict:
 
 # --- 画面（M3）用 -------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=16)
+def _venue_file(venue_id: str, mtime: float) -> dict | None:
+    try:
+        return load_venue(venue_id, REPO_ROOT)
+    except (OSError, ConfigError):
+        return None
+
+
+def _venue_meta(venue_id: str | None) -> dict | None:
+    """会場ファイル（ファイルが変わったら読み直す）。プールのカードに会場ごとの情報を添えるのに使う。"""
+    if not venue_id:
+        return None
+    try:
+        mtime = (REPO_ROOT / "venues" / f"{venue_id}.yaml").stat().st_mtime
+    except OSError:
+        return None
+    return _venue_file(venue_id, mtime)
+
+
 def _score_dict(r) -> dict:
     d = dict(r)
     d["warnings"] = json.loads(d.pop("warnings_json") or "[]")
@@ -234,6 +270,8 @@ def _score_dict(r) -> dict:
     # カードの表示（2026-09-29 オーナー追加）: 保険あり/なしとヘッジ先の名前、最適レンジの値段の範囲
     d["hedge_info"] = views.hedge_label(d["details"], d.get("has_perp"))
     d["range_prices"] = views.range_prices(d["details"], d.get("best_r"), d.get("token0_symbol"), d.get("token1_symbol"))
+    # 次の切り替え（木曜 9:00 JST）と「来週ボーナスがなくなることがある」注意（2026-09-30 オーナー追加）
+    d["epoch_flip"] = views.epoch_flip_info(_venue_meta(d.get("venue_id")), _now())
     return d
 
 

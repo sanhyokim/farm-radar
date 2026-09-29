@@ -21,9 +21,22 @@ rpc:
   # "latest" ブロックを指定した読み取りのキャッシュ秒数（固定ブロックの読み取りは常にキャッシュ）
   latest_cache_seconds: 5
 
-# 有効にする会場（venues/<id>.yaml）
+# 有効にする会場（venues/<id>.yaml）。上から順に集めます。練習と評価に使う会場（up.）を先に書きます。
+# alandale-robinhood は「観察だけ」の会場です（練習と評価には入れません。2026-09-30 オーナー決定。M6）。
 venues:
   - up-robinhood
+  # - alandale-robinhood   # M6 作業中（会場ファイルと読み取りができたら有効にする）
+
+# 観察だけの会場（Alandale）の読み取りを休む条件（2026-09-30 オーナー条件）。
+# 次のどれかに当たる回は Alandale を読まず、次の回（15分後）にまわします。up. の収集と評価を優先するためです。
+#  - 同じ回の up. の収集が成功していない
+#  - 直近 rate_limit_quiet_minutes 分に、RPC か外部データで 429（取りすぎ）が返った
+#  - up. の収集率（評価中は評価を始めてから、それ以外は直近24時間）が defer_below_coverage_pct % 未満
+#  - その回の up. の収集が長引いて、予定時刻から max_start_delay_minutes 分を過ぎた
+observe_venues:
+  defer_below_coverage_pct: 97
+  rate_limit_quiet_minutes: 30
+  max_start_delay_minutes: 5
 
 # データがこの分数より古ければ「データ古い」とみなす
 stale_after_minutes: 45

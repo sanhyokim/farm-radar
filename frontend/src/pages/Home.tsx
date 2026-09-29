@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useApi, type HedgeInfo, type Home as HomeData, type PoolRow } from "../api";
-import { SIGNAL, jst, pct, rangeText, usd } from "../format";
+import { useApi, type EpochFlip, type HedgeInfo, type Home as HomeData, type PoolRow } from "../api";
+import { SIGNAL, jst, jstDay, pct, rangeText, untilText, usd } from "../format";
 import { Badge, Card, Loading, Note, SignalBadge, Term } from "../ui";
 
 export default function Home() {
@@ -111,10 +111,20 @@ export function PoolCard({ p }: { p: PoolRow }) {
         <HedgeBadge h={p.hedge_info} />
         {p.range_prices && <Term k="範囲（レンジ）"><span className="text-slate-500">範囲とは</span></Term>}
       </div>
+      {p.epoch_flip && <FlipLine f={p.epoch_flip} />}
       <button className="mt-1 text-xs text-sky-300" onClick={() => setOpen(!open)}>
         {open ? "閉じる" : "なぜ?"}
       </button>
       {open && <p className="mt-1 whitespace-pre-line text-sm leading-relaxed text-slate-300">{p.reason_ja}</p>}
+    </div>
+  );
+}
+
+/** 「⏰ 10/1(木) 9:00 に切り替え（あと1日9時間）。来週ボーナスがなくなることも」（2026-09-30 オーナー追加） */
+export function FlipLine({ f }: { f: EpochFlip }) {
+  return (
+    <div className="mt-1 text-xs text-amber-200/90">
+      ⏰ {jstDay(f.at)} に<Term k="エポック">切り替え</Term>（{untilText(f.at)}）。来週はボーナスがなくなることもあります
     </div>
   );
 }
