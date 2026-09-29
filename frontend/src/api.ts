@@ -102,7 +102,7 @@ export interface PaperCard {
   compare_enabled: boolean; compare_min_hours: number;
   payback_total_hours: number | null; payback_left_hours: number | null;
   rebalances: number; cautions: string[]; skipped: string[];
-  rebalance_cost: number;
+  rebalance_cost: number; close_cost_usd: number | null;
 }
 
 export interface Watch {
@@ -133,9 +133,10 @@ export interface TimelineItem {
 }
 
 export interface Outlook {
-  value_now: number; capital: number; daily_usd: number; daily_pct: number; daily_low_usd: number; daily_low_pct: number;
+  value_now: number; capital: number; daily_usd: number | null; daily_pct: number | null;
+  daily_low_usd: number | null; daily_low_pct: number | null;
   rows: { label: string; days: number; value: number; low: number }[];
-  hours: number; short: boolean; conservative_pct: number; note: string;
+  hours: number; short: boolean; min_hours: number; conservative_pct: number; note: string;
 }
 
 export interface PaperCalendar {

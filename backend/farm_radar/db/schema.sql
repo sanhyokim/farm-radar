@@ -222,6 +222,11 @@ CREATE TABLE IF NOT EXISTS stable_prices (
 );
 CREATE INDEX IF NOT EXISTS idx_reviews_ts ON reviews(ts);
 
+-- perp（Lighter）の市場ごとの取引手数料（%）。開く・置き直す・閉じる時のヘッジの手数料に使う（2026-09-29 オーナー指示）
+CREATE TABLE IF NOT EXISTS perp_fees (
+  market_id INTEGER PRIMARY KEY, taker_pct REAL NOT NULL, maker_pct REAL, ts TEXT NOT NULL
+);
+
 -- 毎朝のレポート（M4。SPEC 8章）。1日1通。送れたら sent_at が入る
 CREATE TABLE IF NOT EXISTS daily_reports (
   day TEXT PRIMARY KEY,               -- 日本時間の日付（2026-09-30）

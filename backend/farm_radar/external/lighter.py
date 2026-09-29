@@ -34,6 +34,21 @@ class Lighter:
                 out[m["symbol"]] = PerpMarket(m["symbol"], int(m["market_id"]))
         return out
 
+    def market_fees(self) -> dict[int, tuple[float, float]]:
+        """perp の市場ごとの (取引手数料 taker %, maker %)。/api/v1/orderBookDetails の taker_fee・maker_fee。
+
+        単位は%（公式ドキュメント https://docs.lighter.xyz/trading/trading-fees の表と同じ書き方。
+        例: 手数料ありのアカウントの taker "0.0280%"）。2026-09-29 時点は全市場 "0.0000"（標準アカウントは無料）。
+        """
+        data = self.http.get("orderBookDetails")
+        out = {}
+        for m in data.get("order_book_details") or []:
+            try:
+                out[int(m["market_id"])] = (float(m.get("taker_fee") or 0.0), float(m.get("maker_fee") or 0.0))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
     def short_funding_hourly(self, market_id: int, start: int, end: int) -> list[tuple[int, float]]:
         """売り（ショート）を持った場合の、1時間ごとの資金調達の支払い（元本に対する割合）。
 

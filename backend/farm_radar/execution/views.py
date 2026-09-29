@@ -90,6 +90,7 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
         "compare_enabled": hours >= risk.compare_min_hours, "compare_min_hours": risk.compare_min_hours,
         "payback_total_hours": payback_total, "payback_left_hours": payback_left,
         "days": days, "hours": hours, "open_cost_usd": open_cost,
+        "close_cost_usd": st.get("close_cost"),
         "started_red": bool(pos["started_red"]), "signal_open": pos["signal_open"],
         "red_label": RED_START_LABEL if pos["started_red"] else None,
         "hedges": json.loads(pos["hedges_json"] or "[]"),

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useApi, type Outlook, type PaperCalendar, type TimelineItem } from "../api";
-import { jpUsd, jst, pct, signedUsd, tone, usd } from "../format";
+import { jst, pct, signedUsd, tone, usd } from "../format";
 import { Badge, Card, Loading, Note } from "../ui";
 
 const TYPE_STYLE: Record<string, { tone: "amber" | "sky" | "rose" | "emerald" | "slate"; label?: string; bar: string }> = {
@@ -106,45 +106,43 @@ export function CalendarCard() {
   );
 }
 
-/** 資産の見通し（SPEC 7.4章。必ず「推定」） */
+/** 資産の見通し（SPEC 7.4章。必ず「推定」。2026-09-29 オーナー指示: 1か月後まで・単純な足し算・始めた費用込みの平均・24時間未満は出さない） */
 export function OutlookCard({ o, title = "資産の見通し" }: { o: Outlook; title?: string }) {
   return (
     <Card title={title} right={<Badge tone="amber">推定</Badge>}>
-      <div className="mb-2 grid grid-cols-2 gap-2 text-center text-xs">
-        <div className="rounded-lg bg-slate-800/40 p-2">
-          <div className="text-slate-400">今の評価額</div>
-          <div className="num text-base text-slate-100">{usd(o.value_now)}</div>
+      {o.short ? (
+        <div className="rounded-lg bg-slate-800/40 p-3 text-center text-sm text-slate-300">
+          <span className="rounded-full bg-slate-700 px-2 py-0.5 text-xs text-slate-200">データ不足</span>
+          <p className="mt-2">始めてから{o.min_hours}時間たったら出します（今は{o.hours < 1 ? "1時間未満" : `${o.hours.toFixed(1)}時間`}）。</p>
         </div>
-        <div className="rounded-lg bg-slate-800/40 p-2">
-          <div className="text-slate-400">実績の1日あたり（費用を除く）</div>
-          <div className={`num text-base ${tone(o.daily_pct)}`}>{pct(o.daily_pct)}</div>
-          <div className="text-[10px] text-slate-500">下限 {pct(o.daily_low_pct)}</div>
-        </div>
-      </div>
-      {o.short && (
-        <p className="mb-2 text-center text-[11px] text-slate-400">
-          <span className="rounded-full bg-slate-700 px-2 py-0.5 text-slate-200">参考（データ不足）</span> 始めてからの時間が短く、大きくぶれます
-        </p>
-      )}
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-xs text-slate-400"><th className="text-left font-normal">いつ</th><th className="text-right font-normal">このペースなら</th><th className="text-right font-normal">控えめな下限</th></tr>
-        </thead>
-        <tbody>
-          {o.rows.map((r) => (
-            <tr key={r.label} className="border-t border-slate-800">
-              <td className="py-1 text-slate-300">{r.label}</td>
-              <td className={`num py-1 text-right ${o.short ? "text-slate-500" : "text-slate-100"}`}>{jpUsd(r.value)}</td>
-              <td className={`num py-1 text-right ${o.short ? "text-slate-500" : "text-slate-300"}`}>{jpUsd(r.low)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {o.rows[o.rows.length - 1].value > o.value_now * 10 && (
-        <p className="mt-2 rounded-lg bg-amber-500/10 p-2 text-xs leading-relaxed text-amber-200">
-          1日の割合が大きいので、複利で伸ばすと現実にはありえない数字になります。報酬は、ほかの人がお金を入れると山分けで薄まり、
-          報酬トークンの値段も変わるので、この通りにはなりません。「今のペースがどれだけ特別か」の目安として見てください。
-        </p>
+      ) : (
+        <>
+          <div className="mb-2 grid grid-cols-2 gap-2 text-center text-xs">
+            <div className="rounded-lg bg-slate-800/40 p-2">
+              <div className="text-slate-400">今の評価額</div>
+              <div className="num text-base text-slate-100">{usd(o.value_now)}</div>
+            </div>
+            <div className="rounded-lg bg-slate-800/40 p-2">
+              <div className="text-slate-400">始めてからの1日平均（始めた費用込み）</div>
+              <div className={`num text-base ${tone(o.daily_usd)}`}>{signedUsd(o.daily_usd)}</div>
+              <div className="text-[10px] text-slate-500">{pct(o.daily_pct)}・下限 {signedUsd(o.daily_low_usd)}</div>
+            </div>
+          </div>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-slate-400"><th className="text-left font-normal">いつ</th><th className="text-right font-normal">このペースなら</th><th className="text-right font-normal">控えめな下限</th></tr>
+            </thead>
+            <tbody>
+              {o.rows.map((r) => (
+                <tr key={r.label} className="border-t border-slate-800">
+                  <td className="py-1 text-slate-300">{r.label}</td>
+                  <td className="num py-1 text-right text-slate-100">{usd(r.value)}</td>
+                  <td className="num py-1 text-right text-slate-300">{usd(r.low)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
       <Note>{o.note}</Note>
     </Card>

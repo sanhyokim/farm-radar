@@ -207,8 +207,7 @@ class PaperExecutor:
                 continue
             hedges.append({"token": tok, "symbol": sym, "perp": perp.symbol, "market_id": perp.market_id,
                            "size": amt, "entry": usd})
-        taker = s.hedge_taker_fee_pct / 100
-        hedge_fee = sum(h["size"] * h["entry"] * taker for h in hedges)
+        hedge_fee = sum(h["size"] * h["entry"] * self.taker_fee(h["market_id"]) for h in hedges)
         costs = swap_cost + 2 * gas + hedge_fee
 
         started_red = 1 if score["signal"] == "red" else 0
@@ -370,6 +369,19 @@ class PaperExecutor:
 
     # --- 置き直し（M5b） ------------------------------------------------------------------------
 
+    def taker_fee(self, market_id: int | None) -> float:
+        """perp の取引手数料（割合）。Lighter から取った市場ごとの今の値（2日以内）を使い、なければ config の値。
+
+        開く・置き直す・閉じる時の費用に必ず入れる（2026-09-29 オーナー指示。今は0%でも、変わったら自動で反映）。
+        """
+        if market_id is not None:
+            since = _iso(self.now - timedelta(days=2))
+            row = self.conn.execute("SELECT taker_pct FROM perp_fees WHERE market_id=? AND ts>=?",
+                                    (int(market_id), since)).fetchone()
+            if row is not None:
+                return float(row[0]) / 100
+        return self.config.scoring.hedge_taker_fee_pct / 100
+
     def _costs_now(self, pool_id: str) -> tuple[float, float, float]:
         """最新のスコアの入力から、手数料率・両替のずれ・ガス代（1回）を返す。"""
         score = latest_score(self.conn, pool_id)
@@ -410,12 +422,11 @@ class PaperExecutor:
         liq = _liquidity_for_range(v_lp, price, lower, upper, u0, u1, d0, d1)
         a0, a1 = lp_amounts(liq, price, lower, upper, d0, d1)
         # ヘッジ: ここまでの損益を固定し、新しい中身の量に合わせて建て直す
-        taker = s.hedge_taker_fee_pct / 100
         new_hedges, hedge_fee = [], 0.0
         for h in hedges:
             hp = prices.get(h["token"], h["entry"])
             size = a0 if h["token"] == t0 else a1
-            hedge_fee += abs(size - h["size"]) * hp * taker
+            hedge_fee += abs(size - h["size"]) * hp * self.taker_fee(h["market_id"])
             new_hedges.append({**h, "size": size, "entry": hp})
         cost = swap_cost + 2 * gas + hedge_fee
         cum = _cumulative(pos, st, hedges, price, u0, u1, up, prices, d0, d1)
@@ -490,10 +501,10 @@ class PaperExecutor:
         parts = max(1, math.ceil(slip / max_slip)) if max_slip > 0 and slip > max_slip else 1
         swap_cost = volatile * (fee + slip / parts)
         swap_gas = gas * parts
-        taker = self.config.scoring.hedge_taker_fee_pct / 100
-        hedge_fee = sum(h["size"] * prices.get(h["token"], h["entry"]) * taker for h in hedges)
+        hedge_fee = sum(h["size"] * prices.get(h["token"], h["entry"]) * self.taker_fee(h["market_id"]) for h in hedges)
         close_cost = swap_cost + gas + swap_gas + hedge_fee
         st["costs"] += close_cost
+        st["close_cost"] = close_cost
         cum = _cumulative(pos, st, hedges, price, u0, u1, up, prices, d0, d1)
         delta = {c: cum[c] - st["cum"][c] for c in CATS}
         delta_sell = cum["haircut_sell"] - st["cum"]["haircut_sell"]

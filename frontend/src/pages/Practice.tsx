@@ -119,6 +119,12 @@ export function PositionCard({ c, link = true }: { c: PaperCard; link?: boolean 
         <span className="text-slate-400"><Term k="置き直し">置き直し</Term>の回数と費用</span>
         <span className="num text-slate-200">{c.rebalances}回・合計 <span className={c.rebalance_cost > 0 ? "text-rose-300" : ""}>{usd(c.rebalance_cost)}</span></span>
       </div>
+      {c.close_cost_usd != null && (
+        <div className="mt-2 flex items-center justify-between rounded-xl bg-slate-800/40 px-3 py-2 text-sm">
+          <span className="text-slate-400">閉じる費用（両替・ガス・ヘッジの手数料）</span>
+          <span className="num text-rose-300">{usd(c.close_cost_usd)}</span>
+        </div>
+      )}
       <ActualRates c={c} />
       <Note>{jst(c.opened_at)} に開始（{hoursJa(c.hours)}たちました）。最後の計算 {jst(c.last_ts)}。</Note>
     </Card>
@@ -152,7 +158,7 @@ export function ActualRates({ c }: { c: PaperCard }) {
         </p>
       )}
       <div className="mt-2 text-xs text-slate-300">
-        始めた費用 {usd(c.open_cost_usd)} を取り返すまで:{" "}
+        始めた費用（両替・ガス・ヘッジの手数料）{usd(c.open_cost_usd)} を取り返すまで:{" "}
         {c.open_cost_usd <= 0 ? "費用はかかっていません" :
           c.payback_left_hours === null ? <span className="text-rose-300">今のペースでは取り返せません（費用を除いた稼ぎがマイナス）</span> :
           c.payback_left_hours <= 0 ? <span className="text-emerald-300">取り返しました</span> :
