@@ -103,3 +103,27 @@ class GeckoTerminal:
         rows = ((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
         out = [(int(r[0]), float(r[4])) for r in rows if r and r[4] is not None and float(r[4]) > 0]
         return sorted(out)
+
+    def dexes(self) -> list[tuple[str, str]]:
+        """このネットワークの DEX の一覧（id, 名前）。週1回の候補の一覧で、新しい DEX を見つけるのに使う（SPEC 5.2.2章）。"""
+        out: list[tuple[str, str]] = []
+        for page in range(1, 6):
+            data = self.http.get(f"networks/{self.network}/dexes", {"page": page})
+            rows = data.get("data") or []
+            out += [(d["id"], (d.get("attributes") or {}).get("name") or d["id"]) for d in rows if d.get("id")]
+            if not (data.get("links") or {}).get("next") or not rows:
+                break
+        return out
+
+    def dex_pools(self, dex_id: str) -> list[dict]:
+        """その DEX の、取引量の多いプール（1ページ目だけ）。名前・預かり額・24時間の取引量・作られた日。"""
+        data = self.http.get(f"networks/{self.network}/dexes/{dex_id}/pools",
+                             {"page": 1, "sort": "h24_volume_usd_desc"})
+        out = []
+        for p in data.get("data") or []:
+            a = p.get("attributes") or {}
+            out.append({"address": (a.get("address") or "").lower(), "name": a.get("name"),
+                        "tvl_usd": _f(a.get("reserve_in_usd")),
+                        "volume_24h_usd": _f((a.get("volume_usd") or {}).get("h24")),
+                        "created_at": a.get("pool_created_at")})
+        return out

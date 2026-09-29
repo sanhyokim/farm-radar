@@ -2,6 +2,7 @@ import { useApi, type Venue } from "../api";
 import { bigUsd, pct } from "../format";
 import { Sparkline } from "../charts";
 import { Badge, Card, Loading, Note, Term } from "../ui";
+import { DiscoverySection } from "./Discovery";
 
 const LAMP = { ok: "bg-emerald-400", warn: "bg-amber-300", bad: "bg-rose-500", unknown: "bg-slate-600" } as const;
 const COND = {
@@ -18,6 +19,7 @@ export default function Venues() {
     <div className="space-y-3">
       <h1 className="text-lg font-bold text-slate-100">会場</h1>
       {data.venues.map((v) => <VenueCard key={v.venue_id} v={v} />)}
+      <DiscoverySection />
     </div>
   );
 }

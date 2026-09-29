@@ -145,6 +145,24 @@ evaluation:
   day_gap_capital_pct: 0.1             #   または、差が総資産（その日の建玉の投入額の合計）の0.1%以内なら「満たす日」
   pass_days_pct: 70                    # 「満たす日」が評価日数の70%以上なら合格（持ち続ける前提・すぐ売る前提のそれぞれで判定）
 
+# 候補の会場の一覧（週1回。SPEC 5.2.2章。2026-09-29 オーナー依頼 E1）。読み取りだけで、お金は動かしません。
+# DefiLlama（会場の預かり額・プールのボーナスの利回り）と GeckoTerminal（新しい DEX）から集めて、「会場」タブに並べます。
+# 「調べる」を押しても自動では監視を始めません（アドレスと報酬の仕組みを確かめてから会場ファイルを作ります）。
+discovery:
+  weekday: mon            # 毎週この曜日の
+  time_jst: "09:00"       # この時刻（日本時間）に集める。パソコンを止めていて7日以上たっていたら、起動の数分後にも1回
+  chains:                 # 見るチェーン。name = DefiLlama の名前、coins = トークン価格の名前、geckoterminal = 新しいDEXを探すネットワーク
+    - {name: "Robinhood Chain", coins: robinhood, geckoterminal: robinhood}
+    - {name: Base, coins: base}
+    - {name: Arbitrum, coins: arbitrum}
+    - {name: "Hyperliquid L1", coins: hyperliquid}
+    - {name: Avalanche, coins: avax}
+  min_tvl_usd: 300000     # そのチェーンでの預かり額がこれ以上の会場だけ
+  pool_min_tvl_usd: 20000 # プールはこれ以上の預かり額のものだけ
+  new_days: 90            # 掲載からこの日数以内の会場は、ボーナスがなくても「新しい会場」として出す
+  new_pool_days: 30       # ボーナスの記録がこの日数以内のプールを「新しくボーナスが出始めたプール」に出す
+  refresh_min_minutes: 30 # 画面の「今すぐ更新」は、前回の開始からこの分数あける
+
 # リスク上限。エージェントは変更しません（変更はオーナーが手で行う）。
 limits:
   position_usd: 1000

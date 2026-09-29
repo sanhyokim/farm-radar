@@ -250,6 +250,62 @@ def _hedge_venues(raw: dict[str, Any]) -> tuple[HedgeVenueSettings, ...]:
 
 
 @dataclass(frozen=True)
+class DiscoveryChain:
+    """候補の一覧で見るチェーン。名前はサイトごとに違うので、それぞれ書く。"""
+    name: str                               # DefiLlama のチェーン名（例: "Robinhood Chain"）
+    coins: str | None = None                # DefiLlama のトークン価格でのチェーン名（例: robinhood）
+    geckoterminal: str | None = None        # GeckoTerminal のネットワーク名（例: robinhood）。空なら読まない
+
+
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+@dataclass(frozen=True)
+class DiscoverySettings:
+    """候補の会場の一覧（週1回。SPEC 5.2.2章。2026-09-29 オーナー依頼 E1）。config.yaml の discovery。"""
+    weekday: str = "mon"                    # 毎週この曜日に（日本時間）
+    hour_jst: int = 9
+    minute_jst: int = 0
+    chains: tuple[DiscoveryChain, ...] = (
+        DiscoveryChain("Robinhood Chain", "robinhood", "robinhood"),
+        DiscoveryChain("Base", "base"),
+        DiscoveryChain("Arbitrum", "arbitrum"),
+        DiscoveryChain("Hyperliquid L1", "hyperliquid"),
+        DiscoveryChain("Avalanche", "avax"),
+    )
+    min_tvl_usd: float = 300_000.0          # そのチェーンでの預かり額がこれ以上の会場だけ
+    pool_min_tvl_usd: float = 20_000.0      # プールはこれ以上の預かり額のものだけ出す
+    new_days: int = 90                      # 掲載からこの日数以内なら、ボーナスがなくても「新しい会場」として出す
+    new_pool_days: int = 30                 # ボーナスの記録がこの日数以内のプールを「新しくボーナスが出始めたプール」に出す
+    refresh_min_minutes: int = 30           # 「今すぐ更新」は前回の開始からこの分数あける
+
+
+def _discovery(raw: dict[str, Any]) -> DiscoverySettings:
+    r = raw.get("discovery") or {}
+    d = DiscoverySettings()
+    at = str(r.get("time_jst", f"{d.hour_jst:02d}:{d.minute_jst:02d}"))
+    try:
+        hh, mm = (int(x) for x in at.split(":"))
+    except ValueError:
+        raise ConfigError("discovery.time_jst は \"09:00\" のように書いてください。") from None
+    weekday = str(r.get("weekday", d.weekday)).lower()[:3]
+    if weekday not in _WEEKDAYS:
+        raise ConfigError("discovery.weekday は mon〜sun のどれかにしてください。")
+    chains = d.chains
+    if r.get("chains") is not None:
+        chains = tuple(DiscoveryChain(str(c["name"]), c.get("coins") or None, c.get("geckoterminal") or None)
+                       for c in r["chains"] or [])
+    return DiscoverySettings(
+        weekday=weekday, hour_jst=hh, minute_jst=mm, chains=chains,
+        min_tvl_usd=float(r.get("min_tvl_usd", d.min_tvl_usd)),
+        pool_min_tvl_usd=float(r.get("pool_min_tvl_usd", d.pool_min_tvl_usd)),
+        new_days=int(r.get("new_days", d.new_days)),
+        new_pool_days=int(r.get("new_pool_days", d.new_pool_days)),
+        refresh_min_minutes=int(r.get("refresh_min_minutes", d.refresh_min_minutes)),
+    )
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -266,6 +322,7 @@ class Config:
     review: ReviewSettings = field(default_factory=ReviewSettings)
     evaluation: EvaluationSettings = field(default_factory=EvaluationSettings)
     hedge_venues: tuple[HedgeVenueSettings, ...] = (HedgeVenueSettings("lighter"),)
+    discovery: DiscoverySettings = field(default_factory=DiscoverySettings)
     root: Path = REPO_ROOT
 
 
@@ -316,6 +373,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         review=_review(raw),
         evaluation=_evaluation(raw),
         hedge_venues=_hedge_venues(raw),
+        discovery=_discovery(raw),
         root=root,
     )
 

@@ -18,8 +18,7 @@
 - **評価のため会場の上限を0.5→0.7に変更。Phase 3aを始める前に見直す（本物のお金では50%に戻すかを改めて決める）**（2026-09-30 00:42 JST オーナー決定）。
   - 変えたのはオーナーのパソコンの config.yaml だけ（オーナーが自分で書き換える。Claude は limits を変えない）。リポジトリの config.yaml は 0.5 のまま。
   - **次からの更新手順には、「練習モードに切り替える」と同じように「per_venue_share を 0.7 にする」手順を必ず入れる**（ZIP の config.yaml は 0.5 に戻るため）。
-- **オーナーの追加のお願い（2026-09-30 00:42 JST）を作業中**: E1（週1回の候補一覧と承認の画面。評価の間に並行して作る。SPEC 5.2.2章）、
-  up. の週のボーナス約 $4.1M の出どころの確認、Alandale のプールごとの配布量をチェーンから読めるかの調査。
+- **オーナーの追加のお願い（2026-09-30 00:42 JST）: 3つとも完了**（下の「追加のお願いの結果」）。E1 は作業ブランチに push、PR を作ってオーナーのマージ待ち。
 - 作業ブランチ: `claude/project-thread-np18zb`（PR #4 のマージ後に main から作り直し）。
 - 付録A（Phase 3）は実装しない。オーナーが「Phase 3aを開始」と言うまで、送信・署名・秘密鍵のコードは書かない。
 
@@ -136,6 +135,30 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
      「調べる」を押しても自動では監視を始めない（アドレスと報酬の仕組みを確かめてから会場ファイルを作る）。毎週月曜 9:00 JST。どれも config.yaml の `discovery` で変えられる。
 2. up. の週のボーナス約 $4.1M は、預かり額 約 $7.7M に比べて大きすぎる。数字の出どころ（何の合計か、期間、UP の値段の換算）を確かめて報告する。
 3. Alandale のプールごとの配布量をチェーンから読めるかどうかだけ、先に調べる。
+
+## 追加のお願いの結果（2026-09-30 JST）
+- **E1 実装**（SPEC 5.2.2章）: `backend/farm_radar/discovery.py`（集める・保存・画面用のまとめ・判断の記録）、`external/defillama.py`（会場一覧・利回り・トークン価格）、
+  `external/geckoterminal.py` に `dexes()`・`dex_pools()`。表 `discovery_runs`・`discovery_venues`・`discovery_pools`・`discovery_decisions`（SCHEMA_VERSION 11）。
+  API: `GET /api/discovery`、`POST /api/discovery/refresh`（裏で動かす。30分に1回まで）、`POST /api/discovery/decision`（study / hold / skip / null）。
+  スケジューラー: 毎週月曜 9:00 JST（`discovery` の weekday・time_jst）。前回から7日以上たっていたら起動の5分後にも1回。新しい候補が出た週は alerts に kind=discovery を1件。
+  いま見ている会場は venues/up-robinhood.yaml の `listings`（DefiLlama の up-v3・up-v2、GeckoTerminal の up-v3）で除く。
+  画面: 「会場」タブの下に「新しい会場の候補（週1回）」「Robinhood Chain の新しい DEX」「新しくボーナスが出始めたプール」。
+  - 本物のデータで試した結果（2026-09-30 00:58 JST）: 候補26件（5チェーン）、GeckoTerminal の Robinhood の DEX 45件、新しくボーナスが出始めたプール10件。1回 約5秒。
+  - Claude の決めたこと: 週のボーナスの目安は、利回りの中央値（預かり額の重み）× ボーナスの出ているプールの預かり額 ÷ 52。
+    単純な合計だと、DefiLlama の外れ値のプール（例: Blackhole の年 386,141%）で何十倍にもなるため。チェーンの値との比較: Nest 目安 $19万/週（チェーン $25万）、
+    Pharaoh 目安 $30万（チェーン $50万）、Alandale 目安 $1.2万（チェーン 約1,010万 LUTE ≈ $4.4万）。あくまで並べるための目安。
+- **up. の週のボーナス（調査）**: /mnt/project-files/farm-radar/research/up-weekly-bonus-2026-09-29.md
+  - 約 $4.1M は「来週（10/1〜）の名目の発行量 13,842,339 UP（Minter.weekly()）× UP $0.2969」。今週 LP に実際に配られたのは **1,308,540 UP（名目の約9.7%）**。残りは焼却。
+  - ドルで週 約 $39万〜$56万（UP の値段しだい）＝ TVL 約 $780万の週 約5〜7%。$4.1M は約10倍の過大評価だった。
+  - **Farm Radar の計算は影響なし**（ゲージごとの実際の配布レートを読んでいる）。Claude が確認: Minter.weekly() = 13,842,338.7 UP・epochCount 11、
+    記録の CL ゲージ87個の合計 = 1,144,884 UP/週（残り約16.4万 UP は v2 のゲージ3つ。Farm Radar は CL だけを見る）。
+  - 新しく分かったこと: ゲージごとの配る割合（上限）は、今はチームの共同管理ウォレット（Safe、2-of-4）が毎週エポックの切り替えの約1時間前に手で決めている。
+    venues/up-robinhood.yaml の警告 C4 の説明（非公開のコントローラーが決める）と違う。C4 の説明の直しはオーナーに報告してから。
+- **Alandale（調査）**: /mnt/project-files/farm-radar/research/alandale-onchain-2026-09-29.md
+  - **プールごとの週の配布量はチェーンから読める**: GaugeRewarder `0x8A76f49e091F21C896122B4879541930322b799D` の `rewardPerGaugePerEpoch(エポック, ゲージ)`。
+    エポックは Minter の `active_period()`、ゲージは Voter の `poolToGauge(プール)`。Claude が確認: WETH-USDG = 696,347.52 LUTE（2026-09-24 のエポック）。
+  - 注意: up. と同じ読み方（ゲージの rewardRate）では0になる。LP 一人ひとりへの分け方（範囲の中のお金 × 時間）は運営のサーバーで計算し、署名つきで請求する方式（ここは信じるしかない）。
+    運営の Safe（3-of-5）が手でボーナスを足すことがある（9/18 に SPY-USDG へ 150,000 LUTE）。Minter とゲージのソースは Sourcify に未登録。
 
 ## まとめての依頼の実装メモ（2026-09-29）
 - F: `config.yaml` の `evaluation`（days・min_coverage_pct・day_gap_pct・day_gap_capital_pct・pass_days_pct）。`execution/evaluation.py` の summary に
