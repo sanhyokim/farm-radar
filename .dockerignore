@@ -5,3 +5,6 @@ data/
 **/__pycache__
 **/build
 .git
+**/node_modules
+frontend/dist
+**/*.tsbuildinfo
