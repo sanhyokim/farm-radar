@@ -17,7 +17,7 @@ from ..logging_setup import redact
 log = logging.getLogger(__name__)
 
 SIGNAL_MARK = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
-KIND_MARK = {"signal_green": "🟢", "signal_drop": "🔻", "reward_rate_drop": "⚠️", "error": "🛠"}
+KIND_MARK = {"signal_green": "🟢", "signal_drop": "🔻", "reward_rate_drop": "⚠️", "error": "🛠", "discovery": "🔎"}
 MAX_PER_MESSAGE = 10     # 一度にたくさんあるときは1通にまとめる
 
 

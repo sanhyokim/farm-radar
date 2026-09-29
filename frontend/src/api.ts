@@ -243,3 +243,33 @@ export interface Hedges {
   venues: { hedge_id: string; name: string; address: string | null; markets: number; fees_at: string | null;
     max_taker_pct: number | null; need_usd: number; status: HedgeStatus; real: HedgeStatus | null }[];
 }
+
+/** 候補の会場の一覧（週1回。SPEC 5.2.2章。2026-09-29 オーナー依頼 E1） */
+export type DiscoveryDecision = "study" | "hold" | "skip";
+export interface HedgeMatch { ok: boolean; stable: boolean; tokens: string[]; venues: string[] }
+export interface DiscoveryPool {
+  pool: string; symbol: string; meta?: string | null; tvl_usd: number; apy_reward: number | null; apy_base: number | null;
+  days: number | null; outlier?: boolean; hedge: HedgeMatch;
+  project?: string; venue_name?: string; chain?: string;
+  reward_token_info?: { symbol: string | null; change_7d_pct: number | null }[];
+}
+export interface DiscoveryVenue {
+  key: string; source: "defillama" | "geckoterminal"; name: string; chain: string; url?: string | null;
+  tvl_usd?: number; change_7d_pct?: number | null; multi_chain?: boolean; listed_at?: string | null; age_days?: number | null;
+  audit_links?: string[]; reward_apr_median?: number | null; reward_pools_tvl_usd?: number | null;
+  weekly_reward_usd?: number | null; weekly_ratio_pct?: number | null; reward_pools_n?: number;
+  top_pools?: DiscoveryPool[]; hedge_pools?: string[];
+  reward_token_info?: { symbol: string | null; price: number | null; change_7d_pct: number | null }[];
+  reward_change_7d_pct?: number | null;
+  new?: boolean; first_seen?: string; decision: DiscoveryDecision | null; decided_at?: string | null; not_in_latest?: boolean;
+  // GeckoTerminal の新しい DEX
+  network?: string; dex_id?: string; watched?: boolean; tvl_top_usd?: number;
+  pools?: { name: string; tvl_usd: number | null; volume_24h_usd: number | null; created_at: string | null; hedge: HedgeMatch }[];
+}
+export interface Discovery {
+  schedule_ja: string; next_run: string; last_ok_at: string | null; refresh_block: string | null;
+  last_run: { started_at: string; finished_at: string | null; status: string; error: string | null; trigger: string } | null;
+  chains: string[]; criteria_ja: string;
+  venues: DiscoveryVenue[]; new_dexes: DiscoveryVenue[]; gt_dex_count: number; new_pools: DiscoveryPool[];
+  decided_elsewhere: DiscoveryVenue[];
+}

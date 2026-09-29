@@ -10,6 +10,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from . import discovery as discovery_mod
 from . import market_calendar, runtime
 from .collectors.snapshot import collect_venue, record_failed_run
 from .db import database as db
@@ -147,6 +148,16 @@ def main() -> None:
             log.exception("daily report failed")
             notifier.error("-", "毎朝のレポートの作成に失敗", f"{type(exc).__name__}: {exc}")
 
+    def discovery_job(trigger: str = "weekly") -> None:
+        """候補の会場の一覧（週1回。SPEC 5.2.2章）。読み取りだけ。"""
+        try:
+            r = discovery_mod.run_now(config, trigger)
+            if r and r["status"] == "error":
+                notifier.error("discovery", "候補の会場の一覧の読み取りに失敗", " / ".join(r["errors"]))
+        except Exception as exc:
+            log.exception("discovery failed")
+            notifier.error("discovery", "候補の会場の一覧の作成に失敗", f"{type(exc).__name__}: {exc}")
+
     minutes = config.snapshot_minutes
     # 60を割り切れる間隔なら毎時0分・15分…に揃える（欠けチェックの枠と一致させるため）
     trigger = (CronTrigger(minute=f"*/{minutes}", timezone="UTC") if 60 % minutes == 0
@@ -193,6 +204,19 @@ def main() -> None:
     if notifier.report_due():
         # 8時より後に起動した日（再起動など）は、起動の少し後に今日のレポートを作る
         sched.add_job(report_job, "date", run_date=datetime.now(UTC) + timedelta(minutes=10), id="daily_report_late")
+    # 候補の会場の一覧（週1回。E1）。止めていて前回から7日以上たっていたら、起動の5分後にも1回
+    ds = config.discovery
+    sched.add_job(discovery_job, CronTrigger(day_of_week=ds.weekday, hour=ds.hour_jst, minute=ds.minute_jst,
+                                             timezone="Asia/Tokyo"),
+                  id="discovery", max_instances=1, coalesce=True, misfire_grace_time=None)
+    conn = db.connect(config.database_path)
+    try:
+        due = discovery_mod.due_at_startup(conn, datetime.now(UTC))
+    finally:
+        conn.close()
+    if due:
+        sched.add_job(discovery_job, "date", run_date=datetime.now(UTC) + timedelta(minutes=5), args=["startup"],
+                      id="discovery_startup")
     # /status などのコマンドを待つ（オーナーの ID だけ受け付ける）
     threading.Thread(target=notifier.run_bot, args=(threading.Event(),), daemon=True, name="telegram-bot").start()
     snapshot_job()  # 起動直後にも1回実行して動作を確認する

@@ -11,6 +11,12 @@ website: https://up33.xyz/
 audited: null         # 未確認（DefiLlama に監査情報なし。検証済みソースにも監査の記載なし。2026-09-27 確認）
 launch_date: "2026-07-10"  # 主要コントラクトの作成日（UP トークン作成 block 6180888 = 2026-07-10 15:17 UTC）。取引開始日そのものは未確認
 
+# 外部の一覧サイトでのこの会場の名前（週1回の候補の一覧から、いま見ている会場を除くため。SPEC 5.2.2章）
+listings:
+  defillama: [up-v3, up-v2]          # https://api.llama.fi/protocols の slug（"up v3" / "up v2"、チェーン Robinhood Chain）
+  geckoterminal: [up-v3]             # https://api.geckoterminal.com/api/v2/networks/robinhood/dexes の id（"Up V3"。up-v2 は載っていない）
+  checked_at: "2026-09-29"
+
 chain:
   id: robinhood
   chain_id: 4663

@@ -254,3 +254,38 @@ CREATE TABLE IF NOT EXISTS daily_reports (
   body_ja TEXT NOT NULL,
   sent_at TEXT
 );
+
+-- 候補の会場の一覧（週1回。SPEC 5.2.2章。2026-09-29 オーナー依頼 E1）。読み取りだけで集めたもの
+CREATE TABLE IF NOT EXISTS discovery_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  trigger TEXT NOT NULL,              -- weekly（毎週） / startup（止めていた後） / button（今すぐ更新）
+  status TEXT NOT NULL,               -- running / ok / partial（一部の読み取りに失敗） / error
+  error TEXT,
+  n_venues INTEGER,
+  n_new INTEGER
+);
+-- 候補の会場。key は llama:<slug>@<チェーン> か gt:<ネットワーク>/<DEXのid>。data_json はその回の中身
+CREATE TABLE IF NOT EXISTS discovery_venues (
+  key TEXT PRIMARY KEY,
+  source TEXT NOT NULL,               -- defillama / geckoterminal
+  name TEXT NOT NULL,
+  chain TEXT NOT NULL,
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  first_run INTEGER NOT NULL,
+  run_id INTEGER NOT NULL,            -- 最後に見つかった回
+  data_json TEXT NOT NULL
+);
+-- 新しくボーナスが出始めたプール（DefiLlama。その回の分だけ）
+CREATE TABLE IF NOT EXISTS discovery_pools (
+  run_id INTEGER NOT NULL, pool TEXT NOT NULL, data_json TEXT NOT NULL,
+  PRIMARY KEY (run_id, pool)
+);
+-- オーナーの判断（画面のボタン）。一覧が週ごとに入れ替わっても残る
+CREATE TABLE IF NOT EXISTS discovery_decisions (
+  key TEXT PRIMARY KEY,
+  status TEXT NOT NULL,               -- study（調べる） / hold（保留） / skip（見送り）
+  decided_at TEXT NOT NULL
+);

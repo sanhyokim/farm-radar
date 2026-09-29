@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from collections import Counter
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -18,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response
 
+from . import discovery as discovery_mod
 from . import views
 from .collectors.completeness import check
 from .config import REPO_ROOT, contract_address, load_config, load_venue
@@ -487,6 +489,44 @@ def paper_evaluation_stop(req: ConfirmRequest) -> dict:
     with _open() as (config, conn):
         paper_evaluation_mod.stop(conn, _now())
         return {"message": "評価をやめました（ここまでの記録は残ります）。"}
+
+
+# --- 候補の会場の一覧（週1回。SPEC 5.2.2章。2026-09-29 オーナー依頼 E1。読み取りだけ） ----------------------
+
+class DecisionRequest(BaseModel):
+    key: str
+    status: str | None = None       # study（調べる） / hold（保留） / skip（見送り） / None（取り消し）
+
+
+@app.get("/api/discovery")
+def discovery_list() -> dict:
+    with _open() as (config, conn):
+        return discovery_mod.summary(conn, config, _now())
+
+
+@app.post("/api/discovery/refresh")
+def discovery_refresh() -> dict:
+    """「今すぐ更新」。集めるのは1〜2分かかるので、裏で動かしてすぐ返す。"""
+    with _open() as (config, conn):
+        why = discovery_mod.refresh_block_reason(conn, config.discovery, _now())
+    if why:
+        raise HTTPException(400, why)
+    threading.Thread(target=discovery_mod.run_now, args=(config, "button"), daemon=True, name="discovery").start()
+    return {"message": "集め始めました。1〜2分たったら、画面を読み直してください。"}
+
+
+@app.post("/api/discovery/decision")
+def discovery_decision(req: DecisionRequest) -> dict:
+    """オーナーの判断（調べる / 保留 / 見送り）を記録する。監視や練習は始めない。"""
+    with _open() as (config, conn):
+        try:
+            discovery_mod.decide(conn, req.key, req.status, _now())
+        except KeyError:
+            raise HTTPException(404, "この候補は見つかりません") from None
+        except ValueError:
+            raise HTTPException(400, "status は study / hold / skip のどれかにしてください") from None
+        label = discovery_mod.DECISIONS.get(req.status or "", "取り消し")
+        return {"message": f"「{label}」にしました。", "key": req.key, "status": req.status}
 
 
 @app.get("/api/faq")
