@@ -9,9 +9,9 @@
   判定には使わない（2026-09-29 オーナー指示。SPEC 3.2章 6.）
 - 報酬はレンジ内のステーク流動性に比例、ステークすると手数料は0、ステークしないと手数料の一部を取られる:
   up. で確認済み（venues/up-robinhood.yaml の mechanics）
-- ステークがなく、LPが手数料と報酬の両方を受け取る会場（fees_with_rewards。例: Alandale）では、
-  「ボーナスか手数料か」を選ばず、両方を足す（2026-09-30 M6 で追加。venues/alandale-robinhood.yaml の mechanics）。
-  式はそれぞれ up. と同じ（取り分 × レンジ内の時間の割合）。報酬トークンの値下がりは報酬の分だけに引く。
+- ステークがなく、LPが取引手数料を受け取れない会場（rewards_only。例: Alandale の CL。手数料は100%が
+  金庫→投票者へ行く）では、収入はボーナスだけ。「ボーナスか手数料か」は選ばない
+  （2026-09-30 M6 で追加。venues/alandale-robinhood.yaml の mechanics。式は up. のボーナスと同じ）。
 """
 
 from __future__ import annotations
@@ -64,9 +64,8 @@ class PoolInputs:
     sigma_pair: float               # 2つのトークンの比率の日次ボラ
     reward_trend_daily: float | None = None   # 報酬トークンの7日の変化を1日あたりに直したもの（-0.02 = 1日 -2%）
     slippage: float = 0.0           # 両替のときにプールの手数料に加えてかかる価格のずれ（割合。swap_price_impact で見積もる）
-    fees_with_rewards: bool = False # ステークがなく、手数料と報酬の両方を受け取る会場（Alandale）。
-                                    # このとき unstaked_fee は「LPの手数料から会場が取る割合」、
-                                    # liquidity_staked は「報酬を分け合うレンジ内の流動性」の意味になる
+    rewards_only: bool = False      # ステークがなく、LPは取引手数料を受け取れない会場（Alandale の CL）。
+                                    # このとき liquidity_staked は「報酬を分け合うレンジ内の流動性」の意味になる
 
 
 @dataclass(frozen=True)
@@ -76,7 +75,7 @@ class RangeResult:
     rebalances_per_day: float
     in_range_ratio: float
     in_range_ratio_hold: float      # 参考値（置きっぱなし）。判定には使わない
-    mode: str                       # "staked"（ステークしてボーナス）/ "unstaked"（ステークせず手数料）/ "both"（両方）
+    mode: str                       # "staked"（ステークしてボーナス）/ "unstaked"（ステークせず手数料）/ "rewards"（ボーナスだけ）
     income_staked: float
     income_unstaked: float | None
     income: float
@@ -221,13 +220,13 @@ def evaluate(inp: PoolInputs, params: ModelParams) -> Evaluation:
         share_staked = l_mine / (inp.liquidity_staked + l_mine) if l_mine > 0 else 0.0
         income_staked = inp.reward_usd_day * share_staked * irr
         income_unstaked = None
-        if inp.fees_usd_day is not None:
+        if inp.fees_usd_day is not None and not inp.rewards_only:
             share_all = l_mine / (inp.liquidity_total + l_mine) if l_mine > 0 else 0.0
             income_unstaked = inp.fees_usd_day * (1 - inp.unstaked_fee) * share_all * irr
         trend = inp.reward_trend_daily
-        if inp.fees_with_rewards:
-            # ステークがない会場: 報酬と手数料の両方を受け取る。値下がりは報酬の分だけに引く
-            mode, income = "both", income_staked + (income_unstaked or 0.0)
+        if inp.rewards_only:
+            # ステークがなく手数料もない会場: ボーナスだけ
+            mode, income = "rewards", income_staked
             haircut = income_staked * -trend if trend is not None and trend < 0 else 0.0
         elif income_unstaked is not None and income_unstaked > income_staked:
             mode, income, haircut = "unstaked", income_unstaked, 0.0
@@ -245,8 +244,8 @@ def evaluate(inp: PoolInputs, params: ModelParams) -> Evaluation:
         net = income - g - reb - hedge - haircut - dir_risk
         # 参考値: 報酬をすぐ売る前提。値下がりは売るまでの時間の分だけ引き、ステークするかどうかも選び直す
         haircut_sell = income_staked * sell_now_drop(inp.reward_trend_daily, params.reward_sell_hours)
-        if inp.fees_with_rewards:
-            mode_sell, income_sell = "both", income
+        if inp.rewards_only:
+            mode_sell, income_sell = "rewards", income_staked
         elif income_unstaked is not None and income_unstaked > income_staked - haircut_sell:
             mode_sell, income_sell, haircut_sell = "unstaked", income_unstaked, 0.0
         else:

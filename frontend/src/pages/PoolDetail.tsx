@@ -181,10 +181,10 @@ export default function PoolDetail() {
           <Row k={<Term k="TVL" />} v={bigUsd(s.tvl_usd)} />
           <Row k="24時間の取引量" v={bigUsd(inp.volume_24h_usd)} note={inp.volume_used_usd != null && inp.volume_used_usd !== inp.volume_24h_usd ? `計算は ${bigUsd(inp.volume_used_usd)} まで` : undefined} />
           <Row k="プールが1日に出すボーナス" v={bigUsd(inp.reward_usd_day)} />
-          <Row k="レンジ内の流動性（最適レンジ換算）" v={bigUsd(best?.pool_inrange_usd)} note={best?.staked_inrange_usd != null ? `ステーク分 ${bigUsd(best.staked_inrange_usd)}` : undefined} />
+          <Row k="レンジ内の流動性（最適レンジ換算）" v={bigUsd(best?.pool_inrange_usd)} note={best?.staked_inrange_usd != null && s.mode !== "rewards" ? `ステーク分 ${bigUsd(best.staked_inrange_usd)}` : undefined} />
           <Row k="自分の取り分（$550 を入れた場合）" v={ratioPct(best?.share_staked, 1)} />
           <Row k={<Term k="スリッページ">両替のずれ</Term>} v={inp.slippage == null ? "—" : ratioPct(inp.slippage, 2)} note={inp.slippage_source === "fallback" ? "初期値" : "流動性から計算"} />
-          <Row k="手数料率" v={inp.fee == null ? "—" : ratioPct(inp.fee, 2)} />
+          <Row k="手数料率" v={inp.fee == null ? "—" : ratioPct(inp.fee, 2)} note={s.mode === "rewards" ? "LP には入らない（投票者へ）" : undefined} />
           <Row k="ガス代（1回）" v={usd(inp.gas_usd_per_tx, 4)} />
           <Row k="ヘッジ先" v={s.has_perp ? "あり" : "なし"} />
         </dl>

@@ -56,7 +56,8 @@ export interface Home {
       calendar_covered: boolean };
     reward_tokens: { venue_id: string; symbol: string; price_usd: number | null; change_24h: number | null }[];
   };
-  collection: { venue_id: string; last_ok_at: string | null; stale: boolean; gaps_7d: { start_slot: string; end_slot: string }[] }[];
+  collection: { venue_id: string; name?: string; observe?: boolean; last_ok_at: string | null; stale: boolean;
+    gaps_7d: { start_slot: string; end_slot: string }[] }[];
 }
 
 export interface Point { ts: string; v: number | null }

@@ -458,8 +458,8 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             liquidity_total=l_total, liquidity_staked=l_staked,
             reward_usd_day=reward_usd_day, fees_usd_day=fees_day, sigma_pair=sig_pair,
             reward_trend_daily=reward_trend_daily, slippage=slip,
-            # ステークがなく、手数料と報酬の両方を受け取る会場（Alandale。会場ファイルの mechanics）
-            fees_with_rewards=bool(mechanic_value(ctx.venue, "lp_receives_fees_with_rewards", False)),
+            # ステークがなく、LPが取引手数料を受け取れない会場（Alandale の CL。会場ファイルの mechanics）
+            rewards_only=mechanic_value(ctx.venue, "lp_receives_swap_fees", True) is False,
         )
         ev = evaluate(inp, params)
     j: Judgement = judge(ev, sparams, warnings=pool_warns, tvl_usd=tvl, missing=missing, notes=notes)
@@ -577,7 +577,7 @@ def _sell_income(x) -> float:
     """参考値「すぐ売る前提」の収入（選んだ受け取り方の分）。"""
     if x.mode_sell_now == "unstaked":
         return x.income_unstaked
-    return x.income if x.mode_sell_now == "both" else x.income_staked
+    return x.income_staked
 
 
 def _slippage(s: ScoringSettings, params: ModelParams, price: float, l_total: int, t0: TokenSide, t1: TokenSide,

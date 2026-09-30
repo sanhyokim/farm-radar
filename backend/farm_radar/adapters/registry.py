@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..rpc.client import RpcClient
+from .alandale_robinhood import AlandaleRobinhoodAdapter
 from .base import VenueAdapter
 from .up_robinhood import UpRobinhoodAdapter
 
 ADAPTERS = {
     "up-robinhood": UpRobinhoodAdapter,
+    "alandale-robinhood": AlandaleRobinhoodAdapter,   # M6（観察だけ）
 }
 
 

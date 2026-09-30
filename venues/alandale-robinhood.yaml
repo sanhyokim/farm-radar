@@ -1,0 +1,274 @@
+# 会場定義: Alandale（Robinhood Chain）。M6 で追加した2つ目の会場（観察だけ）
+# ルール: アドレスや仕組みは推測で埋めない。確認できたものだけ値を入れ、出典URLと確認日を書く。
+#         確認できていないものは unverified: true のまま。UIに警告が出ます。
+# 調査の記録: /mnt/project-files/farm-radar/research/alandale-onchain-2026-09-29.md と alandale-m6-2026-09-30.md
+#   （読み取りだけ。トランザクションの送信・署名はしていない）
+
+id: alandale-robinhood
+name: "Alandale"
+type: ve33            # ve(3,3)型（LUTE をロックした人がボーナスの配り先を投票で決める）
+website: https://alandale.xyz/
+audited: null         # 未確認（公式文書 reference/security.md に監査報告へのリンクは見つかっていない。2026-09-30）
+launch_date: "2026-08-04"  # AlgebraFactory の作成日（ブロック 27,916,187 = 2026-08-04 20:36 UTC）。最初のプールはブロック 30,318,351
+
+# 観察だけ（2026-09-30 オーナー条件1）。練習（仮想のお金）と2週間の評価には入れない
+practice: false
+practice_note_ja: >-
+  Alandale は観察だけの会場です。判定は見られますが、練習（仮想のお金）と2週間の評価には入れていません。
+  評価の対象は STRIKE と NVDA の2つのままです。
+
+# プールのカードに出す「切り替えで来週ボーナスがなくなることがある」理由（2026-09-30 オーナー追加）
+epoch_note_ja: >-
+  Alandale では、プールごとの来週のボーナスの量を、今週の投票（LUTE をロックした人の票）で決めます。
+  票が集まらなかったプールは、来週のボーナスが0になります（例: 2026-09-24〜の週は WETH-QUOTRON が0でした）。
+
+# 外部の一覧サイトでのこの会場の名前（週1回の候補の一覧から、いま見ている会場を除くため。SPEC 5.2.2章）
+listings:
+  defillama: [alandale-v3, alandale-v2]      # https://api.llama.fi/protocols の slug（"Alandale V3" / "Alandale V2"）
+  geckoterminal: [alandale-cl, alandale]     # https://api.geckoterminal.com/api/v2/networks/robinhood/dexes の id（CL / 従来型）
+  checked_at: "2026-09-30"
+
+chain:
+  id: robinhood
+  chain_id: 4663
+  native_token: ETH
+  public_rpc: https://rpc.mainnet.chain.robinhood.com
+  # Alchemy のURL。{API_KEY} は .env の ALCHEMY_API_KEY で置き換えます。
+  alchemy_rpc: https://robinhood-mainnet.g.alchemy.com/v2/{API_KEY}
+  explorer: https://robinhoodchain.blockscout.com
+  geckoterminal_network: robinhood
+  unverified: false
+  source_url: https://docs.robinhood.com/chain/connecting
+  checked_at: "2026-09-27"
+  note: "up. と同じチェーン。公開RPCは回数制限あり（up. の収集を優先する。config.yaml の observe_venues）。"
+
+# ---------------------------------------------------------------------------
+# 確認方法（2026-09-29〜30）
+#  1) アドレスの出どころ: 公式文書の一覧 https://alandale.gitbook.io/alandale/reference/contracts.md
+#     一覧にないもの（中身の実装など）は、チェーン上のつながり（Voter.gaugeRewarder() など）と
+#     EIP-1967 の実装スロットで確認した。
+#  2) ソースコード: Sourcify https://repo.sourcify.dev/4663/<アドレス>
+#     照合の種類（sourcify_match）は up-robinhood.yaml と同じ書き方:
+#       full = 完全一致 / partial = 部分一致（動くコードは一致） / none = 未登録
+#     Alandale の主なコントラクトは「プロキシ」（運営が中身を差し替えられる形）。プロキシ自体と中身（実装）を分けて書く。
+# ---------------------------------------------------------------------------
+verification:
+  checked_at: "2026-09-30"
+  checked_block: 76063389
+  address_source_url: https://alandale.gitbook.io/alandale/reference/contracts.md
+  source_code_db: https://repo.sourcify.dev/4663/
+  explorer_base: https://robinhoodchain.blockscout.com/address/
+  proxy_admins: ["0xd446d9663fef0ea71cda56f96307f9f391c11fe4", "0x95c0be4a86c384446764319c0d4fe63fad0d2f71"]  # どちらも Sourcify none
+
+contracts:
+  voter:               # ゲージの管理と投票、ボーナスの配分（プロキシ）。プール一覧は v3Pools から作る
+    address: "0x4cF1c47B95031cD2bb1d102021D8Ede60392971C"
+    sourcify_match: partial          # プロキシ部分（TransparentUpgradeableProxy）
+    sourcify_detail: {runtime: match}
+    implementation: "0x0D276d51ffeF7647B8F02f9e11a07C34B70B7d1b"   # VoterUpgradeableV2
+    implementation_sourcify_match: partial
+    implementation_source_url: https://repo.sourcify.dev/4663/0x0D276d51ffeF7647B8F02f9e11a07C34B70B7d1b
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x4cF1c47B95031cD2bb1d102021D8Ede60392971C
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0x4cF1c47B95031cD2bb1d102021D8Ede60392971C
+    checked_at: "2026-09-30"
+    evidence: >-
+      公式一覧にあり。GaugeRewarder.voter()・全ゲージの DISTRIBUTION() がこのアドレスを返す。
+      poolsCounts()=(64, 2, 62)（全体, 従来型, CL）。v3Pools(i) で CL だけを列挙。poolToGauge / isAlive
+  gauge_rewarder:      # CL プールの LUTE を預かり、運営の署名つきの請求で LP に払うコントラクト（プロキシ）
+    address: "0x8A76f49e091F21C896122B4879541930322b799D"
+    sourcify_match: partial          # プロキシ部分
+    sourcify_detail: {runtime: match}
+    implementation: "0x6D8ec9f879Fe837Ebb701d35859fD00fd58EfFcf"   # GaugeRewarder（公式 GitHub の同名ファイルと同じ）
+    implementation_sourcify_match: partial
+    implementation_source_url: https://repo.sourcify.dev/4663/0x6D8ec9f879Fe837Ebb701d35859fD00fd58EfFcf
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x8A76f49e091F21C896122B4879541930322b799D
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0x8A76f49e091F21C896122B4879541930322b799D
+    checked_at: "2026-09-30"
+    evidence: >-
+      公式一覧にあり。Voter.gaugeRewarder()、全ゲージの merklGaugeMiddleman() がこのアドレスを返す。
+      rewardPerGaugePerEpoch(uint256 epoch, address gauge) = そのエポックにそのゲージへ入った LUTE の合計（_notifyReward で += amount）。
+      NotifyReward(address indexed caller, address indexed gauge, uint256 indexed epoch, uint256 amount)
+  minter:              # 毎週の LUTE の発行（プロキシ）。active_period() が今のエポックの始まり
+    address: "0x782355E7771A9Aa0834de4Ae981DCF3b7aeC11e6"
+    sourcify_match: none             # プロキシ自体は未登録
+    sourcify_detail: {runtime: null}
+    implementation: "0x0206e7b9680571e1442dfea804339e46e5be722a"   # MinterUpgradeable
+    implementation_sourcify_match: partial
+    implementation_source_url: https://repo.sourcify.dev/4663/0x0206e7b9680571e1442dfea804339e46e5be722a
+    unverified: false
+    source_url: null
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0x782355E7771A9Aa0834de4Ae981DCF3b7aeC11e6
+    checked_at: "2026-09-30"
+    evidence: "公式一覧にあり。Voter.minter()・GaugeRewarder.minter() がこのアドレスを返す。WEEK()=604800、active_period()=1790208000"
+  reward_token:        # 報酬トークン（LUTE）
+    address: "0xD1e861CC5Eee7eA88649206b74504D78CCD7AEeA"
+    symbol: LUTE
+    decimals: 18
+    sourcify_match: partial
+    sourcify_detail: {runtime: match}
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0xD1e861CC5Eee7eA88649206b74504D78CCD7AEeA
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0xD1e861CC5Eee7eA88649206b74504D78CCD7AEeA
+    checked_at: "2026-09-30"
+    evidence: "公式一覧にあり（contracts/core/Lute.sol）。Voter.token()・GaugeRewarder.token()・全ゲージの rewardToken() が返す。decimals()=18"
+  factory_v3:          # CL（Algebra Integral 1.0）プールを作るコントラクト（プロキシ。標準の Algebra を少し改造したもの）
+    address: "0x16494A80E08Bcb9285D87b67149d7b01774D82F8"
+    sourcify_match: none             # プロキシも実装（0x8c3bbdabf7b610d54097420e485a5e0e7bd68684）も未登録
+    sourcify_detail: {runtime: null}
+    unverified: false
+    source_url: null
+    blockscout_url: https://robinhoodchain.blockscout.com/address/0x16494A80E08Bcb9285D87b67149d7b01774D82F8
+    checked_at: "2026-09-30"
+    deploy_block: 27916187
+    evidence: >-
+      公式一覧にあり。Voter.v3PoolFactory()・全プールの factory() が返す。POOL_INIT_CODE_HASH が Sourcify の AlgebraPool の作成コードと一致し、
+      62 プールすべてが CREATE2 の計算と一致（= 検証済みのプールのコードで作られている）
+  pool_deployer:       # 実際にプールを作るコントラクト
+    address: "0x2fadf533d9a098310007978730554f842547fc5f"
+    sourcify_match: partial
+    sourcify_detail: {runtime: match}
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x2fadf533d9a098310007978730554f842547fc5f
+    checked_at: "2026-09-30"
+    evidence: "AlgebraFactory.poolDeployer() と NonfungiblePositionManager.poolDeployer() が返す"
+  cl_pool_example:     # CL プールのコード（Algebra Integral 1.0）。代表として WETH-USDG
+    address: "0x7a35168956f129c032ec035cc47383a605a71df0"
+    sourcify_match: partial
+    sourcify_detail: {runtime: match, creation: match}
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0x7a35168956f129c032ec035cc47383a605a71df0
+    checked_at: "2026-09-30"
+    evidence: "contracts/AlgebraPool.sol に「Version: Algebra Integral 1.0」。62 プール中 18 が個別に登録（ほかも CREATE2 で同じコードと確認）"
+  cl_gauge_implementation:   # 各 CL ゲージの中身（受け取った LUTE をそのまま GaugeRewarder へ送る）
+    address: "0xaC7bf4DBbE969251C651f3197825Dad8157a067B"
+    sourcify_match: none
+    sourcify_detail: {runtime: null}
+    unverified: false     # アドレスは CL ゲージ工場の gaugeImplementation() で確認済み。ソースは未登録
+    source_url: null
+    checked_at: "2026-09-30"
+    evidence: >-
+      全62ゲージで isDistributeEmissionToMerkle()=true、merklGaugeMiddleman()=GaugeRewarder。
+      公式 GitHub の GaugeUpgradeable.sol と同じ動き（ゲージ→GaugeRewarder の送金と NotifyReward）をログで確認。rewardRate() は 0
+  position_manager:    # CL の流動性ポジション（NFT）を管理するコントラクト
+    address: "0xe62a5F67516dBDBA2Aa28b1512C8Ff44E42cB5c3"
+    sourcify_match: partial
+    sourcify_detail: {runtime: match}
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0xe62a5F67516dBDBA2Aa28b1512C8Ff44E42cB5c3
+    checked_at: "2026-09-30"
+    evidence: "公式一覧にあり。factory() = AlgebraFactory。調べた5プールの Mint 2,621 件のうち 2,618 件がここ経由"
+  rewarder_safe:       # 特定のプールに LUTE を手で足せる共同管理の財布（GaugeRewarder の REWARDER_ROLE）
+    address: "0xfb863c4d47c1b40e305976622d619e36628056b4"
+    sourcify_match: none
+    sourcify_detail: {runtime: null}
+    unverified: false     # アドレスは GaugeRewarder.getRoleMember(REWARDER_ROLE) で確認済み
+    source_url: null
+    checked_at: "2026-09-29"
+    evidence: "Safe（5人中3人の署名で動く）。2026-09-18 14:34 UTC に SPY-USDG のゲージへ 150,000 LUTE（tx 0xa993177a8d87f30b1b0c8753d829c78670fb663156d5e3f5c36cceba2d584b33）"
+  multicall3:          # 読み取りをまとめるための汎用コントラクト（up. と同じ）
+    address: "0xcA11bde05977b3631167028862bE2a173976CA11"
+    sourcify_match: full
+    sourcify_detail: {runtime: exact_match, creation: null}
+    unverified: false
+    source_url: https://repo.sourcify.dev/4663/0xcA11bde05977b3631167028862bE2a173976CA11
+    checked_at: "2026-09-27"
+    evidence: "up-robinhood.yaml で確認済み。2026-09-30 の Alandale の調査でも aggregate3 で読み取りできた"
+
+# ---------------------------------------------------------------------------
+# 報酬と手数料の仕組み（検証済みソース・公式文書・チェーン上の値で確認）
+# ---------------------------------------------------------------------------
+mechanics:
+  epoch:                          # ボーナス配分の切り替え周期
+    length_seconds: 604800        # 7日
+    flip_time_utc: "木曜 00:00 UTC（日本時間 木曜 09:00）"
+    unverified: false
+    evidence_contract: "MinterUpgradeable（0x0206…722a, partial） / VoterUpgradeableV2（0x0D27…7d1b, partial）"
+    evidence_function: >-
+      Minter: WEEK = 86400 * 7（"reset every Thursday 00:00 UTC"）、update_period() で active_period = (block.timestamp / WEEK) * WEEK。
+      Voter: _WEEK = 604800。active_period が新しい週に変わるのは、誰かが update_period()（Voter.distributeAll() の中）を呼んだとき
+      （2026-09-24 の週は 00:01:07 UTC）。それまでは新しい週の量は 0 と読める
+    source_url: https://repo.sourcify.dev/4663/0x0206e7b9680571e1442dfea804339e46e5be722a
+    checked_at: "2026-09-30"
+  lp_receives_swap_fees:          # CL の LP が取引手数料を受け取るか
+    value: false                  # 受け取らない。手数料は100%が金庫へ（98.5% 投票者 / 1.5% 別のアドレス）
+    unverified: false
+    evidence_contract: "AlgebraPool（0x7a35…1df0, partial）"
+    evidence_function: >-
+      SwapCalculation.sol: delta = feeAmount × communityFee / 1000 を LP の手数料の伸び（totalFeeGrowth）から先に引く。
+      全62プールで globalState().communityFee = 1000（= 100%）、AlgebraFactory.defaultCommunityFee() = 1000。
+      WETH-USDG で約14分あけて読み、getCommunityFeePending() は増え、totalFeeGrowth0/1Token() は変わらないことを確認。
+      金庫から先は getDistributionConfig = (9850, [0x6cbd…6e76], [150])（98.5% ゲージ→投票者、1.5% EOA）
+    source_url: https://repo.sourcify.dev/4663/0x7a35168956f129c032ec035cc47383a605a71df0
+    checked_at: "2026-09-30"
+  staking_required:               # ボーナスを受け取るのにゲージへのステークが要るか
+    value: false                  # 要らない。レンジ内に置くだけ
+    unverified: false
+    evidence_function: >-
+      公式文書 providing-liquidity/cl-emissions.md "There is no stake your NFT into a gauge step" / "You don't stake anything"。
+      全62ゲージの totalSupply() = 0
+    source_url: https://alandale.gitbook.io/alandale/providing-liquidity/cl-emissions.md
+    checked_at: "2026-09-30"
+  pool_weekly_reward_onchain:     # プールごとの週のボーナスの量がチェーンで読めるか
+    value: true
+    unverified: false
+    evidence_contract: "GaugeRewarder（0x6D8e…fcf, partial）"
+    evidence_function: >-
+      rewardPerGaugePerEpoch(Minter.active_period(), Voter.poolToGauge(pool))。全62ゲージの合計が rewardPerEpoch(1790208000) = 10,104,401.88 LUTE と一致。
+      Voter の票からの計算（weightsPerEpoch × index の差）と、手で足した分を除いて一致（2026-09-29 の調査）
+    source_url: https://repo.sourcify.dev/4663/0x6D8ec9f879Fe837Ebb701d35859fD00fd58EfFcf
+    checked_at: "2026-09-30"
+  manual_top_ups:                 # 運営が特定のプールに手でボーナスを足せるか
+    value: true
+    unverified: false
+    evidence_function: >-
+      GaugeRewarder の REWARDER_ROLE（getRoleMember: 0xfaa6…91f3、0xfb86…6b4 の Safe）が notifyReward で足せる。
+      NotifyReward の caller がゲージ自身なら「いつもの分」、それ以外なら「手で足した分」として分ける。
+      例: 2026-09-18 に SPY-USDG へ 150,000 LUTE（caller = Safe 0xfb86…6b4）。2026-09-24 の週は手で足した分なし（58件すべてゲージから）
+    source_url: https://repo.sourcify.dev/4663/0x6D8ec9f879Fe837Ebb701d35859fD00fd58EfFcf
+    checked_at: "2026-09-30"
+  reward_split_offchain:          # プールの週の量を LP 一人ひとりにどう分けるか
+    value: "レンジ内の流動性 × 時間の割合で分ける（公式文書）。計算は運営のサーバー。Farm Radar は週の量を7日に均等に配る前提で計算する"
+    unverified: true              # チェーンでは確かめられない（運営のサーバーの署名を信じるしかない）
+    owner_acknowledged: "2026-09-30 オーナー条件3（分け方が運営のサーバーで決まる前提で、警告を付けて最高🟡で観察する）"
+    unknowns_ja: >-
+      7日に均等に配るか / 誰もレンジ内にいない時間の分がどうなるか / 公式の NFT 以外（自動運用の金庫）のポジションを数えるか /
+      最低の保有時間 / 流動性の測り方と時間の刻み / 手で足した分をどの期間で配るか。いずれも文書にもコードにもない
+    evidence_function: >-
+      公式文書 cl-emissions.md "computes each LP's share of its weekly emission from how much in-range liquidity you provided, and for how long" /
+      "Daily, the engine signs each LP's cumulative lifetime total" / "Out-of-range liquidity earns nothing"。
+      GaugeRewarder._claim は signer()（0x9fd7…b115）の EIP-712 署名を確かめて払うだけ
+    source_url: https://alandale.gitbook.io/alandale/providing-liquidity/cl-emissions.md
+    checked_at: "2026-09-30"
+
+# ---------------------------------------------------------------------------
+# 会場の警告（SPEC 2章の条件ごと）。API（/api/venues）と画面に表示する。
+# level: major（重大。判定は🔴） / minor（軽微。判定は🟡まで）
+# ---------------------------------------------------------------------------
+warnings:
+  - code: C4
+    key: offchain_reward_split
+    level: minor          # 2026-09-30 オーナー条件3（up. の C4 と同じく軽微。判定は最高🟡）
+    title_ja: "LPへの分け方は運営のサーバーが決める"
+    message_ja: >-
+      プールごとの週のボーナスの量はチェーンで読めますが、それを LP 一人ひとりにどう分けるかは、運営のサーバーが計算し、
+      署名つきの請求で払います。チェーンでは確かめられません。7日に均等に配るかどうかも公開されていないので、
+      Farm Radar は「7日に均等」と仮定して計算しています。主なコントラクトの多くは、運営が中身を差し替えられる作り（プロキシ）です。
+    since: "2026-09-30"
+  - code: C4
+    key: manual_top_ups
+    level: minor          # 2026-09-30 オーナー条件3
+    title_ja: "運営が手でボーナスを足すことがある"
+    message_ja: >-
+      運営の共同管理の財布（5人中3人の署名で動く）が、特定のプールに手でボーナスを足すことがあります
+      （例: 2026-09-18 に SPY-USDG へ 150,000 LUTE）。続く保証がないので、手で足された分は判定に入れず、プール詳細で分けて表示します。
+    since: "2026-09-30"
+
+# ---------------------------------------------------------------------------
+# 収集の設定（このアダプター用）
+# ---------------------------------------------------------------------------
+collection:
+  snapshot_scope: gauged     # ゲージのある CL プールだけ（今は62個すべてにゲージがある）
+  pool_types: [cl]           # 従来型（v2）の2プールは対象外
+  log_chunk_blocks: 2000000  # NotifyReward を読むときの1回あたりのブロック幅（公開RPCは アドレス1つ＋トピック1つ なら 5,000,000 まで通った）

@@ -8,7 +8,9 @@ export default function Home() {
   const { data, error } = useApi<HomeData>("/api/home");
   if (!data) return <Loading error={error} />;
   const mode = data.mode === "paper" ? "ペーパー" : "観察";
-  const stale = data.collection.some((c) => c.stale);
+  // 練習と評価に使う会場（up.）だけで「古い」を判断する。観察だけの会場（Alandale）は休むことがあるので別に書く（M6）
+  const stale = data.collection.some((c) => c.stale && !c.observe);
+  const resting = data.collection.filter((c) => c.stale && c.observe);
   const gaps = data.collection.flatMap((c) => c.gaps_7d);
   return (
     <div className="space-y-3">
@@ -61,7 +63,6 @@ export default function Home() {
               cls={t.change_24h == null ? "" : t.change_24h < 0 ? "text-rose-400" : "text-emerald-400"} />
           ))}
         </dl>
-        <Note>祝日の休場はまだ考えていません（M5までに対応予定）。</Note>
       </Card>
 
       <Card title="データ集め">
@@ -70,6 +71,11 @@ export default function Home() {
         ) : (
           <p className="text-sm text-emerald-300">✓ 15分ごとに集めています。</p>
         )}
+        {resting.map((c) => (
+          <p key={c.venue_id} className="mt-1 text-xs text-slate-400">
+            {c.name}（観察だけ）は、up. の収集を優先して読み取りを休んでいます。最後に集めた時刻 {jst(c.last_ok_at)}
+          </p>
+        ))}
         {gaps.length > 0 && (
           <div className="mt-2 text-xs text-slate-400">
             <Term k="欠損">直近7日の欠損</Term>:

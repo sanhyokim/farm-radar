@@ -331,7 +331,10 @@ def home() -> dict:
                 (venue_id,)).fetchone()
             age = (now - datetime.fromisoformat(last_ok[0])).total_seconds() / 60 if last_ok and last_ok[0] else None
             gaps = [dict(g) for g in db.list_gaps(conn, venue_id, now - timedelta(days=7))]
-            health_rows.append({"venue_id": venue_id, "last_ok_at": last_ok[0] if last_ok else None,
+            health_rows.append({"venue_id": venue_id, "name": v.get("name") or venue_id,
+                                # 観察だけの会場（Alandale）は、up. を優先して読み取りを休むことがある（M6）
+                                "observe": not practice_allowed(v),
+                                "last_ok_at": last_ok[0] if last_ok else None,
                                 "stale": age is None or age > config.stale_after_minutes, "gaps_7d": gaps})
         return {
             "mode": config.mode,
