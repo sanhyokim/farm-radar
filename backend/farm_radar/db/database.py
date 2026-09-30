@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -29,7 +29,9 @@ _ADDED_COLUMNS = {
               "token1_decimals": "INTEGER"},
     "pool_snapshots": {"block_time": "TEXT", "epoch_start": "TEXT", "period_finish": "TEXT",
                        "reward_rate_effective_raw": "TEXT", "gauge_alive": "INTEGER",
-                       "unstaked_fee": "INTEGER", "epoch_just_flipped": "INTEGER"},
+                       "unstaked_fee": "INTEGER", "epoch_just_flipped": "INTEGER",
+                       # M6: 今のエポックのボーナスの合計と、そのうち運営が手で足した分（最小単位。Alandale）
+                       "reward_epoch_total_raw": "TEXT", "reward_manual_raw": "TEXT"},
     "scores": {"venue_id": "TEXT", "block_number": "INTEGER", "direction_risk": "REAL",
                "net_daily_pct_lp": "REAL", "mode": "TEXT", "in_range_ratio": "REAL",
                "in_range_ratio_hold": "REAL", "sigma_pair": "REAL", "sigma_token0": "REAL",
@@ -230,8 +232,8 @@ def insert_score(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
 
 def latest_scores(conn: sqlite3.Connection, venue_id: str | None = None) -> list[sqlite3.Row]:
     """プールごとの最新のスコア。"""
-    q = """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address FROM scores s
-           JOIN pools p ON p.id = s.pool_id
+    q = """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address, v.name AS venue_name FROM scores s
+           JOIN pools p ON p.id = s.pool_id LEFT JOIN venues v ON v.id = p.venue_id
            WHERE s.ts = (SELECT MAX(ts) FROM scores s2 WHERE s2.pool_id = s.pool_id)"""
     args: tuple = ()
     if venue_id:

@@ -32,6 +32,7 @@ function VenueCard({ v }: { v: Venue }) {
       <div className="mb-3 flex flex-wrap gap-1.5">
         {v.audited === true ? <Badge tone="emerald">監査あり</Badge> : v.audited === false ? <Badge tone="rose">監査なし</Badge> : <Badge tone="amber">監査: 未確認</Badge>}
         {v.age_days != null && <Badge>稼働 {v.age_days}日</Badge>}
+        {v.practice === false && <Badge tone="sky">観察だけ（練習・評価なし）</Badge>}
         {v.unverified_contracts.length > 0 && <Badge tone="rose">未確認のコントラクト {v.unverified_contracts.length}件</Badge>}
       </div>
 

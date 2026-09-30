@@ -11,12 +11,32 @@ export interface Breakdown {
 }
 
 export interface PoolRow {
-  pool_id: string; pair: string; venue_id: string; signal: Signal;
+  pool_id: string; pair: string; venue_id: string; venue_name?: string | null; signal: Signal;
   net_daily_pct: number | null; net_daily_pct_lp: number | null; best_r: number | null;
   reason_ja: string; is_stock_pair?: number; has_perp: number | null; tvl_usd: number | null;
   warnings?: Warn[]; mode?: string | null;
   hedge_info?: HedgeInfo; range_prices?: RangePrices | null;
+  /** 次の切り替え（木曜 9:00 JST）と「来週ボーナスがなくなることがある」注意（2026-09-30 オーナー追加） */
+  epoch_flip?: EpochFlip | null;
+  /** ボーナスの見込みが仮定つきの推定である会場の一言（Alandale:「推定（1週間を7日で均等に配ると仮定）」。2026-09-30 オーナー追加） */
+  reward_estimate_note?: string | null;
+  /** 報酬トークンそのものを預けるプールの警告文（2026-09-30 オーナー追加） */
+  reward_held?: string | null;
 }
+
+/** 運営が手で足したボーナス（プール全体・今のエポック）。判定には入れない（2026-09-30 オーナー条件4） */
+export interface ManualBonus {
+  symbol: string | null;
+  amount: number;
+  usd: number | null;
+  epoch_total: number | null;
+  regular: number | null;
+  usd_day_spread: number | null;
+  your_extra_usd_day: number | null;
+  epoch_start: string | null;
+}
+
+export interface EpochFlip { at: string; note_ja: string; why_ja?: string | null }
 
 /** 保険あり/なしと、使うヘッジ先の名前（2026-09-29 オーナー追加） */
 export interface HedgeInfo { has: boolean; venues: string[]; tokens: Record<string, string | null>; label: string }
@@ -40,13 +60,15 @@ export interface Home {
       calendar_covered: boolean };
     reward_tokens: { venue_id: string; symbol: string; price_usd: number | null; change_24h: number | null }[];
   };
-  collection: { venue_id: string; last_ok_at: string | null; stale: boolean; gaps_7d: { start_slot: string; end_slot: string }[] }[];
+  collection: { venue_id: string; name?: string; observe?: boolean; last_ok_at: string | null; stale: boolean;
+    gaps_7d: { start_slot: string; end_slot: string }[] }[];
 }
 
 export interface Point { ts: string; v: number | null }
 
 export interface Venue {
   venue_id: string; name: string; audited: boolean | null; launch_date: string | null; age_days: number | null;
+  practice?: boolean;   // false なら観察だけ（練習と評価に入れない。M6）
   warnings: { code: string; level: string; title_ja?: string; key?: string }[];
   unverified_contracts: string[];
   reward_token: { symbol: string | null; price_usd: number | null; change_24h: number | null; change_7d: number | null; sparkline: Point[] };
@@ -79,8 +101,9 @@ export interface PoolDetail {
   score: PoolRow & {
     ts: string; in_range_ratio: number | null; in_range_ratio_hold: number | null; sigma_pair: number | null;
     vol_source: string | null; is_stock_pair: number; address: string;
-    details: { inputs?: Record<string, any>; ranges?: RangeRow[] };
+    details: { inputs?: Record<string, any> & { manual_bonus?: ManualBonus | null }; ranges?: RangeRow[] };
   };
+  venue?: { id: string; name: string | null; practice: boolean; practice_note: string; reward_estimate_note?: string | null };
   price: { price: number; tick: number; ts: string } | null;
   capital: { total: number; lp: number; margin: number; reserve: number };
   daily: {

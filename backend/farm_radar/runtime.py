@@ -41,11 +41,14 @@ def build(config: Config | None = None) -> tuple[Config, list[VenueRuntime]]:
     config = config or load_config()
     conn = db.connect(config.database_path)
     runtimes: list[VenueRuntime] = []
+    # 同じチェーンの会場は、RPC の窓口を1つだけ使う（呼び出しの間隔と、読み取りの記憶を共有する。M6）
+    rpcs: dict[tuple, RpcClient] = {}
     for venue_id in config.venues:
         venue = load_venue(venue_id, config.root)
         db.upsert_venue(conn, venue)
         endpoints = build_endpoints(venue["chain"], config.rpc, os.environ)
-        rpc = RpcClient(endpoints, config.rpc)
+        key = (venue["chain"].get("chain_id"), tuple(e.url for e in endpoints))
+        rpc = rpcs.get(key) or rpcs.setdefault(key, RpcClient(endpoints, config.rpc))
         log.info("venue ready", extra={"data": {"venue": venue_id, "rpc_order": [e.name for e in endpoints]}})
         runtimes.append(VenueRuntime(venue, rpc, build_adapter(venue, rpc)))
     conn.commit()

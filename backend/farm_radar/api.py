@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
@@ -22,7 +23,9 @@ from fastapi.responses import FileResponse, Response
 from . import discovery as discovery_mod
 from . import views
 from .collectors.completeness import check
-from .config import REPO_ROOT, contract_address, load_config, load_venue
+from . import ratelimit
+from .collectors import priority
+from .config import REPO_ROOT, ConfigError, contract_address, load_config, load_venue, practice_allowed
 from .db import database as db
 from .execution import views as paper_views
 from .execution.paper import PaperError, PaperExecutor
@@ -38,6 +41,15 @@ from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
 from .tokens import load_tokens
 
 app = FastAPI(title="Farm Radar")
+
+
+@app.on_event("startup")
+def _rate_limit_sink() -> None:
+    # 画面の「今すぐ更新」（候補の一覧）などでこのプロセスが 429 を受けても記録する（SPEC 5.3章。M6）
+    try:
+        ratelimit.set_sink(load_config().database_path)
+    except Exception:
+        pass
 
 
 @contextmanager
@@ -74,15 +86,20 @@ def health() -> dict:
                 stale = age > timedelta(minutes=config.stale_after_minutes)
             r = check(conn, venue_id, minutes=config.snapshot_minutes)
             gaps = [dict(g) for g in db.list_gaps(conn, venue_id, datetime.now(UTC) - timedelta(days=7))]
+            deferred = [x for x in r.not_ok if x[1] == priority.DEFERRED]
             venues.append({
                 "venue_id": venue_id,
                 "last_run": dict(last) if last else None,
                 "last_ok_at": last_ok["finished_at"] if last_ok else None,
                 "stale": stale,
-                "last_24h": {"expected": r.expected, "ok": r.ok, "missing": len(r.missing), "not_ok": len(r.not_ok)},
+                "last_24h": {"expected": r.expected, "ok": r.ok, "missing": len(r.missing), "not_ok": len(r.not_ok),
+                             # 観察だけの会場を、up. と評価を優先して休んだ回（M6。欠損とは別）
+                             "deferred": len(deferred)},
                 "gaps_7d": gaps,   # 収集が止まっていた期間（M3の画面で「欠損」として表示する）
             })
-        return {"mode": config.mode, "venues": venues}
+        # 直近24時間に回数制限（429）を受けた回数（サイトごと。SPEC 5.3章。2026-09-30 オーナー条件）
+        return {"mode": config.mode, "venues": venues,
+                "rate_limits_24h": ratelimit.counts_24h(conn, datetime.now(UTC))}
     finally:
         conn.close()
 
@@ -111,6 +128,7 @@ def venues() -> dict:
         extra = _venue_extra(conn, config, v)
         out.append({
             "venue_id": venue_id, "name": v.get("name"), "audited": v.get("audited"),
+            "practice": practice_allowed(v),   # false なら観察だけ（練習と評価に入れない。M6）
             "launch_date": v.get("launch_date"), "warnings": v.get("warnings") or [],
             "contracts": contracts, "mechanics": mechanics,
             "unverified_contracts": [n for n, c in contracts.items() if c["unverified"]],
@@ -225,6 +243,25 @@ def scores(venue: str | None = None) -> dict:
 
 # --- 画面（M3）用 -------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=16)
+def _venue_file(venue_id: str, mtime: float) -> dict | None:
+    try:
+        return load_venue(venue_id, REPO_ROOT)
+    except (OSError, ConfigError):
+        return None
+
+
+def _venue_meta(venue_id: str | None) -> dict | None:
+    """会場ファイル（ファイルが変わったら読み直す）。プールのカードに会場ごとの情報を添えるのに使う。"""
+    if not venue_id:
+        return None
+    try:
+        mtime = (REPO_ROOT / "venues" / f"{venue_id}.yaml").stat().st_mtime
+    except OSError:
+        return None
+    return _venue_file(venue_id, mtime)
+
+
 def _score_dict(r) -> dict:
     d = dict(r)
     d["warnings"] = json.loads(d.pop("warnings_json") or "[]")
@@ -233,6 +270,13 @@ def _score_dict(r) -> dict:
     # カードの表示（2026-09-29 オーナー追加）: 保険あり/なしとヘッジ先の名前、最適レンジの値段の範囲
     d["hedge_info"] = views.hedge_label(d["details"], d.get("has_perp"))
     d["range_prices"] = views.range_prices(d["details"], d.get("best_r"), d.get("token0_symbol"), d.get("token1_symbol"))
+    # 次の切り替え（木曜 9:00 JST）と「来週ボーナスがなくなることがある」注意（2026-09-30 オーナー追加）
+    meta = _venue_meta(d.get("venue_id"))
+    d["epoch_flip"] = views.epoch_flip_info(meta, _now())
+    # ボーナスの見込みが仮定つきの推定である会場（Alandale:「1週間を7日で均等に配る」）の一言（2026-09-30 オーナー追加）
+    d["reward_estimate_note"] = (meta or {}).get("reward_estimate_note_ja")
+    # 報酬トークンそのものを預けるプールの警告（2026-09-30 オーナー追加。scoring/run.py の RWD）
+    d["reward_held"] = next((w["message_ja"] for w in d["warnings"] if w.get("code") == "RWD"), None)
     return d
 
 
@@ -271,8 +315,10 @@ def home() -> dict:
         counts = {"green": 0, "yellow": 0, "red": 0}
         for d in rows:
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
-        slim = ["pool_id", "pair", "venue_id", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
-                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices"]
+        # epoch_flip はホームのカードの「⏰ 木曜9:00に切り替え」の行に使う（M6 で入れ忘れていた。2026-09-30 オーナーに伝えて直した）
+        slim = ["pool_id", "pair", "venue_id", "venue_name", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
+                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices", "epoch_flip",
+                "reward_estimate_note", "reward_held"]
         greens = [{k: d.get(k) for k in slim} for d in rows if d["signal"] == "green"]
         # 🟢がないときの参考: 判定できたプールを純日利の高い順に3件
         near = [{k: d.get(k) for k in slim} for d in rows
@@ -292,7 +338,10 @@ def home() -> dict:
                 (venue_id,)).fetchone()
             age = (now - datetime.fromisoformat(last_ok[0])).total_seconds() / 60 if last_ok and last_ok[0] else None
             gaps = [dict(g) for g in db.list_gaps(conn, venue_id, now - timedelta(days=7))]
-            health_rows.append({"venue_id": venue_id, "last_ok_at": last_ok[0] if last_ok else None,
+            health_rows.append({"venue_id": venue_id, "name": v.get("name") or venue_id,
+                                # 観察だけの会場（Alandale）は、up. を優先して読み取りを休むことがある（M6）
+                                "observe": not practice_allowed(v),
+                                "last_ok_at": last_ok[0] if last_ok else None,
                                 "stale": age is None or age > config.stale_after_minutes, "gaps_7d": gaps})
         return {
             "mode": config.mode,
@@ -311,8 +360,9 @@ def pool(pool_id: str) -> dict:
     """プール詳細（SPEC 7.3章・7.6章・7.7章）。損益は1時間ごとのスコア（予測）から作る。"""
     with _open() as (config, conn):
         r = conn.execute(
-            """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address, p.is_stock_pair FROM scores s
-               JOIN pools p ON p.id = s.pool_id WHERE s.pool_id=? ORDER BY s.ts DESC LIMIT 1""", (pool_id,)
+            """SELECT s.*, p.token0_symbol, p.token1_symbol, p.address, p.is_stock_pair, v.name AS venue_name
+               FROM scores s JOIN pools p ON p.id = s.pool_id LEFT JOIN venues v ON v.id = p.venue_id
+               WHERE s.pool_id=? ORDER BY s.ts DESC LIMIT 1""", (pool_id,)
         ).fetchone()
         if r is None:
             raise HTTPException(404, "このプールの判定はまだありません")
@@ -329,8 +379,15 @@ def pool(pool_id: str) -> dict:
     c_lp = capital * s.allocation_lp
     for h in history:
         h["us_open"] = vol.us_market_open(int(datetime.fromisoformat(h["ts"]).timestamp()))
+    venue = _venue_or_none(d["venue_id"], config)
     return {
         "score": d,
+        # 観察だけの会場（practice: false。M6 の Alandale）では、練習のボタンの代わりに説明を出す
+        "venue": {"id": d["venue_id"], "name": (venue or {}).get("name") or d.get("venue_name"),
+                  "practice": practice_allowed(venue) if venue else False,
+                  "practice_note": ((venue or {}).get("practice_note_ja")
+                                    or "この会場は観察だけです。練習と2週間の評価には入れていません。"),
+                  "reward_estimate_note": (venue or {}).get("reward_estimate_note_ja")},
         "price": dict(snap) if snap else None,
         "capital": {"total": capital, "lp": c_lp, "margin": capital * s.allocation_hedge_margin,
                     "reserve": capital * s.allocation_reserve},
@@ -352,6 +409,13 @@ def pool(pool_id: str) -> dict:
                                      history, now),
         "history": history,
     }
+
+
+def _venue_or_none(venue_id: str, config) -> dict | None:
+    try:
+        return load_venue(venue_id, config.root)
+    except (OSError, ConfigError):
+        return None
 
 
 def _swap(d: dict, config) -> dict | None:

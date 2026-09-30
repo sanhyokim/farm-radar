@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from .. import ratelimit
+
 log = logging.getLogger(__name__)
 
 USER_AGENT = "farm-radar/0.1 (read-only)"
@@ -42,7 +44,7 @@ class JsonGetter:
         self._client = client or httpx.Client(timeout=timeout, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
         self._sleep = sleep
         self._clock = clock
-        self._last = -1e9
+        self._host = ratelimit.host_of(self.base_url)
 
     def get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """JSON を返すAPIを読む。"""
@@ -55,11 +57,10 @@ class JsonGetter:
     def _fetch(self, path: str, params: dict[str, Any] | None) -> httpx.Response:
         url = path if path.startswith("https://") else f"{self.base_url}/{path.lstrip('/')}"
         last_error = ""
+        host = ratelimit.host_of(url) if url.startswith("https://") else self._host
         for attempt in range(self.max_retries + 1):
-            wait = self.min_interval - (self._clock() - self._last)
-            if wait > 0:
-                self._sleep(wait)
-            self._last = self._clock()
+            # 同じサイトへの呼び出しは、ほかの読み手（別の会場・ジョブ）とも間隔を共有する（M6）
+            ratelimit.wait_turn(host, self.min_interval, self._sleep, self._clock)
             try:
                 resp = self._client.get(url, params=params)
             except httpx.HTTPError as exc:
@@ -68,6 +69,8 @@ class JsonGetter:
                 if resp.status_code == 200:
                     return resp
                 last_error = f"HTTP {resp.status_code}"
+                if resp.status_code == 429:
+                    ratelimit.record(host, "external")
                 if resp.status_code not in (429, 500, 502, 503, 504):
                     break
             if attempt < self.max_retries:

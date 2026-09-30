@@ -241,3 +241,45 @@ def test_unnatural_volume_counts_no_fee_income_and_is_warned():
     # しきい値（倍率）は設定で変えられる。超えていなければ取引量そのままで計算する
     rows = score_venue(conn, _ctx(WashGT(), volume_suspicious_tvl_multiple=30), now=NOW)
     assert all(json.loads(r["details_json"])["inputs"]["volume_used_usd"] == 250_000.0 for r in rows)
+
+
+def test_manual_bonus_is_shown_apart_and_not_judged():
+    # 2026-09-30 オーナー条件4: 運営が手で足したボーナスは、いつものボーナスと分けて見せ、判定には入れない
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    base = {r["pool_id"]: r for r in score_venue(conn, _ctx(), now=NOW)}
+    last = conn.execute("SELECT MAX(run_id) FROM pool_snapshots").fetchone()[0]
+    # WETH/USDG に、今週の合計 700,000 のうち 150,000 が手で足された（いつもの分のレートは変えない）
+    conn.execute("UPDATE pool_snapshots SET reward_epoch_total_raw=?, reward_manual_raw=? WHERE run_id=? AND pool_id=?",
+                 (str(700_000 * 10 ** 18), str(150_000 * 10 ** 18), last, "up-robinhood:p-weth"))
+    conn.commit()
+    rows = {r["pool_id"]: r for r in score_venue(conn, _ctx(), now=NOW + timedelta(minutes=1))}
+    weth = rows["up-robinhood:p-weth"]
+    # 判定の数字は変わらない
+    assert weth["net_daily_pct"] == pytest.approx(base["up-robinhood:p-weth"]["net_daily_pct"])
+    assert weth["signal"] == base["up-robinhood:p-weth"]["signal"]
+    m = json.loads(weth["details_json"])["inputs"]["manual_bonus"]
+    assert m["amount"] == pytest.approx(150_000) and m["regular"] == pytest.approx(550_000)
+    token_usd = json.loads(weth["details_json"])["inputs"]["reward_token_usd"]
+    assert m["usd"] == pytest.approx(150_000 * token_usd)
+    assert m["usd_day_spread"] == pytest.approx(m["usd"] / 7)
+    assert m["your_extra_usd_day"] > 0
+    assert "手で足した" in " ".join(json.loads(weth["details_json"])["inputs"]["notes"])
+    # 手で足した分がないプールは None
+    assert json.loads(rows["up-robinhood:p-nvda"]["details_json"])["inputs"]["manual_bonus"] is None
+
+
+def test_pool_holding_the_reward_token_gets_the_double_hit_warning():
+    # 2026-09-30 オーナー追加: 報酬トークンそのものを預けるプール（ここでは UP を含む p-up）には
+    # 「ボーナスのコインを持つため、値下がりを二重に受けます」の軽微な警告（最高でも🟡）
+    from farm_radar.scoring.run import REWARD_HELD_TEXT
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    rows = {r["pool_id"].split(":")[1]: r for r in score_venue(conn, _ctx(), now=NOW)}
+    warns = {k: json.loads(r["warnings_json"]) for k, r in rows.items()}
+    held = [w for w in warns["p-up"] if w["code"] == "RWD"]
+    assert held == [{"code": "RWD", "level": "minor", "message_ja": REWARD_HELD_TEXT}]
+    assert REWARD_HELD_TEXT in rows["p-up"]["reason_ja"]
+    assert rows["p-up"]["signal"] != "green"
+    # 報酬トークンを含まないプールには付かない
+    assert not [w for w in warns["p-weth"] + warns["p-nvda"] if w["code"] == "RWD"]

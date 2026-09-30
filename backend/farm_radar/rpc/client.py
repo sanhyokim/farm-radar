@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 
+from .. import ratelimit
 from ..config import RpcSettings
 from ..logging_setup import redact
 
@@ -137,6 +138,8 @@ class RpcClient:
             except RpcCallError as exc:
                 if exc.code not in _RETRYABLE_RPC_CODES:
                     raise
+                if exc.code in (429, -32005):   # 回数制限（-32005 は「上限を超えた」）
+                    ratelimit.record(ratelimit.host_of(ep.url), "rpc")
                 last = exc
             except (httpx.HTTPError, _Transient) as exc:
                 last = exc
@@ -148,6 +151,8 @@ class RpcClient:
         self._next_id += 1
         body = {"jsonrpc": "2.0", "id": self._next_id, "method": method, "params": params}
         resp = self._http.post(ep.url, json=body)
+        if resp.status_code == 429:
+            ratelimit.record(ratelimit.host_of(ep.url), "rpc")   # URL の鍵は書かない（サイト名だけ）
         if resp.status_code == 429 or resp.status_code >= 500:
             raise _Transient(f"HTTP {resp.status_code}")
         resp.raise_for_status()

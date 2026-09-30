@@ -45,7 +45,8 @@ def _pair(r: dict[str, Any]) -> str:
 
 def _rank_line(i: int, r: dict[str, Any]) -> str:
     rng = f"（±{r['best_r']:g}%）" if r.get("best_r") is not None else ""
-    return f"{i}. {SIGNAL_MARK.get(r['signal'], '')} {_pair(r)} {_pct(r.get('net_daily_pct'))}{rng}"
+    where = f" [{r['venue_name']}]" if r.get("venue_name") else ""   # 会場が2つになったので（M6）
+    return f"{i}. {SIGNAL_MARK.get(r['signal'], '')} {_pair(r)}{where} {_pct(r.get('net_daily_pct'))}{rng}"
 
 
 def _reward_lines(home: dict[str, Any]) -> list[str]:
@@ -61,11 +62,15 @@ def _collection_lines(home: dict[str, Any], now: datetime) -> list[str]:
     out = []
     since = now - timedelta(hours=24)
     for c in home.get("collection") or []:
-        state = "⚠️ データが古い" if c.get("stale") else "OK"
+        if c.get("stale"):
+            # 観察だけの会場（Alandale）は、up. を優先して読み取りを休むことがある（M6）
+            state = "休み中（up. を優先）" if c.get("observe") else "⚠️ データが古い"
+        else:
+            state = "OK"
         gaps = [g for g in c.get("gaps_7d") or [] if datetime.fromisoformat(g["end_slot"]) >= since]
         missed = sum(int(g.get("missed_slots") or 0) for g in gaps)
         gap = f"、24時間の欠損 {missed}回分" if missed else "、24時間の欠損なし"
-        out.append(f"データ収集（{c['venue_id']}）: {state}。最後の成功 {_jst(c.get('last_ok_at'))}{gap}")
+        out.append(f"データ収集（{c.get('name') or c['venue_id']}）: {state}。最後の成功 {_jst(c.get('last_ok_at'))}{gap}")
     return out
 
 

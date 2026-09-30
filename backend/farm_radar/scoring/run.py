@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..config import ScoringSettings, contract_address
+from ..config import ScoringSettings, contract_address, mechanic_value
 from ..db import database as db
 from ..external.geckoterminal import GeckoTerminal, PoolMarket
 from .. import hedges as hedge_mod
@@ -35,7 +35,10 @@ log = logging.getLogger(__name__)
 
 EXTERNAL_SOURCE = "geckoterminal:1h"
 VOLUME_TEXT = "取引量が不自然に多い（見せかけの取引の可能性）"
-REWARD_DECIMALS = 18   # UP（venues/up-robinhood.yaml の reward_token。検証済みソース Up.sol）
+# 報酬トークンそのものを預けるプール（WETH-LUTE、USDG-LUTE など）。預けたコインとボーナスの両方が、
+# 同じコインの値下がりで減る（2026-09-30 オーナー追加。SPEC 4章。軽微 = 最高でも🟡）
+REWARD_HELD_TEXT = "ボーナスのコインを持つため、値下がりを二重に受けます"
+REWARD_DECIMALS = 18   # 既定値。会場ファイルの contracts.reward_token.decimals があればそちらを使う
 
 
 @dataclass
@@ -256,6 +259,8 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
     prices = usd_prices([p for p in (_pool_price(r) for r in latest) if p], stables)
 
     reward_token = (contract_address(ctx.venue, "reward_token") or "").lower()
+    reward_decimals = int(((ctx.venue.get("contracts") or {}).get("reward_token") or {}).get("decimals")
+                          or REWARD_DECIMALS)
 
     # どのプールが自分の記録だけで足りるか
     own_ok: dict[str, bool] = {}
@@ -296,6 +301,10 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
                 reward_volume = ctx.gt.tokens([reward_token]).get(reward_token)
         except Exception as exc:
             log.warning("geckoterminal pools failed", extra={"data": {"error": str(exc)}})
+    if reward_usd is None and reward_volume is not None and reward_volume.price_usd:
+        # 会場の中に報酬トークンの値段の道がない（Alandale の LUTE は集中流動性のプールにない）ときは、
+        # GeckoTerminal のトークン価格を使う（他の DEX も含めた値段）
+        reward_usd = reward_volume.price_usd
 
     # ヘッジ先を選ぶ（トークンごとに一番安いところ。SPEC 5.2.1章）
     hedges = ctx.hedges if ctx.hedges is not None else (
@@ -326,7 +335,7 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
         row = _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok[r["pool_id"]], token_grid,
                           pool_own, markets, funding, reward_usd, reward_trend_daily, reward_change,
                           reward_volume.volume_24h_usd if reward_volume else None, stale, age_min, now_s, days,
-                          liq_med.get(r["pool_id"]))
+                          liq_med.get(r["pool_id"]), reward_decimals)
         row.update({"pool_id": r["pool_id"], "ts": ts, "venue_id": venue_id, "block_number": run["block_number"]})
         is_stock = row.pop("_is_stock")
         db.insert_score(conn, row)
@@ -366,7 +375,7 @@ def others_liquidity(latest: int, median: int | None) -> int:
 
 def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid, pool_own, markets, funding,
                 reward_usd, reward_trend_daily, reward_change, reward_volume, stale, age_min, now_s, days,
-                liq_med: tuple[int, int] | None = None) -> dict[str, Any]:
+                liq_med: tuple[int, int] | None = None, reward_decimals: int = REWARD_DECIMALS) -> dict[str, Any]:
     tokens = ctx.tokens
     t0, t1 = r["token0"].lower(), r["token1"].lower()
     src = "own" if own_ok else "external"
@@ -401,6 +410,9 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     volume = market.volume_24h_usd if market else None
     volume_used = volume
     pool_warns = list(base_warns)
+    reward_token = (contract_address(ctx.venue, "reward_token") or "").lower()
+    if reward_token and reward_token in (t0, t1):
+        pool_warns.append(Warn("RWD", "minor", REWARD_HELD_TEXT))
     sus_x = ctx.settings.volume_suspicious_tvl_multiple
     if volume is not None and tvl and volume > sus_x * tvl:
         # 見せかけの取引かもしれないので、手数料収入は0として計算する（安全側。2026-09-29 オーナー決定。
@@ -410,7 +422,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     fees_day = volume_used * fee if volume_used is not None else None
     eff = int(r["reward_rate_effective_raw"] or 0)
     alive = r["gauge_alive"] is None or bool(r["gauge_alive"])
-    reward_usd_day = eff * 86400 / 10 ** REWARD_DECIMALS * reward_usd if (reward_usd and alive) else 0.0
+    reward_usd_day = eff * 86400 / 10 ** reward_decimals * reward_usd if (reward_usd and alive) else 0.0
 
     missing = None
     if stale:
@@ -433,6 +445,12 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         notes.append(f"{VOLUME_TEXT}。手数料の収入は0として計算しています（取引量がTVLの{sus_x:g}倍超え）。")
     if src == "external":
         notes.append("値動きは外部データ（GeckoTerminal）で補っています。")
+    if any(w.code == "RWD" for w in pool_warns):
+        notes.append(REWARD_HELD_TEXT + "。")
+
+    manual = _manual_bonus(r, ctx.venue, reward_decimals, reward_usd if alive else None)
+    if manual:
+        notes.append(MANUAL_TEXT)
 
     ev: Evaluation | None = None
     slip = slip_src = None
@@ -448,6 +466,8 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             liquidity_total=l_total, liquidity_staked=l_staked,
             reward_usd_day=reward_usd_day, fees_usd_day=fees_day, sigma_pair=sig_pair,
             reward_trend_daily=reward_trend_daily, slippage=slip,
+            # ステークがなく、LPが取引手数料を受け取れない会場（Alandale の CL。会場ファイルの mechanics）
+            rewards_only=mechanic_value(ctx.venue, "lp_receives_swap_fees", True) is False,
         )
         ev = evaluate(inp, params)
     j: Judgement = judge(ev, sparams, warnings=pool_warns, tvl_usd=tvl, missing=missing, notes=notes)
@@ -474,6 +494,8 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
             "hedge": {sym: funding.get(t) for sym, t in ((r["token0_symbol"], t0), (r["token1_symbol"], t1))
                       if not tokens.is_stable(t)},
             "notes": notes,
+            # 運営が手で足したボーナス（判定には入れない。2026-09-30 オーナー条件4）
+            "manual_bonus": _with_share(manual, ev.best if ev else None, reward_usd_day),
         },
         "ranges": [
             {"r_pct": x.r * 100, "net": x.net, "net_pct": x.net / params.c_total * 100, "income": x.income,
@@ -490,8 +512,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         "sell_now": ({
             "hours": params.reward_sell_hours, "best_r": ev.best_sell_now.r * 100,
             "net_daily_pct": ev.net_daily_pct_sell_now, "net_usd": ev.best_sell_now.net_sell_now,
-            "income": (ev.best_sell_now.income_unstaked if ev.best_sell_now.mode_sell_now == "unstaked"
-                       else ev.best_sell_now.income_staked),
+            "income": _sell_income(ev.best_sell_now),
             "haircut": ev.best_sell_now.haircut_sell_now, "mode": ev.best_sell_now.mode_sell_now,
         } if ev else None),
     }
@@ -514,6 +535,57 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         "details_json": json.dumps(details, ensure_ascii=False, default=str),
         "_is_stock": int(is_stock),
     }
+
+
+MANUAL_TEXT = ("今週は運営が手で足したボーナスがあります。続く保証がないので、判定の計算には入れていません"
+               "（いつものボーナスだけで判定しています）。")
+
+
+def _raw(r, key: str) -> int | None:
+    """スナップショットの行から、最小単位の数（文字列で保存）を取り出す。列がない古い行は None。"""
+    if key not in r.keys() or r[key] in (None, ""):
+        return None
+    return int(r[key])
+
+
+def _manual_bonus(r, venue: dict[str, Any], decimals: int, token_usd: float | None) -> dict[str, Any] | None:
+    """今のエポックに運営が手で足したボーナス（プール全体）。なければ None。
+
+    週ごとの量で配る会場（Alandale）だけが記録する。1日あたりは「週の分を7日に均等に割った」参考値。
+    """
+    manual = _raw(r, "reward_manual_raw")
+    if not manual:
+        return None
+    total = _raw(r, "reward_epoch_total_raw")
+    length = int((((venue.get("mechanics") or {}).get("epoch") or {}).get("length_seconds")) or 7 * 86400)
+    amount = manual / 10 ** decimals
+    usd = amount * token_usd if token_usd else None
+    return {
+        "symbol": ((venue.get("contracts") or {}).get("reward_token") or {}).get("symbol"),
+        "amount": amount, "usd": usd,
+        "epoch_total": total / 10 ** decimals if total is not None else None,
+        "regular": (total - manual) / 10 ** decimals if total is not None else None,
+        "usd_day_spread": usd * 86400 / length if usd is not None else None,
+        "epoch_start": r["epoch_start"],
+    }
+
+
+def _with_share(manual: dict[str, Any] | None, best, reward_usd_day: float) -> dict[str, Any] | None:
+    """手で足した分も入れたら、あなたの1日の見込みがいくら増えるか（参考。判定には使わない）。"""
+    if manual is None:
+        return None
+    extra = None
+    if best is not None and reward_usd_day > 0 and manual.get("usd_day_spread") is not None:
+        # いつものボーナスと同じ取り分で受け取ると仮定する（取り分 = 自分の報酬 ÷ プール全体の報酬）
+        extra = manual["usd_day_spread"] * best.income_staked / reward_usd_day
+    return {**manual, "your_extra_usd_day": extra}
+
+
+def _sell_income(x) -> float:
+    """参考値「すぐ売る前提」の収入（選んだ受け取り方の分）。"""
+    if x.mode_sell_now == "unstaked":
+        return x.income_unstaked
+    return x.income_staked
 
 
 def _slippage(s: ScoringSettings, params: ModelParams, price: float, l_total: int, t0: TokenSide, t1: TokenSide,

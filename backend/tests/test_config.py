@@ -16,7 +16,11 @@ def test_repo_config_loads():
     cfg = load_config(REPO_ROOT / "config.yaml", env={})
     assert cfg.mode == "observe"
     assert cfg.snapshot_minutes == 15
-    assert cfg.venues == ("up-robinhood",)
+    # M6: up. が先（評価の会場）、Alandale は観察だけ（練習と評価には入れない）
+    assert cfg.venues == ("up-robinhood", "alandale-robinhood")
+    assert cfg.observe_venues.defer_below_coverage_pct == 97.0
+    assert load_venue("up-robinhood").get("practice", True) is not False
+    assert load_venue("alandale-robinhood")["practice"] is False
 
 
 @pytest.mark.parametrize("mode", ["dryrun", "exit_only", "full", None, "live"])

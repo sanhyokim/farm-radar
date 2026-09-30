@@ -11,6 +11,11 @@ website: https://up33.xyz/
 audited: null         # 未確認（DefiLlama に監査情報なし。検証済みソースにも監査の記載なし。2026-09-27 確認）
 launch_date: "2026-07-10"  # 主要コントラクトの作成日（UP トークン作成 block 6180888 = 2026-07-10 15:17 UTC）。取引開始日そのものは未確認
 
+# プールのカードに出す「切り替えで来週ボーナスがなくなることがある」理由（2026-09-30 オーナー追加。mechanics.gauge_emission_cap の who_sets_caps が根拠）
+epoch_note_ja: >-
+  up. では、プールごとの来週の配分を、チームの共同管理の財布が毎週の切り替えの約1時間前に手で決めます。
+  例えば 2026-09-24〜の週は、20のプールが0%にされ、その週のボーナスがなくなりました。
+
 # 外部の一覧サイトでのこの会場の名前（週1回の候補の一覧から、いま見ている会場を除くため。SPEC 5.2.2章）
 listings:
   defillama: [up-v3, up-v2]          # https://api.llama.fi/protocols の slug（"up v3" / "up v2"、チェーン Robinhood Chain）
@@ -220,6 +225,15 @@ mechanics:
       残り（withheld）は Voter._settleExpiredEpochs() でエポック終了時に burnFrom（焼却）。
       今エポック（2026-09-24〜）の GaugeCapAccounted イベント77件の合計: 本来 約13,439,163 UP → 実際に配布 約1,308,540 UP（約9.7%）。
     formula_impact: "票の割合 × 週の発行量 では実際の報酬を大きく過大評価する。実際にゲージへ渡った量（CLGauge.rewardRate）を使う必要がある"
+    # 2026-09-29 の追加の確認（/mnt/project-files/farm-radar/research/up-weekly-bonus-2026-09-29.md）:
+    who_sets_caps: >-
+      今は GaugeCapController の計算ではなく、Voter の governor（Safe 0x0eea30aba3f07abfa20e4b544f55e0f917d9dfd8。
+      4人中2人の署名で動く。Minter の team・Voter の emergencyCouncil・epochGovernor も同じアドレス）が
+      Voter.setGovernanceGaugeCap でゲージごとの割合を毎週手で決めている（GovernanceGaugeCapSet イベント。
+      今週分は 2026-09-23 22:28〜23:05 UTC = 切り替えの約1時間前に94件）。
+      今週の77件すべてで「配布 = 名目 × Voter.governanceGaugeCapBps(ゲージ, 1790208000)」が一致し、
+      GaugeCapAccounted の status はすべて0（GaugeCapController の有効な見積もりなし）。直近2エポックで確認
+    who_sets_caps_checked_at: "2026-09-29"
     source_url: https://repo.sourcify.dev/4663/0x7F749fDD351C1Ceed82d76d7699CB631Eb8332a7
     checked_at: "2026-09-27"
 
@@ -231,12 +245,15 @@ warnings:
   - code: C4
     key: gauge_cap_controller_unverified
     level: minor          # 軽微（黄色）。2026-09-27 オーナーが決定。2026-09-29「判定は最高🟡に抑える」ことも確認済み
-    title_ja: "報酬の上限を決める仕組みのソースが非公開"
+    title_ja: "予定の約90%は焼却。プールごとの配分はチームが毎週手で決める"
     message_ja: >-
-      up. はゲージ（報酬の配り口）ごとの報酬に上限をかけ、超えた分を燃やしています。
-      上限を計算する GaugeCapController（0x5739…687d）のソースコードが公開されていないため、
-      報酬が今後どう変わるかを前もって確かめられません。表示している報酬は、実際にゲージへ渡った量です。
+      up. が毎週発行する予定のボーナスのうち、約90%はLPに配られずに焼却（燃やしてなくすこと）されています
+      （2026-09-24〜の週: 予定 13,439,164 UP のうち、配られたのは 1,308,540 UP = 約9.7%）。
+      どのプールにどれだけ配るかは、チームの共同管理の財布（4人中2人の署名で動く）が、毎週の切り替えの約1時間前にプールごとに手で決めています。
+      自動で計算する仕組み（GaugeCapController）もありますが、ソースが公開されておらず、今は使われていません。
+      そのため、来週のボーナスがどうなるかは前もって分かりません。表示しているボーナスは、実際にプールへ渡った量です。
     since: "2026-09-27"
+    updated: "2026-09-30"   # 2026-09-29 の調査で、上限を決めているのがチームの手動の設定だと分かったので文を直した
 
 # ---------------------------------------------------------------------------
 # 収集の設定（このアダプター用）

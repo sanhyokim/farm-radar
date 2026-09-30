@@ -99,6 +99,22 @@ def test_open_needs_paper_mode(world):
         ex.open_position(WETH_POOL, 1000.0)
 
 
+def test_observe_only_venue_refuses_practice(world, tmp_path):
+    # 会場ファイルに practice: false と書いた会場（M6 の Alandale）では、練習を始めない
+    path, conn = world
+    import shutil
+    root = tmp_path / "root"
+    (root / "venues").mkdir(parents=True)
+    src = load_config().root / "venues" / "up-robinhood.yaml"
+    text = src.read_text(encoding="utf-8") + "\npractice: false\n"
+    (root / "venues" / "up-robinhood.yaml").write_text(text, encoding="utf-8")
+    shutil.copy(load_config().root / "venues" / "tokens-robinhood.yaml", root / "venues")
+    ex = PaperExecutor(conn, dataclasses.replace(_config(path), root=root), TOKENS, fx=FakeFx(), now=NOW)
+    with pytest.raises(PaperError, match="観察だけ"):
+        ex.open_position(WETH_POOL, 1000.0)
+    assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
+
+
 def test_open_records_position_ledger_and_red_start(world):
     path, conn = world
     ex, ref = _open(conn, path)

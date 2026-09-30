@@ -96,6 +96,9 @@ CREATE TABLE IF NOT EXISTS pool_snapshots (
   gauge_alive INTEGER,
   unstaked_fee INTEGER,               -- ステークしないLPから取る手数料の割合（1e-6単位）
   epoch_just_flipped INTEGER,         -- 1 = エポック更新直後（報酬の値がまだ落ち着いていない可能性）
+  -- 2026-09-30 追加（M6。週ごとの量で配る会場 = Alandale）
+  reward_epoch_total_raw TEXT,        -- 今のエポックのボーナスの合計（最小単位）
+  reward_manual_raw TEXT,             -- そのうち運営が手で足した分（続く保証がないので判定に使わない）
   tvl REAL,
   volume_24h REAL,
   R_usd_day REAL,
@@ -289,3 +292,13 @@ CREATE TABLE IF NOT EXISTS discovery_decisions (
   status TEXT NOT NULL,               -- study（調べる） / hold（保留） / skip（見送り）
   decided_at TEXT NOT NULL
 );
+
+-- 回数制限（429）を受けた記録（2026-09-30 オーナー条件。M6。SPEC 5.3章）。状態ページに24時間の回数を出し、
+-- 直近に 429 があれば観察だけの会場（Alandale）の読み取りを休む
+CREATE TABLE IF NOT EXISTS rate_limits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  host TEXT NOT NULL,                 -- 例: api.geckoterminal.com / rpc.mainnet.chain.robinhood.com
+  kind TEXT NOT NULL                  -- external（外部データ） / rpc
+);
+CREATE INDEX IF NOT EXISTS idx_rate_limits_ts ON rate_limits(ts);

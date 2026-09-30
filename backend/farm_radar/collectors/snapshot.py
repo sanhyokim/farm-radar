@@ -101,6 +101,8 @@ def collect_venue(
                 "reward_rate_effective_raw": _str_or_none(getattr(rewards, "reward_rate_effective_raw", None)),
                 "gauge_alive": _bool_or_none(getattr(rewards, "gauge_alive", None)),
                 "unstaked_fee": getattr(state, "unstaked_fee", None),
+                "reward_epoch_total_raw": _str_or_none(getattr(rewards, "epoch_total_raw", None)),
+                "reward_manual_raw": _str_or_none(getattr(rewards, "manual_raw", None)),
                 "epoch_just_flipped": epoch_just_flipped(rewards, epoch_fresh_minutes),
                 "source": f"rpc:{rpc.last_endpoint}",
             })

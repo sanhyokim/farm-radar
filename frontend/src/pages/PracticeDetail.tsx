@@ -23,7 +23,7 @@ export default function PracticeDetail() {
     <div className="space-y-3">
       <div>
         <h1 className="text-xl font-bold text-slate-50">練習: {d.pair}</h1>
-        <div className="text-xs text-slate-400">{d.venue_id} ・ {d.mode === "staked" ? "ステークしてボーナス" : "ステークせず手数料"}
+        <div className="text-xs text-slate-400">{d.venue_id} ・ {d.mode === "staked" ? "ステークしてボーナス" : d.mode === "rewards" ? "ボーナスだけ" : "ステークせず手数料"}
           {!open && ` ・ 閉じた ${jst(d.closed_at)}`}</div>
       </div>
 

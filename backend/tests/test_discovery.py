@@ -96,7 +96,8 @@ class FakeGT:
 
 @pytest.fixture
 def cfg(tmp_path):
-    return dataclasses.replace(load_config(), database_path=tmp_path / "t.sqlite3")
+    # 見ている会場は up. だけとして試す（Alandale を「候補」として扱うテストのため）
+    return dataclasses.replace(load_config(), database_path=tmp_path / "t.sqlite3", venues=("up-robinhood",))
 
 
 @pytest.fixture
@@ -223,8 +224,10 @@ def test_config_reads_discovery(tmp_path):
     assert d.weekday == "mon" and (d.hour_jst, d.minute_jst) == (9, 0)
     assert d.chains[0] == DiscoveryChain("Robinhood Chain", "robinhood", "robinhood")
     assert [c.name for c in d.chains] == ["Robinhood Chain", "Base", "Arbitrum", "Hyperliquid L1", "Avalanche"]
+    # M6 から Alandale も見ているので、候補の一覧からは外れる
     slugs, gt = discovery.watched_listings(cfg)
-    assert slugs == {"up-v3", "up-v2"} and gt["robinhood"] == {"up-v3"}
+    assert slugs == {"up-v3", "up-v2", "alandale-v3", "alandale-v2"}
+    assert gt["robinhood"] == {"up-v3", "alandale-cl", "alandale"}
 
 
 def test_api_list_decide_and_refresh(cfg, conn, monkeypatch):

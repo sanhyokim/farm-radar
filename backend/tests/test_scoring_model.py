@@ -117,6 +117,20 @@ def test_unstaked_chosen_when_fees_beat_rewards():
     assert x.haircut == 0   # 手数料はプールのトークンで受け取るので、報酬トークンの値下がりは関係ない
 
 
+def test_rewards_only_venue_never_counts_fees():
+    # ステークがなく、LPが取引手数料を受け取れない会場（Alandale の CL。M6）: 収入はボーナスだけ。
+    # 手数料のほうが多くても「ステークしない」を選ばない。取り分の式は up. のボーナスと同じ
+    p = ModelParams(ranges=(0.01,))
+    inp = _inputs(rewards_only=True, fees_usd_day=10_000.0, liquidity_staked=10 ** 24, reward_trend_daily=-0.02)
+    x = evaluate(inp, p).rows[0]
+    share = x.liquidity_mine / (10 ** 24 + x.liquidity_mine)
+    assert x.mode == "rewards" and x.mode_sell_now == "rewards"
+    assert x.income_unstaked is None
+    assert x.income == pytest.approx(x.income_staked) == pytest.approx(500 * share * x.in_range_ratio)
+    assert x.haircut == pytest.approx(x.income_staked * 0.02)
+    assert x.net_sell_now - x.net == pytest.approx(x.haircut - x.haircut_sell_now)
+
+
 def test_haircut_only_when_reward_token_falls():
     up = evaluate(_inputs(reward_trend_daily=0.02, fees_usd_day=None), ModelParams(ranges=(0.01,))).rows[0]
     down = evaluate(_inputs(reward_trend_daily=-0.02, fees_usd_day=None), ModelParams(ranges=(0.01,))).rows[0]

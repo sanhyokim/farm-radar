@@ -16,6 +16,11 @@ from .model import Evaluation
 EMOJI = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
 NO_HEDGE_TEXT = "ヘッジ不可：値動きの損をそのまま受けます"
 TOO_HIGH_TEXT = "数字が高すぎます。データや計算を確認してください"
+MODE_HOW = {
+    "staked": "ステークしてボーナスを受け取る",
+    "unstaked": "ステークせず手数料を受け取る",
+    "rewards": "ボーナスを受け取る（ステーク不要。取引手数料はもらえない）",   # Alandale の CL（M6）
+}
 
 
 @dataclass(frozen=True)
@@ -71,7 +76,7 @@ def judge(
     best, c_total = ev.best, ev.params.c_total
     income_pct = best.income / c_total * 100
     cost_pct = income_pct - ev.net_daily_pct
-    how = "ステークしてボーナスを受け取る" if best.mode == "staked" else "ステークせず手数料を受け取る"
+    how = MODE_HOW.get(best.mode, MODE_HOW["staked"])
     line1 = (f"純日利 {_pct(ev.net_daily_pct)}（総資産あたり）＝ 収入 {_pct(income_pct)} − 損とコスト {_pct(cost_pct)}。"
              f"最適レンジ ±{best.r * 100:g}%、{how}。")
 

@@ -329,3 +329,23 @@ def swap_costs(details: dict[str, Any] | None, c_lp: float, swap_ratio: float, t
         "open_total": sum(parts.values()) + hedge_fee,
         "rebalance_total": sum(parts.values()),
     }
+
+
+FLIP_NOTE = "木曜 9:00（日本時間）の切り替えで、来週このプールのボーナスが減ったり、なくなったりすることがあります。"
+
+
+def next_epoch_flip(now: datetime, length_seconds: int, offset_seconds: int = 0) -> datetime:
+    """次のエポックの切り替え時刻（Unix 時刻0から length_seconds ごと。up. と Alandale は7日で、木曜 00:00 UTC）。"""
+    ts = int(now.timestamp()) - offset_seconds
+    return datetime.fromtimestamp(ts - ts % length_seconds + length_seconds + offset_seconds, UTC)
+
+
+def epoch_flip_info(venue: dict[str, Any] | None, now: datetime) -> dict[str, Any] | None:
+    """プールのカードに出す「次の切り替え」と注意（2026-09-30 オーナー追加）。会場ごとの理由も添える。"""
+    epoch = ((venue or {}).get("mechanics") or {}).get("epoch") or {}
+    length = int(epoch.get("length_seconds") or 0)
+    if not length:
+        return None
+    at = next_epoch_flip(now, length, int(epoch.get("offset_seconds") or 0))
+    return {"at": at.isoformat(timespec="seconds"), "note_ja": FLIP_NOTE,
+            "why_ja": (venue or {}).get("epoch_note_ja")}

@@ -86,3 +86,18 @@ def test_breakdown_luck_ratio():
     assert b["luck_ratio"] == pytest.approx(1 / 9) and not b["lucky"]
     b = views.breakdown(income=10, gamma=2, rebalance=1, hedge=0, haircut=6, direction_risk=3)
     assert b["lucky"]   # 本業以外（−10）が本業（8）より大きい
+
+
+def test_home_cards_carry_flip_line_and_owner_notes(client):
+    # M6 で入れ忘れていた「⏰ 木曜9:00に切り替え」をホームのカードにも渡す（2026-09-30 オーナーに伝えて直した）
+    from farm_radar.scoring.run import REWARD_HELD_TEXT
+    d = client.get("/api/home").json()
+    cards = {c["pool_id"].split(":")[1]: c for c in d["greens"] + d["near"]}
+    assert cards and all(c["epoch_flip"] and c["epoch_flip"]["at"] for c in cards.values())
+    # ボーナスのコインを持つプールの警告（2026-09-30 オーナー追加）
+    assert cards["p-up"]["reward_held"] == REWARD_HELD_TEXT
+    assert all(c["reward_held"] is None for k, c in cards.items() if k != "p-up")
+    # up. のボーナスは推定の一言なし。Alandale は「推定（1週間を7日で均等に配ると仮定）」
+    assert all(c["reward_estimate_note"] is None for c in cards.values())
+    assert client.get("/api/pools/up-robinhood:p-up").json()["venue"]["reward_estimate_note"] is None
+    assert api._venue_meta("alandale-robinhood")["reward_estimate_note_ja"] == "推定（1週間を7日で均等に配ると仮定）"

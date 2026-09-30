@@ -306,6 +306,24 @@ def _discovery(raw: dict[str, Any]) -> DiscoverySettings:
 
 
 @dataclass(frozen=True)
+class ObserveVenueSettings:
+    """観察だけの会場（practice: false。M6 の Alandale）の読み取りを休む条件（SPEC 5.1章。2026-09-30 オーナー条件）。"""
+    defer_below_coverage_pct: float = 97.0  # 練習・評価の会場の収集率がこの%未満なら休む（評価の合格ライン95%より少し上）
+    rate_limit_quiet_minutes: float = 30.0  # この分数の中に 429 があれば休む
+    max_start_delay_minutes: float = 5.0    # 予定時刻からこの分数を過ぎていたら、その回は休む
+
+
+def _observe_venues(raw: dict[str, Any]) -> ObserveVenueSettings:
+    o = raw.get("observe_venues") or {}
+    d = ObserveVenueSettings()
+    out = ObserveVenueSettings(**{k: float(o.get(k, getattr(d, k))) for k in
+                                  ("defer_below_coverage_pct", "rate_limit_quiet_minutes", "max_start_delay_minutes")})
+    if not 0 <= out.defer_below_coverage_pct <= 100:
+        raise ConfigError("observe_venues.defer_below_coverage_pct は0〜100にしてください。")
+    return out
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -323,6 +341,7 @@ class Config:
     evaluation: EvaluationSettings = field(default_factory=EvaluationSettings)
     hedge_venues: tuple[HedgeVenueSettings, ...] = (HedgeVenueSettings("lighter"),)
     discovery: DiscoverySettings = field(default_factory=DiscoverySettings)
+    observe_venues: ObserveVenueSettings = field(default_factory=ObserveVenueSettings)
     root: Path = REPO_ROOT
 
 
@@ -374,6 +393,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         evaluation=_evaluation(raw),
         hedge_venues=_hedge_venues(raw),
         discovery=_discovery(raw),
+        observe_venues=_observe_venues(raw),
         root=root,
     )
 
@@ -384,6 +404,19 @@ def load_venue(venue_id: str, root: Path = REPO_ROOT) -> dict[str, Any]:
     if data.get("id") != venue_id:
         raise ConfigError(f"{path} の id が {venue_id} と一致しません。")
     return data
+
+
+def mechanic_value(venue: dict[str, Any], name: str, default: Any = None) -> Any:
+    """会場の仕組み（mechanics）の値。確認済みか、未確認のままオーナーが承認したものだけ。それ以外は default。"""
+    m = (venue.get("mechanics") or {}).get(name) or {}
+    if "value" not in m or (m.get("unverified", True) and not m.get("owner_acknowledged")):
+        return default
+    return m["value"]
+
+
+def practice_allowed(venue: dict[str, Any]) -> bool:
+    """この会場で練習（と評価）ができるか。practice: false の会場は観察だけ（M6 の Alandale）。"""
+    return venue.get("practice", True) is not False
 
 
 def contract_address(venue: dict[str, Any], name: str) -> str | None:

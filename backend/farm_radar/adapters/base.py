@@ -69,6 +69,10 @@ class RewardInfo:
     period_finish: datetime | None = None   # ゲージの今の配布期間の終わり
     reward_rate_effective_raw: int | None = None  # period_finish を過ぎていれば 0
     gauge_alive: bool | None = None
+    # 以下は M6（Alandale）で追加。週ごとの量で配る会場の、今のエポックの合計と、そのうち運営が手で足した分（最小単位）。
+    # 運営が手で足した分は続く保証がないので、reward_rate_* には入れず、判定にも使わない（2026-09-30 オーナー条件）
+    epoch_total_raw: int | None = None
+    manual_raw: int | None = None
 
 
 @dataclass(frozen=True)
