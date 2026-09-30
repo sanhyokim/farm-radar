@@ -349,3 +349,119 @@ def epoch_flip_info(venue: dict[str, Any] | None, now: datetime) -> dict[str, An
     at = next_epoch_flip(now, length, int(epoch.get("offset_seconds") or 0))
     return {"at": at.isoformat(timespec="seconds"), "note_ja": FLIP_NOTE,
             "why_ja": (venue or {}).get("epoch_note_ja")}
+
+
+EMISSION_SOON_DAYS = 7
+
+
+def emission_end_info(venue: dict[str, Any] | None, now: datetime, pool_address: str | None = None) -> dict[str, Any] | None:
+    """配布の終了日（2026-09-30 オーナー追加）。チェーンなどで終了日が分かる会場・プールだけ「配布終了まであと○日」を出す。
+
+    会場ファイルの `emission_end: {at, source}`（会場全体）か、`pool_emission_ends: [{pool, at, source}]`（プールごと。こちらが優先）。
+    終了日が分からない会場（up.・Alandale）は書かない（None）。そのときは今の「⏰ 切り替え」の注意のまま。
+    7日以内なら soon（注意）、過ぎたら ended。
+    """
+    v = venue or {}
+    entry = next((e for e in v.get("pool_emission_ends") or []
+                  if pool_address and str(e.get("pool") or "").lower() == pool_address.lower()), None)
+    entry = entry or v.get("emission_end") or {}
+    if not entry.get("at"):
+        return None
+    at = datetime.fromisoformat(str(entry["at"]))
+    if at.tzinfo is None:
+        raise ValueError(f"emission_end の時刻にはタイムゾーンを書いてください: {entry['at']}")
+    days = (at - now).total_seconds() / 86400
+    return {"at": at.isoformat(timespec="seconds"), "days_left": days, "source": entry.get("source"),
+            "soon": 0 < days <= EMISSION_SOON_DAYS, "ended": days <= 0}
+
+
+# --- 画面の見直し（2026-09-30 オーナー依頼 7〜33。表示だけ。計算と判定には触らない） --------------------------
+
+COST_JA = {"gamma": "ガンマ損失", "rebalance": "置き直しの費用", "hedge": "ヘッジの費用",
+           "haircut": "報酬トークンの値下がり", "direction_risk": "値動きの損"}
+
+
+def reason_parts(reason: str | None) -> dict[str, Any]:
+    """理由文（judge の3行）を分ける: 計算の式 / いちばん大事な理由 / 補足。"""
+    lines = [x for x in (reason or "").split("\n") if x]
+    if lines and lines[0].startswith("純日利 "):
+        return {"formula": lines[0], "main": lines[1] if len(lines) > 1 else None, "notes": lines[2:]}
+    return {"formula": None, "main": lines[0] if lines else None, "notes": lines[1:]}
+
+
+def judge_checks(d: dict[str, Any], green_min_pct: float, yellow_min_pct: float,
+                 green_min_tvl_usd: float) -> list[dict[str, str]]:
+    """「なぜこの判定か」を短い項目で（2026-09-30 オーナー依頼 23）。state は ok / warn / bad / info。
+
+    警告そのもの（C4 など）は「危険と注意」に1回だけ出すので、ここでは「警告があるので最高でも様子見」だけ書く。
+    """
+    net = d.get("net_daily_pct")
+    if net is None:
+        return [{"state": "bad", "text": reason_parts(d.get("reason_ja"))["main"] or "データが足りないため判定できません。"}]
+    out = []
+    if net >= green_min_pct:
+        out.append({"state": "ok", "text": f"純日利がプラスで十分（{net:.2f}%。良いの目安は {green_min_pct:.2f}% 以上）"})
+    elif net >= yellow_min_pct:
+        out.append({"state": "warn", "text": f"純日利 {net:.2f}% は、良いの目安 {green_min_pct:.2f}% に届かない"})
+    else:
+        out.append({"state": "bad", "text": f"純日利 {net:.2f}% は、様子見の目安 {yellow_min_pct:.2f}% にも届かない"})
+    if d.get("has_perp"):
+        out.append({"state": "ok", "text": "保険（ヘッジ）で値動きを打ち消せる"})
+    else:
+        out.append({"state": "warn", "text": "保険なし。値動きの損をそのまま受ける（最高でも様子見）"})
+    best = _best_row(d.get("details") or {}, d.get("best_r"))
+    if best.get("rebalances_per_day") is not None:
+        n = float(best["rebalances_per_day"])
+        out.append({"state": "info", "text": f"値がレンジの外に出るのは1日{n:.1f}回ほど（そのたびに置き直す）"})
+    tvl = d.get("tvl_usd")
+    if tvl is None:
+        out.append({"state": "warn", "text": "プールの大きさが分からない"})
+    elif tvl < green_min_tvl_usd:
+        out.append({"state": "warn", "text": f"プールが小さい（${tvl:,.0f}。良いには ${green_min_tvl_usd:,.0f} 以上）"})
+    warns = d.get("warnings") or []
+    if any(w.get("level") == "major" for w in warns):
+        out.append({"state": "bad", "text": "危険な警告があるので、判定は危険"})
+    elif any(w.get("level") == "minor" for w in warns):
+        out.append({"state": "warn", "text": "軽い警告があるので、最高でも様子見"})
+    return out
+
+
+def key_reason(d: dict[str, Any]) -> str | None:
+    """「いちばん大事な理由」の1文（2026-09-30 オーナー依頼 13）。金額は総資産（$1,000）あたりの1日。"""
+    if d.get("net_daily_pct") is None:
+        return reason_parts(d.get("reason_ja"))["main"]
+    major = next((w["message_ja"] for w in d.get("warnings") or [] if w.get("level") == "major"), None)
+    if major:
+        return f"危険な警告があります: {major}"
+    b = _best_row(d.get("details") or {}, d.get("best_r"))
+    income = float(b.get("income") or 0.0)
+    if income <= 0:
+        return "今はボーナスも手数料もほぼ入りません。"
+    unstaked = b.get("income_unstaked")
+    if b.get("mode") in ("staked", "rewards") and income > 0:
+        if unstaked is None or float(unstaked) < income * 0.5:
+            fee = ("手数料もLPには入りません" if b.get("mode") == "rewards" else
+                   f"ボーナスがなくなると、手数料だけなら1日 約 ${float(unstaked):,.2f}（費用を引く前）です"
+                   if unstaked is not None else "手数料の見込みは分かりません")
+            return f"収入（1日 約 ${income:,.2f}）のほとんどがボーナスです。{fee}。"
+    costs = {k: float(b.get(k) or 0.0) for k in COST_JA}
+    name, val = max(costs.items(), key=lambda kv: kv[1])
+    if val <= 0:
+        return f"収入は1日 約 ${income:,.2f}で、大きな費用はありません。"
+    return f"いちばん大きい費用は{COST_JA[name]}で、1日 約 ${val:,.2f}です（収入は1日 約 ${income:,.2f}）。"
+
+
+def net_series(conn: sqlite3.Connection, pool_id: str, since: datetime, points: int = 24) -> list[float]:
+    """小さな線グラフ用の純日利（%）の推移（古い順。多ければ間引く）。"""
+    rows = [r[0] for r in conn.execute("SELECT net_daily_pct FROM scores WHERE pool_id=? AND ts>=? "
+                                       "AND net_daily_pct IS NOT NULL ORDER BY ts",
+                                       (pool_id, since.isoformat(timespec="seconds")))]
+    return thin(rows, points)
+
+
+def thin(xs: list[float], points: int = 48) -> list[float]:
+    """小さな線グラフ用に間引く（最後の点は必ず残す）。"""
+    if len(xs) <= points:
+        return xs
+    step = len(xs) / points
+    return [xs[int(i * step)] for i in range(points - 1)] + [xs[-1]]

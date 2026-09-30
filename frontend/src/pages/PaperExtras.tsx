@@ -1,33 +1,34 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
-import { postApi, useApi, type EvalVerdict, type Evaluation, type Hedges, type HedgeStatus, type Outlook, type PaperCalendar, type TimelineItem } from "../api";
+import { postApi, useApi, type EvalLight, type EvalVerdict, type Evaluation, type Hedges, type HedgeStatus, type Outlook, type PaperCalendar, type TimelineItem } from "../api";
 import { jst, pct, signedUsd, tone, usd } from "../format";
-import { Badge, Card, Loading, Note, Term } from "../ui";
+import { Icon } from "../icons";
+import { Card, Fold, Line, Loading, Note, PageHead, Pill, Segmented, Term } from "../ui";
+import { EvalProgress } from "./parts";
 
-const TYPE_STYLE: Record<string, { tone: "amber" | "sky" | "rose" | "emerald" | "slate"; label?: string; bar: string }> = {
-  review: { tone: "slate", label: "定時レビュー", bar: "border-slate-500" },
-  open: { tone: "emerald", label: "開始", bar: "border-emerald-400" },
-  close: { tone: "sky", label: "終了", bar: "border-violet-400" },
-  caution: { tone: "amber", bar: "border-amber-400" },
-  rebalance: { tone: "sky", bar: "border-sky-400" },
-  exit: { tone: "rose", bar: "border-rose-400" },
-  emergency: { tone: "rose", bar: "border-rose-500" },
-  info: { tone: "slate", bar: "border-slate-400" },
+const TYPE_STYLE: Record<string, { tone: "y" | "n" | "r" | "g"; label?: string; bar: string }> = {
+  review: { tone: "n", label: "定時レビュー", bar: "var(--cap)" },
+  open: { tone: "n", label: "開始", bar: "var(--text)" },
+  close: { tone: "n", label: "終了", bar: "var(--sec)" },
+  caution: { tone: "y", bar: "var(--y)" },
+  rebalance: { tone: "n", bar: "var(--sec)" },
+  exit: { tone: "r", bar: "var(--r)" },
+  emergency: { tone: "r", bar: "var(--r)" },
+  info: { tone: "n", bar: "var(--cap)" },
 };
 
-/** タイムライン（SPEC 7.4章）: 定時レビュー・見張りの記録・開始・終了を、種類ごとに色分けして時刻の順に */
+/** タイムライン（SPEC 7.4章）: 定時レビュー・見張りの記録・開始・終了を、時刻の順に */
 export function TimelineList({ items }: { items: TimelineItem[] }) {
   return (
-    <div className="space-y-2">
+    <div className="flex flex-col gap-2">
       {items.map((it) => {
         const st = TYPE_STYLE[it.type === "event" ? it.level : it.type] ?? TYPE_STYLE.info;
         return (
-          <div key={it.key} className={`rounded-lg border-l-4 bg-slate-800/40 p-2 text-sm ${st.bar}`}>
+          <div key={it.key} className="inset flex flex-col gap-2 p-4" style={{ borderLeft: `3px solid ${st.bar}` }}>
             <div className="flex items-center justify-between gap-2">
-              <Badge tone={st.tone}>{it.level === "emergency" ? "🚨 " : ""}{it.type === "event" ? it.title : st.label ?? it.title}</Badge>
-              <span className="shrink-0 text-xs text-slate-500">{jst(it.ts)}</span>
+              <Pill tone={st.tone}>{it.type === "event" ? it.title : st.label ?? it.title}</Pill>
+              <span className="cap shrink-0">{jst(it.ts)}</span>
             </div>
-            <div className="mt-1 whitespace-pre-line leading-relaxed text-slate-200">{it.body}</div>
+            <div className="whitespace-pre-line">{it.body}</div>
           </div>
         );
       })}
@@ -35,150 +36,147 @@ export function TimelineList({ items }: { items: TimelineItem[] }) {
   );
 }
 
-const FILTERS = [
-  { k: "", label: "すべて" }, { k: "review", label: "定時レビュー" }, { k: "event", label: "見張り" },
-  { k: "open,close", label: "開始・終了" },
-];
+type Kind = "" | "review" | "event" | "open,close";
 
 export function TimelinePage() {
-  const [kind, setKind] = useState("");
+  const [kind, setKind] = useState<Kind>("");
   const { data, error } = useApi<{ items: TimelineItem[] }>(`/api/paper/timeline${kind ? `?kind=${kind}` : ""}`);
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h1 className="text-lg font-bold text-slate-100">タイムライン</h1>
-        <Link to="/practice" className="text-sm text-sky-300">← 練習へ</Link>
-      </div>
-      <div className="flex flex-wrap gap-1.5">
-        {FILTERS.map((f) => (
-          <button key={f.k} onClick={() => setKind(f.k)}
-            className={`rounded-full px-3 py-1 text-xs ${kind === f.k ? "bg-sky-500/20 text-sky-200" : "bg-slate-800 text-slate-400"}`}>
-            {f.label}
-          </button>
-        ))}
-      </div>
+    <>
+      <PageHead title="タイムライン" back={{ to: "/practice", label: "練習" }} />
+      <Segmented<Kind> value={kind} onChange={setKind}
+        options={[{ key: "", label: "すべて" }, { key: "review", label: "定時レビュー" }, { key: "event", label: "見張り" }, { key: "open,close", label: "開始・終了" }]} />
       {!data ? <Loading error={error} /> : data.items.length ? <TimelineList items={data.items} /> : (
-        <Card><p className="text-sm text-slate-400">まだ記録はありません。</p></Card>
+        <Card><p className="cap">まだ記録はありません。</p></Card>
       )}
       <Note>定時レビューは30分ごとに、建玉の様子をルールで文にしたものです（AI は使っていません）。</Note>
-    </div>
+    </>
   );
 }
 
 const WEEK = ["月", "火", "水", "木", "金", "土", "日"];
 
-/** 損益カレンダー（日本時間の1日ごとの純損益。緑=プラス、赤=マイナス） */
-export function CalendarCard() {
+/** 損益カレンダー（日本時間の1日ごとの純損益。濃さで大きさ） */
+export function CalendarBody() {
   const [month, setMonth] = useState<string | null>(null);
-  const { data, error } = useApi<PaperCalendar>(`/api/paper/calendar${month ? `?month=${month}` : ""}`);
-  if (!data) return <Card title="損益カレンダー"><Loading error={error} /></Card>;
+  const { data, error } = useApi<PaperCalendar>(`/api/paper/calendar${month ? `?month=${month}` : ""}`, 0);
+  if (!data) return <Loading error={error} rows={1} />;
   const byDay = Object.fromEntries(data.days.map((d) => [d.day, d]));
   const max = Math.max(1e-9, ...data.days.map((d) => Math.abs(d.net)));
   const cells: (number | null)[] = [...Array(data.first_weekday).fill(null),
     ...Array.from({ length: data.days_in_month }, (_, i) => i + 1)];
   const [y, m] = data.month.split("-");
   return (
-    <Card title="損益カレンダー" right={<span className={`num text-sm ${tone(data.total)}`}>{signedUsd(data.total)}</span>}>
-      <div className="mb-2 flex items-center justify-between text-sm">
-        <button disabled={!data.prev} onClick={() => setMonth(data.prev)} className="px-2 text-sky-300 disabled:text-slate-700">‹ 前の月</button>
-        <span className="text-slate-200">{y}年{Number(m)}月</span>
-        <button disabled={!data.next} onClick={() => setMonth(data.next)} className="px-2 text-sky-300 disabled:text-slate-700">次の月 ›</button>
+    <>
+      <div className="flex items-center justify-between">
+        <button disabled={!data.prev} onClick={() => setMonth(data.prev)} className="ghost"><Icon name="left" size={16} />前の月</button>
+        <span className="bold">{y}年{Number(m)}月 <span className="num sec">{signedUsd(data.total)}</span></span>
+        <button disabled={!data.next} onClick={() => setMonth(data.next)} className="ghost">次の月<Icon name="right" size={16} /></button>
       </div>
       <div className="grid grid-cols-7 gap-1 text-center">
-        {WEEK.map((w) => <div key={w} className="text-[10px] text-slate-500">{w}</div>)}
+        {WEEK.map((w) => <div key={w} className="cap">{w}</div>)}
         {cells.map((d, i) => {
           if (d === null) return <div key={`e${i}`} />;
           const key = `${data.month}-${String(d).padStart(2, "0")}`;
           const x = byDay[key];
-          const a = x ? 0.15 + 0.6 * Math.min(1, Math.abs(x.net) / max) : 0;
-          const bg = x ? (x.net >= 0 ? `rgba(16,185,129,${a})` : `rgba(244,63,94,${a})`) : undefined;
+          const a = x ? 0.08 + 0.3 * Math.min(1, Math.abs(x.net) / max) : 0;
           return (
-            <div key={key} style={{ background: bg }}
-              className={`min-h-[44px] rounded-md p-0.5 ${x ? "" : "bg-slate-800/30"} ${key === data.today ? "ring-1 ring-sky-400" : ""}`}>
-              <div className="text-[10px] text-slate-400">{d}</div>
-              {x && <div className="num text-[10px] leading-tight text-slate-100">{x.net >= 0 ? "+" : "−"}{Math.abs(x.net) >= 100 ? Math.abs(x.net).toFixed(0) : Math.abs(x.net).toFixed(1)}{x.estimated ? "*" : ""}</div>}
+            <div key={key} style={{ background: x ? `rgba(255,255,255,${a})` : "rgba(255,255,255,0.03)", outline: key === data.today ? "2px solid var(--sec)" : undefined }}
+              className="flex min-h-12 flex-col rounded-lg p-1">
+              <div className="cap">{d}</div>
+              {x && <div className="num text-[11px] leading-4">{x.net >= 0 ? "+" : "−"}{Math.abs(x.net) >= 100 ? Math.abs(x.net).toFixed(0) : Math.abs(x.net).toFixed(1)}{x.estimated ? "*" : ""}</div>}
             </div>
           );
         })}
       </div>
       <Note>練習の建玉の純損益（ドル）を日本時間の1日ごとに合計しています。* はパソコンが止まっていた時間を含む推定の日です。始めた日は開く時の費用も入ります。</Note>
-    </Card>
+    </>
   );
 }
 
-/** 資産の見通し（SPEC 7.4章。必ず「推定」。2026-09-29 オーナー指示: 1か月後まで・単純な足し算・始めた費用込みの平均・24時間未満は出さない） */
-export function OutlookCard({ o, title = "資産の見通し" }: { o: Outlook; title?: string }) {
+/** 資産の見通し（SPEC 7.4章。必ず「推定」。24時間未満は出さない） */
+export function OutlookBody({ o }: { o: Outlook }) {
+  if (o.short) {
+    return (
+      <div className="inset flex flex-col items-start gap-2 p-4">
+        <Pill>データ不足</Pill>
+        <p className="sec">始めてから{o.min_hours}時間たったら出します（今は{o.hours < 1 ? "1時間未満" : `${o.hours.toFixed(1)}時間`}）。</p>
+        <Note>{o.note}</Note>
+      </div>
+    );
+  }
   return (
-    <Card title={title} right={<Badge tone="amber">推定</Badge>}>
-      {o.short ? (
-        <div className="rounded-lg bg-slate-800/40 p-3 text-center text-sm text-slate-300">
-          <span className="rounded-full bg-slate-700 px-2 py-0.5 text-xs text-slate-200">データ不足</span>
-          <p className="mt-2">始めてから{o.min_hours}時間たったら出します（今は{o.hours < 1 ? "1時間未満" : `${o.hours.toFixed(1)}時間`}）。</p>
+    <>
+      <div className="grid grid-cols-2 gap-2">
+        <div className="inset p-4"><div className="cap">今の評価額</div><div className="bold num">{usd(o.value_now)}</div></div>
+        <div className="inset p-4">
+          <div className="cap">始めてからの1日平均（費用込み）</div>
+          <div className="bold num">{signedUsd(o.daily_usd)}</div>
+          <div className="cap num">{pct(o.daily_pct)} · 下限 {signedUsd(o.daily_low_usd)}</div>
         </div>
-      ) : (
-        <>
-          <div className="mb-2 grid grid-cols-2 gap-2 text-center text-xs">
-            <div className="rounded-lg bg-slate-800/40 p-2">
-              <div className="text-slate-400">今の評価額</div>
-              <div className="num text-base text-slate-100">{usd(o.value_now)}</div>
-            </div>
-            <div className="rounded-lg bg-slate-800/40 p-2">
-              <div className="text-slate-400">始めてからの1日平均（始めた費用込み）</div>
-              <div className={`num text-base ${tone(o.daily_usd)}`}>{signedUsd(o.daily_usd)}</div>
-              <div className="text-[10px] text-slate-500">{pct(o.daily_pct)}・下限 {signedUsd(o.daily_low_usd)}</div>
-            </div>
-          </div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs text-slate-400"><th className="text-left font-normal">いつ</th><th className="text-right font-normal">このペースなら</th><th className="text-right font-normal">控えめな下限</th></tr>
-            </thead>
-            <tbody>
-              {o.rows.map((r) => (
-                <tr key={r.label} className="border-t border-slate-800">
-                  <td className="py-1 text-slate-300">{r.label}</td>
-                  <td className="num py-1 text-right text-slate-100">{usd(r.value)}</td>
-                  <td className="num py-1 text-right text-slate-300">{usd(r.low)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </>
-      )}
-      <Note>{o.note}</Note>
-    </Card>
+      </div>
+      <table className="tbl">
+        <thead><tr><th>いつ</th><th className="r">このペースなら</th><th className="r">控えめな下限</th></tr></thead>
+        <tbody>
+          {o.rows.map((r) => (
+            <tr key={r.label}><td className="sec">{r.label}</td><td className="num r">{usd(r.value)}</td><td className="num r sec">{usd(r.low)}</td></tr>
+          ))}
+        </tbody>
+      </table>
+      <Note>推定です。{o.note}</Note>
+    </>
   );
+}
+
+export function OutlookCard({ o, title = "資産の見通し" }: { o: Outlook; title?: string }) {
+  return <Card title={title} right={<Pill tone="y">推定</Pill>}><OutlookBody o={o} /></Card>;
 }
 
 /** 台帳の月次CSV（SPEC 12.4章） */
-export function CsvCard({ months }: { months: string[] }) {
-  if (!months.length) return null;
+export function CsvBody({ months }: { months: string[] }) {
+  if (!months.length) return <p className="cap">まだ記録がありません。</p>;
   return (
-    <Card title="台帳のダウンロード（月ごと）">
+    <>
       <div className="flex flex-wrap gap-2">
         {months.map((m) => (
-          <a key={m} href={`/api/paper/ledger.csv?month=${m}`} download
-            className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm text-sky-300">{m.replace("-", "年")}月 CSV</a>
+          <a key={m} href={`/api/paper/ledger.csv?month=${m}`} download className="chip"><Icon name="download" size={16} />{m.replace("-", "年")}月</a>
         ))}
       </div>
       <Note>練習の取引の記録（日時・種類・数量・ドルと円の金額・円のレートの日付）です。Excel で開けます。税務の形の確認用で、本物の取引ではありません。</Note>
-    </Card>
+    </>
   );
 }
 
-const EVAL_STATE: Record<Evaluation["state"], [string, "slate" | "emerald" | "amber" | "sky"]> = {
-  not_started: ["まだ始めていません", "slate"], running: ["評価中", "emerald"],
-  stopped: ["途中でやめました", "amber"], finished: ["期間が終わりました", "sky"],
+const EVAL_STATE: Record<Evaluation["state"], [string, "n" | "g" | "y"]> = {
+  not_started: ["まだ始めていません", "n"], running: ["評価中", "n"],
+  stopped: ["途中でやめました", "y"], finished: ["期間が終わりました", "n"],
 };
 
-const hoursJa = (h: number) => (h >= 24 ? `${Math.floor(h / 24)}日${Math.round(h % 24)}時間` : `${h.toFixed(1)}時間`);
+/** 評価のまとめ（full）から、進み具合の形（ホームと同じ）を作る */
+export function toLight(ev: Evaluation): EvalLight | null {
+  if (ev.state === "not_started" || !ev.criteria || !ev.started_at || !ev.ends_at) return null;
+  const c = ev.criteria;
+  const day = Math.min(c.days, Math.floor((ev.elapsed_hours ?? 0) / 24) + 1);
+  const rows = ev.days ?? [];
+  return {
+    state: ev.state, started_at: ev.started_at, ends_at: ev.ends_at, day, days: c.days, left_hours: ev.left_hours ?? 0,
+    coverage_pct: c.coverage_pct, min_coverage_pct: c.min_coverage_pct, coverage_ok: c.coverage_ok,
+    ok_days: c.hold.ok_days, need_days: c.hold.need_days,
+    marks: Array.from({ length: c.days }, (_, k) => {
+      const r = rows[k];
+      if (r) return { day: k + 1, state: r.done ? (r.hold_ok ? "ok" : "ng") : "running", flip: !!r.flip };
+      return { day: k + 1, state: ev.state === "running" && k === day - 1 ? "running" : "none", flip: false };
+    }),
+  };
+}
 
-/** 2週間の評価（M5d。SPEC 11章）。予測（スコア）と実績（練習の記録）を比べる。合格の基準はまだ決まっていない。 */
+/** 2週間の評価（M5d。SPEC 11章）。予測（スコア）と実績（練習の記録）を比べる */
 export function EvaluationCard() {
   const { data, error, reload } = useApi<Evaluation>("/api/paper/evaluation");
   const [ask, setAsk] = useState<"start" | "stop" | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  if (!data) return <Card title="2週間の評価"><Loading error={error} /></Card>;
+  if (!data) return <Card title="評価（2週間）"><Loading error={error} rows={1} /></Card>;
   const run = async (what: "start" | "stop") => {
     setBusy(true);
     try {
@@ -195,195 +193,188 @@ export function EvaluationCard() {
   const [label, t] = EVAL_STATE[data.state];
   const running = data.state === "running";
   const days = data.evaluation_days;
+  const light = toLight(data);
+  const ref = data.reference;
   return (
-    <Card title="2週間の評価" right={<Badge tone={t}>{label}</Badge>}>
-      {data.disclaimer && <p className="mb-2 rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-200">{data.disclaimer}</p>}
-      {data.state === "not_started" ? (
-        <p className="text-sm leading-relaxed text-slate-300">
-          {days}日間、練習の記録と「始める前の見込み（スコア）」を比べて、見込みがどれくらい当たるかを確かめます。
-          始めるとこのカードに毎日の結果がたまっていきます（お金は動きません）。
-        </p>
-      ) : (
-        <>
-          <div className="grid grid-cols-2 gap-2 text-xs text-slate-400">
-            <div>始めた <span className="text-slate-200">{jst(data.started_at ?? null)}</span></div>
-            <div>{running ? "残り" : "終わり"} <span className="text-slate-200">{running ? hoursJa(data.left_hours ?? 0) : jst(data.ends_at ?? null)}</span></div>
-            <div>記録できた時間 <span className="num text-slate-200">{hoursJa(data.observed_hours ?? 0)}</span></div>
-            <div>止まっていた時間（推定） <span className="num text-slate-200">{hoursJa(data.estimated_hours ?? 0)}</span></div>
+    <section className="card flex flex-col overflow-hidden">
+      <div className="flex flex-col gap-4 p-6">
+        <div className="flex items-center justify-between gap-2">
+          <span className="label flex items-center gap-2"><Icon name="flag" size={16} /><span>評価（2週間）の進み具合</span></span>
+          <Pill tone={t}>{label}</Pill>
+        </div>
+        {data.state === "not_started" ? (
+          <p className="sec">
+            {days}日間、練習の記録と「始める前の見込み（スコア）」を比べて、見込みがどれくらい当たるかを確かめます。お金は動きません。
+          </p>
+        ) : light && <EvalProgress e={light} />}
+        {ref && light && (
+          <div className="inset flex flex-col gap-1 p-4">
+            <span className="label">参考: その時間の見込みと比べると</span>
+            <span><span className="bold num">{ref.ok_days}日</span> が近かった（合否には使いません）</span>
+            {ref.differs_days.length > 0 && (
+              <span className="cap">始めたときの見込みでは外れて、こちらでは近かった日: {ref.differs_days.map((d) => `${d}日目`).join("・")}（外れた理由が切り替えだった可能性が高い日）</span>
+            )}
+            {ref.flip_days.length > 0 && <span className="cap">切り替えのあった日: {ref.flip_days.map((d) => `${d}日目`).join("・")}</span>}
           </div>
-          {data.coverage && data.coverage.length > 0 && (
-            <div className="mt-2 space-y-1 text-xs">
-              {data.coverage.map((c) => (
-                <div key={c.venue_id} className="flex justify-between rounded bg-slate-800/40 px-2 py-1">
-                  <span className="text-slate-300">データの集まり具合（{c.venue_id}）</span>
-                  <span className="num text-slate-100">{c.ok}/{c.expected}回（{c.ratio === null ? "—" : `${(c.ratio * 100).toFixed(0)}%`}）</span>
+        )}
+        {data.disclaimer && <p className="cap">{data.disclaimer}</p>}
+        {msg && <p className="sec">{msg}</p>}
+      </div>
+      {data.state !== "not_started" && (
+        <>
+          <Fold title="見込みと実際（1日あたり）">
+            {data.actual_net_day == null ? (
+              <p className="cap">まだ比べられる記録がありません。練習の建玉を持つと、1時間ごとに記録がたまります。</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="inset p-4"><div className="cap">見込み</div><div className="bold num">{signedUsd(data.predicted_net_day ?? null)}</div></div>
+                  <div className="inset p-4"><div className="cap">実際</div><div className="bold num">{signedUsd(data.actual_net_day ?? null)}</div>
+                    <div className="cap num">見込みとの差 {data.gap_pct == null ? "—" : pct(data.gap_pct)}</div></div>
                 </div>
-              ))}
-            </div>
-          )}
-          {data.actual_net_day === null || data.actual_net_day === undefined ? (
-            <p className="mt-3 text-sm text-slate-400">まだ比べられる記録がありません。練習の建玉を持つと、1時間ごとに記録がたまります。</p>
-          ) : (
-            <>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-center text-xs">
-                <div className="rounded-lg bg-slate-800/40 p-2">
-                  <div className="text-slate-400">見込み（1日あたり）</div>
-                  <div className={`num text-base ${tone(data.predicted_net_day ?? null)}`}>{signedUsd(data.predicted_net_day ?? null)}</div>
-                </div>
-                <div className="rounded-lg bg-slate-800/40 p-2">
-                  <div className="text-slate-400">実際（1日あたり）</div>
-                  <div className={`num text-base ${tone(data.actual_net_day ?? null)}`}>{signedUsd(data.actual_net_day ?? null)}</div>
-                  <div className="text-[10px] text-slate-500">見込みとの差 {data.gap_pct === null || data.gap_pct === undefined ? "—" : pct(data.gap_pct)}</div>
-                </div>
-              </div>
-              <table className="mt-2 w-full text-xs">
-                <thead><tr className="text-slate-500"><th className="text-left font-normal">内訳（1日あたり）</th><th className="text-right font-normal">見込み</th><th className="text-right font-normal">実際</th></tr></thead>
-                <tbody>
-                  {(data.compare ?? []).map((c) => (
-                    <tr key={c.key} className="border-t border-slate-800">
-                      <td className="py-1 text-slate-300">{c.label}</td>
-                      <td className={`num text-right ${tone(c.predicted)}`}>{signedUsd(c.predicted)}</td>
-                      <td className={`num text-right ${tone(c.actual)}`}>{signedUsd(c.actual)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="mt-2 rounded-lg bg-slate-800/40 p-2 text-xs text-slate-300">
-                報酬を持ち続けた場合 <span className={`num ${tone(data.hold_net_day ?? null)}`}>{signedUsd(data.hold_net_day ?? null)}</span> ／
-                すぐ売った場合 <span className={`num ${tone(data.sell_net_day ?? null)}`}>{signedUsd(data.sell_net_day ?? null)}</span>（1日あたり）
-                {data.closer && <div className="mt-1 text-slate-200">見込みに近いのは「{data.closer === "hold" ? "持ち続けた場合" : "すぐ売った場合"}」です。</div>}
-              </div>
-            </>
-          )}
-          {data.criteria && <Criteria c={data.criteria} />}
-          {data.days && data.days.length > 0 && <DayTable days={data.days} />}
-          {data.events && data.events.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {data.events.map((e) => <Badge key={e.level} tone="slate">{e.level_ja} {e.n}件</Badge>)}
-            </div>
-          )}
+                <table className="tbl">
+                  <thead><tr><th>内訳（1日あたり）</th><th className="r">見込み</th><th className="r">実際</th></tr></thead>
+                  <tbody>
+                    {(data.compare ?? []).map((c) => (
+                      <tr key={c.key}><td className="sec">{c.label}</td>
+                        <td className={`num r ${tone(c.predicted)}`}>{signedUsd(c.predicted)}</td>
+                        <td className={`num r ${tone(c.actual)}`}>{signedUsd(c.actual)}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+                <Line k="報酬を持ち続けた場合" v={signedUsd(data.hold_net_day ?? null)} />
+                <Line k="すぐ売った場合" v={signedUsd(data.sell_net_day ?? null)} />
+                {data.closer && <p className="sec">見込みに近いのは「{data.closer === "hold" ? "持ち続けた場合" : "すぐ売った場合"}」です。</p>}
+              </>
+            )}
+          </Fold>
+          {data.criteria && <Fold title="合格の基準"><Criteria c={data.criteria} /></Fold>}
+          {data.days && data.days.length > 0 && <Fold title="1日ごとの記録"><DayTable days={data.days} /></Fold>}
+          <Fold title="記録できた時間とデータの集まり具合">
+            <Line k="始めた" v={jst(data.started_at ?? null)} />
+            <Line k={running ? "残り" : "終わり"} v={running ? hoursJa(data.left_hours ?? 0) : jst(data.ends_at ?? null)} />
+            <Line k="記録できた時間" v={hoursJa(data.observed_hours ?? 0)} />
+            <Line k="止まっていた時間（推定）" v={hoursJa(data.estimated_hours ?? 0)} />
+            {(data.coverage ?? []).map((c) => (
+              <Line key={c.venue_id} k={`データの集まり具合（${c.venue_id}）`} v={`${c.ok}/${c.expected}回（${c.ratio === null ? "—" : `${(c.ratio * 100).toFixed(0)}%`}）`} />
+            ))}
+            {data.events && data.events.length > 0 && (
+              <div className="flex flex-wrap gap-2">{data.events.map((e) => <Pill key={e.level}>{e.level_ja} {e.n}件</Pill>)}</div>
+            )}
+            {data.note && <Note>{data.note}</Note>}
+            {ref && <Note>{ref.note}</Note>}
+          </Fold>
         </>
       )}
-      {data.mode === "paper" && !ask && (
-        running ? (
-          <button disabled={busy} onClick={() => setAsk("stop")}
-            className="mt-3 w-full rounded-xl bg-slate-700 py-3 text-sm font-bold text-white disabled:opacity-50">評価をやめる</button>
-        ) : (
-          <button disabled={busy} onClick={() => setAsk("start")}
-            className="mt-3 w-full rounded-xl bg-emerald-700 py-3 text-sm font-bold text-white disabled:opacity-50">
-            {data.state === "not_started" ? `${days}日間の評価を始める` : `もう一度${days}日間の評価を始める`}</button>
-        )
-      )}
-      {ask && (
-        <div className="mt-3 rounded-xl border border-slate-600 bg-slate-900 p-3 text-sm">
-          <p className="text-slate-100">{ask === "start"
-            ? `今から${days}日間の評価を始めます。パソコンが止まっている時間は「推定」になり、比べる対象から外れます。よろしいですか？`
-            : "評価をやめます（ここまでの記録は残ります）。よろしいですか？"}</p>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <button disabled={busy} onClick={() => run(ask)} className="rounded-lg bg-emerald-700 py-2 font-bold text-white disabled:opacity-50">はい</button>
-            <button onClick={() => setAsk(null)} className="rounded-lg bg-slate-700 py-2 text-white">やめる</button>
-          </div>
+      {data.mode === "paper" && (
+        <div className="flex flex-col gap-2 border-t border-white/[0.06] p-6">
+          {!ask && (running ? (
+            <button disabled={busy} onClick={() => setAsk("stop")} className="ghost self-start"><Icon name="xc" size={16} />評価をやめる</button>
+          ) : (
+            <button disabled={busy} onClick={() => setAsk("start")} className="btn self-start">
+              {data.state === "not_started" ? `${days}日間の評価を始める` : `もう一度${days}日間の評価を始める`}</button>
+          ))}
+          {ask && (
+            <div className="inset flex flex-col gap-4 p-4">
+              <p>{ask === "start"
+                ? `今から${days}日間の評価を始めます。パソコンが止まっている時間は「推定」になり、比べる対象から外れます。評価の間は新しい練習を始められません。よろしいですか？`
+                : "評価をやめます（ここまでの記録は残ります）。よろしいですか？"}</p>
+              <div className="flex gap-2">
+                <button disabled={busy} onClick={() => run(ask)} className="btn">はい</button>
+                <button onClick={() => setAsk(null)} className="btn btn-quiet">やめる</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
-      {msg && <p className="mt-2 text-sm text-slate-200">{msg}</p>}
-      {data.note && <Note>{data.note}</Note>}
-    </Card>
+    </section>
   );
 }
 
-const RESULT: Record<EvalVerdict["result"], [string, "slate" | "emerald" | "amber" | "rose" | "sky"]> = {
-  running: ["評価中", "sky"], stopped: ["途中でやめた", "amber"], pass: ["合格", "emerald"], fail: ["不合格", "rose"],
+const hoursJa = (h: number) => (h >= 24 ? `${Math.floor(h / 24)}日${Math.round(h % 24)}時間` : `${h.toFixed(1)}時間`);
+
+const RESULT: Record<EvalVerdict["result"], [string, "n" | "g" | "y" | "r"]> = {
+  running: ["評価中", "n"], stopped: ["途中でやめた", "y"], pass: ["合格", "g"], fail: ["不合格", "r"],
 };
 
 /** 合格の基準（2026-09-29 オーナー決定）と、持ち続ける前提・すぐ売る前提それぞれの判定 */
 function Criteria({ c }: { c: NonNullable<Evaluation["criteria"]> }) {
   const col = (title: string, v: EvalVerdict) => (
-    <div className="rounded-lg bg-slate-800/40 p-2 text-center">
-      <div className="text-xs text-slate-400">{title}</div>
-      <div className="my-1"><Badge tone={RESULT[v.result][1]}>{RESULT[v.result][0]}</Badge></div>
-      <div className="num text-sm text-slate-100">{v.ok_days} / {v.need_days}日</div>
-      <div className="text-[10px] text-slate-500">満たした日 / 合格に必要な日</div>
+    <div className="inset flex flex-col items-start gap-2 p-4">
+      <div className="cap">{title}</div>
+      <Pill tone={RESULT[v.result][1]}>{RESULT[v.result][0]}</Pill>
+      <div className="bold num">{v.ok_days} / {v.need_days}日</div>
+      <div className="cap">満たした日 / 合格に必要な日</div>
     </div>
   );
   return (
-    <div className="mt-3">
-      <div className="mb-1 text-xs text-slate-400">合格の基準で見ると（{c.done_days}/{c.days}日が終わりました）</div>
-      <div className="grid grid-cols-2 gap-2">
-        {col("報酬を持ち続ける前提", c.hold)}
-        {col("報酬をすぐ売る前提", c.sell)}
-      </div>
-      <div className={`mt-2 text-xs ${c.coverage_ok ? "text-emerald-300" : "text-rose-300"}`}>
-        データの集まり具合 {c.coverage_pct === null ? "—" : `${c.coverage_pct.toFixed(1)}%`}（{c.min_coverage_pct}%以上が必要）{c.coverage_ok ? " ✓" : " ✗"}
-      </div>
+    <>
+      <div className="cap">{c.done_days}/{c.days}日が終わりました</div>
+      <div className="grid grid-cols-2 gap-2">{col("報酬を持ち続ける前提", c.hold)}{col("報酬をすぐ売る前提", c.sell)}</div>
+      <Line k="データの集まり具合" v={`${c.coverage_pct === null ? "—" : `${c.coverage_pct.toFixed(1)}%`}${c.coverage_ok ? "" : "（足りません）"}`}
+        note={`${c.min_coverage_pct}%以上が必要`} />
       <Note>
         基準: ① データの集まり具合が{c.min_coverage_pct}%以上 ② 1日（始めた時刻から24時間ずつ）の純損益の差が、予測の±{c.day_gap_pct}%以内か、
         総資産の{c.day_gap_capital_pct}%以内の日が、{c.days}日の{c.pass_days_pct}%以上。数字は config.yaml の evaluation で変えられます。
       </Note>
-    </div>
+    </>
   );
 }
 
 function DayTable({ days }: { days: NonNullable<Evaluation["days"]> }) {
-  const mark = (ok: boolean, v: number | null, done: boolean) =>
-    v === null ? <span className="text-slate-600">記録なし</span> : (
-      <span className={tone(v)}>{signedUsd(v)}{done ? (ok ? " ○" : " ×") : ""}</span>);
+  const mark = (ok: boolean | null | undefined, v: number | null | undefined, done: boolean) =>
+    v == null ? <span className="text-cap">—</span> : <span>{signedUsd(v)}{done && ok != null ? (ok ? " ○" : " ×") : ""}</span>;
   return (
-    <table className="mt-2 w-full text-xs">
-      <thead>
-        <tr className="text-slate-500">
-          <th className="text-left font-normal">日</th><th className="text-right font-normal">予測</th>
-          <th className="text-right font-normal">持ち続け</th><th className="text-right font-normal">すぐ売り</th>
-        </tr>
-      </thead>
-      <tbody>
-        {days.map((d) => (
-          <tr key={d.day} className="border-t border-slate-800">
-            <td className="py-1 text-slate-300">{d.day}日目{d.done ? "" : "（途中）"}</td>
-            <td className={`num text-right ${tone(d.predicted)}`}>{d.predicted === null ? "—" : signedUsd(d.predicted)}</td>
-            <td className="num text-right">{mark(d.hold_ok, d.hold, d.done)}</td>
-            <td className="num text-right">{mark(d.sell_ok, d.sell, d.done)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      <div className="scroll-x">
+        <table className="tbl min-w-[420px]">
+          <thead><tr><th>日</th><th className="r">予測</th><th className="r">持ち続け</th><th className="r">すぐ売り</th><th className="r">参考</th></tr></thead>
+          <tbody>
+            {days.map((d) => (
+              <tr key={d.day}>
+                <td className="sec">{d.day}日目{d.done ? "" : "（途中）"}{d.flip ? " · 切り替え" : ""}</td>
+                <td className="num r">{d.predicted === null ? "—" : signedUsd(d.predicted)}</td>
+                <td className="num r">{mark(d.hold_ok, d.hold, d.done)}</td>
+                <td className="num r">{mark(d.sell_ok, d.sell, d.done)}</td>
+                <td className="num r sec">{mark(d.reference_ok, d.reference, d.done)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Note>○ は予測に近かった日、× は外れた日。「参考」は、その時間の最新の見込みと比べたものです（合否には使いません）。</Note>
+    </>
   );
 }
 
-const HEDGE_TONE: Record<HedgeStatus["state"], "emerald" | "amber" | "rose" | "slate"> = {
-  ok: "emerald", short: "amber", none: "rose", error: "rose", waiting: "slate",
+const HEDGE_TONE: Record<HedgeStatus["state"], "g" | "y" | "r" | "n"> = {
+  ok: "n", short: "y", none: "r", error: "r", waiting: "n",
 };
 
-/** ヘッジ先の担保（SPEC 5.2.1章。2026-09-29 オーナー追加）。読み取りだけ */
-export function HedgeVenuesCard() {
-  const { data, error } = useApi<Hedges>("/api/hedges");
-  if (!data) return <Card title="ヘッジ先の担保"><Loading error={error} /></Card>;
+/** ヘッジ先の担保（SPEC 5.2.1章。読み取りだけ） */
+export function HedgeVenuesBody() {
+  const { data, error } = useApi<Hedges>("/api/hedges", 0);
+  if (!data) return <Loading error={error} rows={1} />;
   return (
-    <Card title={<Term k="保険（ヘッジ）">ヘッジ先の担保</Term>}>
-      <div className="space-y-2">
-        {data.venues.map((v) => (
-          <div key={v.hedge_id} className="rounded-lg bg-slate-800/40 p-2 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-slate-100">{v.name}</span>
-              <Badge tone={HEDGE_TONE[v.status.state]}>{v.status.state_ja}{v.status.paper ? "（練習）" : ""}</Badge>
-            </div>
-            <div className="mt-1 grid grid-cols-2 gap-1 text-xs text-slate-400">
-              <div>担保 <span className="num text-slate-200">{usd(v.status.collateral_usd ?? null, 0)}</span></div>
-              <div>必要な額 <span className="num text-slate-200">{usd(v.need_usd, 0)}</span></div>
-              <div>扱っている先物 <span className="num text-slate-200">{v.markets}</span></div>
-              <div>取引手数料（最大） <span className="num text-slate-200">{v.max_taker_pct == null ? "—" : `${v.max_taker_pct}%`}</span></div>
-            </div>
-            {v.status.note && <p className="mt-1 text-xs text-slate-400">{v.status.note}</p>}
-            {v.real && (
-              <p className="mt-1 text-xs text-slate-400">
-                本物の口座（{v.address}）: {v.real.state_ja}
-                {v.real.collateral_usd != null && ` ・ 担保 ${usd(v.real.collateral_usd, 2)}`}
-                {v.real.positions && v.real.positions.length > 0 && ` ・ 建玉 ${v.real.positions.length}件`}
-              </p>
-            )}
+    <>
+      {data.venues.map((v) => (
+        <div key={v.hedge_id} className="inset flex flex-col gap-2 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="bold">{v.name}</span>
+            <Pill tone={HEDGE_TONE[v.status.state]}>{v.status.state_ja}{v.status.paper ? "（練習）" : ""}</Pill>
           </div>
-        ))}
-      </div>
-      <Note>読み取りだけです（お金は動かしません）。担保の残高は、config.yaml の hedge_venues か .env にアドレスを書いたときだけ読みます。</Note>
-    </Card>
+          <Line k="担保" v={usd(v.status.collateral_usd ?? null, 0)} />
+          <Line k="必要な額" v={usd(v.need_usd, 0)} />
+          <Line k="扱っている先物" v={String(v.markets)} />
+          <Line k="取引手数料（最大）" v={v.max_taker_pct == null ? "—" : `${v.max_taker_pct}%`} />
+          {v.status.note && <Note>{v.status.note}</Note>}
+          {v.real && (
+            <Note>本物の口座（{v.address}）: {v.real.state_ja}{v.real.collateral_usd != null && ` · 担保 ${usd(v.real.collateral_usd, 2)}`}
+              {v.real.positions && v.real.positions.length > 0 && ` · 建玉 ${v.real.positions.length}件`}</Note>
+          )}
+        </div>
+      ))}
+      <Note>読み取りだけです（お金は動かしません）。担保の残高は、config.yaml の hedge_venues か .env にアドレスを書いたときだけ読みます。<Term k="保険（ヘッジ）">保険とは</Term></Note>
+    </>
   );
 }

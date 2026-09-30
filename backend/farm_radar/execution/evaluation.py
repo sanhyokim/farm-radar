@@ -24,6 +24,7 @@ from .. import views
 from ..collectors.completeness import check
 from ..config import Config, ConfigError, load_venue, practice_allowed
 from ..risk.rules import LEVEL_JA
+from .flip import live_per_day
 from .paper import CATS
 
 PRED_KEYS = {"income": ("income", 1), "direction": ("direction_risk", -1), "gamma": ("gamma", -1),
@@ -102,8 +103,10 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
                          "missing_hours": len(r.missing) * config.snapshot_minutes / 60})
 
     # 予測と実績（期間の中の、推定でない行。開く・閉じる時の行は1回きりの費用なので除く）
-    rows = conn.execute("""SELECT n.*, p.predicted_json, p.capital FROM position_pnl n JOIN positions p ON p.id=n.position_id
-                           WHERE p.is_paper=1 AND n.ts>? AND n.ts<=?""", (_iso(start_t), _iso(until))).fetchall()
+    rows = conn.execute("""SELECT n.*, p.predicted_json, p.capital, p.pool_id, p.mode FROM position_pnl n
+                           JOIN positions p ON p.id=n.position_id
+                           WHERE p.is_paper=1 AND n.ts>? AND n.ts<=? ORDER BY n.position_id, n.ts""",
+                        (_iso(start_t), _iso(until))).fetchall()
     actual = {c: 0.0 for c in CATS}
     predicted = {c: 0.0 for c in CATS}
     sell_haircut = 0.0
@@ -112,9 +115,19 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
     per_pos: set[int] = set()
     ev = config.evaluation
     n_days = ev.days
-    daily = [{"pred": 0.0, "pred_sell": 0.0, "hold": 0.0, "sell": 0.0, "hours": 0.0, "capital": {}} for _ in range(n_days)]
+    daily = [{"pred": 0.0, "pred_sell": 0.0, "hold": 0.0, "sell": 0.0, "hours": 0.0, "capital": {},
+              "ref": 0.0, "ref_hours": 0.0} for _ in range(n_days)]
+    # 参考: その時点の最新のスコアで作った見込み（2026-09-30 オーナー決定②。合否には使わない）。
+    # 建玉のレンジ幅は置き直しで変わるので、置き直しの行を見ながら追いかける
+    ref_net = ref_hours = 0.0
+    ref_cache: dict = {}
+    r_now: dict[int, float] = {}
     for r in rows:
         d = json.loads(r["detail_json"] or "{}")
+        if r["position_id"] not in r_now:
+            r_now[r["position_id"]] = float(json.loads(r["predicted_json"] or "{}").get("r_pct") or 0.0)
+        if d.get("event") == "rebalance" and d.get("r_pct") is not None:
+            r_now[r["position_id"]] = float(d["r_pct"])
         if d.get("event") in ("open", "close"):
             continue
         dt_h = float(d.get("dt_s") or 0.0) / 3600
@@ -138,9 +151,17 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         ns = pred.get("net_sell_now")
         pred_sell_row = float(ns) * dt_h / 24 if ns is not None else pred_row
         pred_sell_net += pred_sell_row
+        live = live_per_day(conn, r["pool_id"], r["ts"], r_now[r["position_id"]], r["mode"], ref_cache) if dt_h else None
+        ref_row = live["net"] * dt_h / 24 if live is not None else None
+        if ref_row is not None:
+            ref_net += ref_row
+            ref_hours += dt_h
         k = int((datetime.fromisoformat(r["ts"]) - start_t).total_seconds() // 86400)
         if 0 <= k < n_days:
             day = daily[k]
+            if ref_row is not None:
+                day["ref"] += ref_row
+                day["ref_hours"] += dt_h
             day["pred"] += pred_row
             day["pred_sell"] += pred_sell_row
             day["hold"] += net_row
@@ -164,10 +185,13 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         gap = abs(act - pred)
         return gap <= abs(pred) * ev.day_gap_pct / 100 or gap <= capital * ev.day_gap_capital_pct / 100
 
+    flips = _flip_times(conn, config, start_t, end_t)
     day_rows = []
     for k, day in enumerate(daily[:max(done_days, min(n_days, int(math.ceil(hours / 24))))]):
         cap = sum(day["capital"].values())
         has = day["hours"] > 0
+        has_ref = has and day["ref_hours"] >= day["hours"] - 1e-9
+        d0, d1 = start_t + timedelta(days=k), start_t + timedelta(days=k + 1)
         day_rows.append({
             "day": k + 1, "start": _iso(start_t + timedelta(days=k)), "done": k < done_days,
             "hours": day["hours"], "capital": cap, "predicted": day["pred"] if has else None,
@@ -175,6 +199,10 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
             "hold": day["hold"] if has else None, "sell": day["sell"] if has else None,
             "hold_ok": has and day_ok(day["pred"], day["hold"], cap),
             "sell_ok": has and day_ok(day["pred_sell"], day["sell"], cap),
+            # 参考（合否には使わない）: その時点の見込みと比べた結果。切り替えのあった日に印
+            "reference": day["ref"] if has_ref else None,
+            "reference_ok": (has_ref and day_ok(day["ref"], day["hold"], cap)) if has_ref else None,
+            "flip": any(d0 <= f < d1 for f in flips),
         })
     need = math.ceil(n_days * ev.pass_days_pct / 100)
     cov_ratios = [c["ratio"] for c in coverage if c["ratio"] is not None]
@@ -191,6 +219,17 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
             result = "running"
         return {"ok_days": ok_days, "need_days": need, "result": result}
 
+    done_rows = [d for d in day_rows if d["done"]]
+    reference = {
+        "ok_days": sum(1 for d in done_rows if d["reference_ok"]),
+        "need_days": need,
+        "differs_days": [d["day"] for d in done_rows if d["reference_ok"] is not None and d["reference_ok"] != d["hold_ok"]],
+        "flip_days": [d["day"] for d in day_rows if d["flip"]],
+        "net_day": (ref_net / (ref_hours / 24)) if ref_hours > 0 else None,
+        "note": ("参考です。合否は、始めたときの見込みとの比較で決めます（変わりません）。"
+                 "こちらは15分ごとの記録を、その時点の最新のスコア（木曜の切り替えのあとは、ボーナスが変わったあとの見込み）と比べたものです。"
+                 "始めたときの見込みでは外れて、こちらでは当たっている日は、外れた理由が切り替えだった可能性が高い日です。"),
+    }
     criteria = {
         "min_coverage_pct": ev.min_coverage_pct, "coverage_pct": cov * 100 if cov is not None else None,
         "coverage_ok": cov_ok, "day_gap_pct": ev.day_gap_pct, "day_gap_capital_pct": ev.day_gap_capital_pct,
@@ -209,9 +248,27 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         "predicted_sell_net_day": per_day(pred_sell_net),
         "closer": (None if not days else
                    ("hold" if abs(act_net - pred_net) <= abs(sell_net - pred_sell_net) else "sell")),
-        "events": events, "criteria": criteria, "days": day_rows,
+        "events": events, "criteria": criteria, "days": day_rows, "reference": reference,
         "disclaimer": "この評価は予測が当たるかの確認で、儲かるかの判定ではありません。",
         "note": ("予測はスコア（始めた時の1日の見込み）を、実際に記録した時間の分だけ足したもの。実績は同じ時間の6区分の合計。"
                  "パソコンが止まっていた時間（推定）と、開く・閉じる時の1回きりの費用は比べる対象から外しています。"
                  "1日は評価を始めた時刻から24時間ずつ区切ります。記録のない日は「満たさない日」に数えます。"),
     }
+
+
+def _flip_times(conn: sqlite3.Connection, config: Config, start: datetime, end: datetime) -> list[datetime]:
+    """評価の期間の中の、木曜の切り替えの時刻（評価の建玉がある会場の設定から）。"""
+    out: set[datetime] = set()
+    for vid in evaluation_venues(conn, config, start, end):
+        try:
+            epoch = (load_venue(vid, config.root).get("mechanics") or {}).get("epoch") or {}
+        except (OSError, ConfigError):
+            continue
+        length = int(epoch.get("length_seconds") or 0)
+        if not length:
+            continue
+        t = views.next_epoch_flip(start, length, int(epoch.get("offset_seconds") or 0))
+        while t < end:
+            out.add(t)
+            t += timedelta(seconds=length)
+    return sorted(out)

@@ -22,7 +22,56 @@ export interface PoolRow {
   reward_estimate_note?: string | null;
   /** 報酬トークンそのものを預けるプールの警告文（2026-09-30 オーナー追加） */
   reward_held?: string | null;
+  /** 配布の終了日が分かる会場・プールだけ（「配布終了まであと○日」。2026-09-30 オーナー追加） */
+  emission_end?: EmissionEnd | null;
+  // 画面の見直し（2026-09-30 オーナー依頼 13・23・24。表示だけ）
+  ts?: string;
+  key_reason?: string | null;
+  slippage_pct?: number | null;
+  checks?: Check[];
+  reason_parts?: { formula: string | null; main: string | null; notes: string[] };
+  /** 直近48時間の純日利（ホームのカードの小さな線グラフ） */
+  spark?: number[];
 }
+
+export interface Check { state: "ok" | "warn" | "bad" | "info"; text: string }
+
+/** 今日やること（オーナー依頼 17）。危険 → 注意 → お知らせ の順 */
+export interface Todo { level: "danger" | "attention" | "info"; title: string; action: string; to: string | null }
+
+export interface HomePaper {
+  enabled: boolean; stopped: boolean; text: string;
+  positions: { id: number; pair: string; venue_id: string; value: number; change_usd: number; today_usd: number;
+    reward_24h_usd: number; status: string; tone: "ok" | "attention"; hours: number; spark: number[]; started_red: boolean }[];
+  total: { capital: number; value: number; change_usd: number; today_usd: number };
+  hourly?: { bars: Bar[]; best: Bar | null; worst: Bar | null };
+  /** 評価額の合計の推移（1時間ごと） */
+  spark?: number[];
+}
+
+export interface EvalLight {
+  state: "running" | "stopped" | "finished"; started_at: string; ends_at: string; day: number; days: number;
+  left_hours: number; coverage_pct: number | null; min_coverage_pct: number; coverage_ok: boolean;
+  ok_days: number; need_days: number; marks: { day: number; state: "ok" | "ng" | "running" | "none"; flip: boolean }[];
+}
+
+/** 左のメニューと見出し用の軽い状態 */
+export interface Pulse { mode: string; stale: boolean; last_ok_at: string | null; scored_at: string | null; snapshot_minutes: number; now: string;
+  /** 練習中のプール */
+  practicing: string[];
+  /** 次の木曜の切り替え */
+  next_flip: string | null }
+
+export interface EmissionEnd { at: string; days_left: number; soon: boolean; ended: boolean; source?: string | null }
+
+/** 「予定とメモ」の1件（docs/plans.yaml。期限の7日前から soon。2026-09-30 オーナー追加） */
+export interface PlanItem {
+  key: string; group: string; title: string; text: string; source?: string | null;
+  due: string | null; days_left: number | null; state: "soon" | "later" | "past" | null;
+}
+
+/** 調べたが実装していない会場（docs/plans.yaml。2026-09-30 オーナー追加） */
+export interface SkippedVenue { key: string; name: string; chain?: string | null; reason: string; decided?: string | null; source?: string | null }
 
 /** 運営が手で足したボーナス（プール全体・今のエポック）。判定には入れない（2026-09-30 オーナー条件4） */
 export interface ManualBonus {
@@ -62,6 +111,9 @@ export interface Home {
   };
   collection: { venue_id: string; name?: string; observe?: boolean; last_ok_at: string | null; stale: boolean;
     gaps_7d: { start_slot: string; end_slot: string }[] }[];
+  /** 期限が7日以内の予定（2026-09-30 オーナー追加） */
+  plans_soon?: PlanItem[];
+  todo: Todo[]; paper: HomePaper; evaluation: EvalLight | null; snapshot_minutes: number;
 }
 
 export interface Point { ts: string; v: number | null }
@@ -143,9 +195,18 @@ export interface PaperCard {
   payback_total_hours: number | null; payback_left_hours: number | null;
   rebalances: number; cautions: string[]; skipped: string[];
   rebalance_cost: number;
+  /** 今日（日本時間の0時から）の損益と、評価額の小さな線グラフ（2026-09-30 画面の見直し） */
+  today_usd: number; spark: number[];
+  /** ボーナスが減ったときの比べ方の最新の結果（2026-09-30 オーナー決定③。記録だけ） */
+  bonus_drop: BonusDrop | null;
   swap?: { slippage_pct_now: number | null; rebalance_slippage_total: number; rebalance_slippage_next: number | null;
     open: { swap_usd: number; slippage_pct: number; slippage: number; swap_fee?: number; gas?: number; hedge_fee?: number;
       total?: number; estimated?: boolean } | null }; close_cost_usd: number | null;
+}
+
+export interface BonusDrop {
+  at: string; event: number; best: "stay" | "fees" | "exit"; best_ja: string; ratio: number; next_flip: string;
+  options: Record<string, { usd: number; per_day: number; income_day?: number; close_cost?: number; switch_cost?: number }>;
 }
 
 export interface Watch {
@@ -168,6 +229,8 @@ export interface Paper {
   risk: { level: RiskEvent["level"]; level_ja: string; rule: string; action: string }[];
   watch: Watch;
   timeline: TimelineItem[]; outlook: Outlook | null; ledger_months: string[];
+  /** 評価の間は新しい練習を始めない（2026-09-30 オーナー決定①） */
+  evaluation_block: { until: string; message: string } | null;
 }
 
 export interface TimelineItem {
@@ -191,7 +254,10 @@ export interface Evaluation {
     hold: EvalVerdict; sell: EvalVerdict;
   };
   days?: { day: number; start: string; done: boolean; hours: number; capital: number; predicted: number | null;
-    predicted_sell: number | null; hold: number | null; sell: number | null; hold_ok: boolean; sell_ok: boolean }[];
+    predicted_sell: number | null; hold: number | null; sell: number | null; hold_ok: boolean; sell_ok: boolean;
+    reference?: number | null; reference_ok?: boolean | null; flip?: boolean }[];
+  /** 参考: その時間の見込みとの比較（2026-09-30 オーナー決定②。合否には使わない） */
+  reference?: { ok_days: number; need_days: number; differs_days: number[]; flip_days: number[]; net_day: number | null; note: string };
 }
 
 export interface EvalVerdict { ok_days: number; need_days: number; result: "running" | "stopped" | "pass" | "fail" }
@@ -236,22 +302,41 @@ export async function postApi<T>(path: string, body?: unknown): Promise<T> {
   return r.json();
 }
 
-export function useApi<T>(path: string): { data: T | null; error: string | null; reload: () => void } {
+/**
+ * API を読む。画面に戻ってきたとき（タブを開き直す・スマホで表示し直す）と、refreshMs ごとに読み直す
+ * （開きっぱなしの画面が古い数字のままにならないように。オーナー依頼 21）。読み直しの間も前の数字は出したまま。
+ */
+export function useApi<T>(path: string, refreshMs = 60_000): { data: T | null; error: string | null; reload: () => void } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [n, setN] = useState(0);
+  const [shown, setShown] = useState(path);
+  if (shown !== path) {        // 別のプールなどに移ったら、前の画面の数字は消す
+    setShown(path);
+    setData(null);
+  }
   useEffect(() => {
     let alive = true;
-    setError(null);
     fetch(path)
       .then(async (r) => {
         if (!r.ok) throw new Error((await r.json().catch(() => null))?.detail ?? `エラー ${r.status}`);
         return r.json();
       })
-      .then((d) => alive && setData(d))
+      .then((d) => { if (alive) { setData(d); setError(null); } })
       .catch((e) => alive && setError(String(e.message ?? e)));
     return () => { alive = false; };
   }, [path, n]);
+  useEffect(() => {
+    const again = () => { if (document.visibilityState === "visible") setN((x) => x + 1); };
+    document.addEventListener("visibilitychange", again);
+    window.addEventListener("focus", again);
+    const t = refreshMs > 0 ? window.setInterval(again, refreshMs) : undefined;
+    return () => {
+      document.removeEventListener("visibilitychange", again);
+      window.removeEventListener("focus", again);
+      if (t) window.clearInterval(t);
+    };
+  }, [refreshMs]);
   return { data, error, reload: () => setN((x) => x + 1) };
 }
 

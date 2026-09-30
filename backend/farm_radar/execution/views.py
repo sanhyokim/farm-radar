@@ -12,13 +12,14 @@ from ..config import RiskSettings
 from ..risk.rules import LEVEL_JA
 from .paper import CATS, latest_score, lp_amounts
 
+OPTION_JA = {"stay": "そのまま", "fees": "ステークをやめて手数料", "exit": "抜ける"}
 RED_START_LABEL = "🔴で開始した練習"
 RED_START_NOTE = ("判定が🔴のプールで始めた練習です。「判定が🔴になったら離脱」のルールは当てはめません"
                   "（ほかの離脱・緊急離脱のルールは当てはめます）。")
 ACTION_JA = {"none": "記録のみ", "rebalanced": "置き直した", "closed": "閉じた", "closed_all": "全部閉じた",
              "skipped_gas": "ガス代が高く見送り", "stopped": "停止", "resumed": "再開"}
 CAUTION_JA = {"edge_near": "レンジの端が近い", "reward_shortfall": "報酬が予測より少ない",
-              "hedge_cost": "ヘッジの費用が大きい"}
+              "hedge_cost": "ヘッジの費用が大きい", "bonus_drop": "切り替えでボーナスが減った（記録だけ）"}
 ESTIMATE_NOTES = [
     "報酬は15分ごとの記録（実際の報酬の量・ステーク流動性・価格）から計算しています。",
     "perp の値段は、プールから出したドル価格で代用しています。",
@@ -68,6 +69,9 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
     payback_total = open_cost / per_hour if per_hour > 0 and open_cost > 0 else None
     payback_left = (max(0.0, -net) / per_hour if per_hour > 0 else None) if open_cost > 0 else None
     actual_state = "short" if hours < risk.actual_min_hours else "ok"
+    # 今日（日本時間の0時から）の損益と、評価額の小さな線グラフ（2026-09-30 オーナー依頼 18・27）
+    today = now.astimezone(views.JST).strftime("%Y-%m-%d")
+    today_usd = sum(float(r[c] or 0.0) for r in rows if views.jst_day(r["ts"]) == today for c in CATS)
     return {
         "id": pos["id"], "pool_id": pos["pool_id"], "pair": pair, "venue_id": pos["venue_id"],
         "status": pos["status"], "opened_at": pos["opened_at"], "closed_at": pos["closed_at"],
@@ -78,7 +82,8 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
         "price_open": pos["price_open"], "in_range": in_range,
         "to_lower_pct": (price / pos["lower"] - 1) * 100, "to_upper_pct": (pos["upper"] / price - 1) * 100,
         "amounts": {pool["token0_symbol"]: x, pool["token1_symbol"]: y},
-        "value": cap + net, "change_usd": net,
+        "value": cap + net, "change_usd": net, "today_usd": today_usd,
+        "spark": views.thin([float(r["value_usd"]) for r in rows if r["value_usd"] is not None]),
         "change_pct": net / cap * 100 if cap else 0.0,
         "reward_24h_usd": reward_24h, "reward_hours": min(24.0, (now - datetime.fromisoformat(pos["opened_at"])
                                                                  ).total_seconds() / 3600),
@@ -100,6 +105,9 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
         "cautions": [CAUTION_JA.get(k, k) for k in st.get("risk_active") or [] if not k.startswith("skip:")],
         "skipped": [k[5:] for k in st.get("risk_active") or [] if k.startswith("skip:")],
         "swap": _swap_info(conn, pos, st, x, y),
+        # ボーナスが減ったときの比べ方の最新の結果（2026-09-30 オーナー決定③。記録だけ）
+        "bonus_drop": ({**st["bonus_drop"], "best_ja": OPTION_JA.get(st["bonus_drop"].get("best"))}
+                       if st.get("bonus_drop") else None),
     }
 
 
@@ -166,6 +174,11 @@ def risk_rules(r: RiskSettings) -> list[dict[str, str]]:
                                                        f"ヘッジの1日の費用が報酬の{r.caution_hedge_cost_pct:g}%超"
                                                        f"（報酬の比べっこは{r.caution_min_hours:g}時間たってから）",
          "action": "記録する"},
+        {"level": "caution", "level_ja": "注意（記録だけ）",
+         "rule": f"木曜の切り替えでボーナスが前の週の{r.bonus_drop_ratio * 100:g}%以下になった"
+                 f"（0のままなら切り替えから{r.bonus_drop_wait_hours:g}時間待ってから調べる）",
+         "action": "次の切り替えまでの見込みで「そのまま／ステークをやめて手数料／抜ける」を比べて、"
+                   "いちばん損が少ないものを記録して知らせる。建玉はそのまま"},
         {"level": "rebalance", "level_ja": "置き直し", "rule": f"レンジの外に{r.rebalance_after_minutes:g}分いた",
          "action": f"今の価格を中心に置き直す（置き直し先の純日利が{r.rebalance_min_net_pct:+g}%以下なら閉じる）"},
         {"level": "exit", "level_ja": "離脱", "rule": f"報酬トークンが24時間で{r.exit_reward_token_24h_pct:g}% / "

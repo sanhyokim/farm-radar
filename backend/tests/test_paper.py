@@ -115,6 +115,24 @@ def test_observe_only_venue_refuses_practice(world, tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
 
 
+def test_same_pool_cannot_be_opened_twice(world):
+    # 2026-09-30 オーナー指示: 上限に余裕があっても、練習中のプールで2つ目の練習は開けない（サーバー側で止める）
+    path, conn = world
+    big = dataclasses.replace(_config(path), limits={"position_usd": 1000, "total_usd": 10000,
+                                                      "per_venue_share": 1.0, "trades_per_day": 20})
+    ex = PaperExecutor(conn, big, TOKENS, fx=FakeFx(), now=NOW)
+    first = ex.open_position(WETH_POOL, 1000.0)
+    with pytest.raises(PaperError, match="すでに練習中"):
+        ex.open_position(WETH_POOL, 1000.0)
+    assert conn.execute("SELECT COUNT(*) FROM positions WHERE pool_id=?", (WETH_POOL,)).fetchone()[0] == 1
+    # 別のプールは開ける。閉じたあとなら、同じプールでまた始められる
+    ex.open_position("up-robinhood:p-nvda", 1000.0)
+    ex.close_position(first)
+    ex.open_position(WETH_POOL, 1000.0)
+    assert conn.execute("SELECT COUNT(*) FROM positions WHERE pool_id=? AND status='open'",
+                        (WETH_POOL,)).fetchone()[0] == 1
+
+
 def test_open_records_position_ledger_and_red_start(world):
     path, conn = world
     ex, ref = _open(conn, path)
@@ -293,6 +311,9 @@ def test_api_open_detail_close(client):
     # 2つ目は上限で断られ、理由が日本語で返る
     r2 = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-nvda"})
     assert r2.status_code == 400 and "上限" in r2.json()["detail"]
+    # 同じプールは「すでに練習中」で断られる（上限より先に調べる）
+    r3 = c.post("/api/paper/positions", json={"pool_id": WETH_POOL})
+    assert r3.status_code == 400 and "すでに練習中" in r3.json()["detail"]
     _extend(conn, 4)
     run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=5))
     det = c.get(f"/api/paper/positions/{pid}").json()

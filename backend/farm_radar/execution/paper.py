@@ -31,6 +31,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..config import Config, ConfigError, load_venue, practice_allowed
 from ..fx import Frankfurter, rate_for
@@ -39,6 +40,7 @@ from ..tokens import TokenBook
 from .base import ClaimResult, CloseResult, HedgeResult, PositionRef, SwapResult
 
 log = logging.getLogger(__name__)
+JST = ZoneInfo("Asia/Tokyo")
 
 REWARD_DECIMALS = 18
 CATS = ("income", "direction", "gamma", "hedge", "haircut", "other")
@@ -116,6 +118,24 @@ def latest_score(conn: sqlite3.Connection, pool_id: str, at: str | None = None) 
     return conn.execute(q + " ORDER BY ts DESC LIMIT 1", args).fetchone()
 
 
+WEEKDAY_JA = "月火水木金土日"
+
+
+def running_evaluation_end(conn: sqlite3.Connection, now: datetime) -> datetime | None:
+    """進行中の2週間の評価の終わり（なければ None）。途中でやめた評価と、終わった評価は含めない。"""
+    row = conn.execute("SELECT ends_at, status FROM evaluations ORDER BY id DESC LIMIT 1").fetchone()
+    if row is None or row["status"] != "running":
+        return None
+    end = datetime.fromisoformat(row["ends_at"])
+    return end if now < end else None
+
+
+def evaluation_block_message(end: datetime) -> str:
+    j = end.astimezone(JST)
+    return (f"評価中のため、新しい練習は始められません（評価は {j.month}/{j.day}({WEEKDAY_JA[j.weekday()]}) "
+            f"{j:%H:%M} まで）。評価の対象を、始めたときの建玉のまま守るためです。")
+
+
 def _range_row(details: dict[str, Any], r_pct: float) -> dict[str, Any] | None:
     for x in details.get("ranges") or []:
         if abs(float(x.get("r_pct", -1)) - r_pct) < 1e-9:
@@ -165,6 +185,24 @@ class PaperExecutor:
         if "trades_per_day" in lim and trades + 1 > int(lim["trades_per_day"]):
             raise PaperError(f"1日の取引の上限（{lim['trades_per_day']}件）に達しています。")
 
+    def check_not_already_open(self, pool_id: str) -> None:
+        """同じプールで練習中の建玉があれば、新しく開かない（2026-09-30 オーナー指示。画面を通さない呼び出しでも重ならない）。"""
+        row = self.conn.execute("SELECT id FROM positions WHERE is_paper=1 AND status='open' AND pool_id=? LIMIT 1",
+                                (pool_id,)).fetchone()
+        if row is not None:
+            raise PaperError("このプールはすでに練習中です。同じプールで2つ目の練習は開けません。")
+
+    def check_not_in_evaluation(self) -> None:
+        """2週間の評価の間は、新しい練習を始めない（2026-09-30 オーナー決定①。config.yaml の evaluation.block_new_practice）。
+
+        評価の対象を始めたときの建玉のまま守るため。持っている建玉の計算・見張り・置き直しはそのまま続く。
+        """
+        if not self.config.evaluation.block_new_practice:
+            return
+        end = running_evaluation_end(self.conn, self.now)
+        if end is not None:
+            raise PaperError(evaluation_block_message(end))
+
     def check_practice_venue(self, venue_id: str, venue_name: str | None = None) -> None:
         """観察だけの会場（会場ファイルの practice: false。M6 の Alandale）では練習を始めない。"""
         try:
@@ -182,6 +220,8 @@ class PaperExecutor:
         """建玉を作る。レンジを指定しなければ、最新のスコアの最適レンジ（±r%）を使う。"""
         pool = self.market.pool(pool_id)
         self.check_practice_venue(pool["venue_id"], pool["venue_name"])
+        self.check_not_already_open(pool_id)
+        self.check_not_in_evaluation()
         snap = self.market.latest(pool_id)
         score = latest_score(self.conn, pool_id)
         if snap is None or score is None or score["best_r"] is None:
@@ -526,15 +566,9 @@ class PaperExecutor:
         up = st["last_prices"].get("reward")
         d0, d1 = int(pool["token0_decimals"]), int(pool["token1_decimals"])
         x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"], d0, d1)
-        fee, slip, gas = self._costs_now(pos["pool_id"])
-        volatile = (0.0 if self.tokens.is_stable(t0) else x * u0) + (0.0 if self.tokens.is_stable(t1) else y * u1)
-        # 手順2: ずれが上限（max_swap_slippage_pct）を超えるなら、分けて売る（1回あたりのずれが上限に収まる回数）
-        max_slip = self.config.risk.max_swap_slippage_pct / 100
-        parts = max(1, math.ceil(slip / max_slip)) if max_slip > 0 and slip > max_slip else 1
-        swap_cost = volatile * (fee + slip / parts)
-        swap_gas = gas * parts
-        hedge_fee = sum(h["size"] * prices.get(h["token"], h["entry"]) * self.taker_fee(h["market_id"], h.get("hedge_id") or "lighter") for h in hedges)
-        close_cost = swap_cost + gas + swap_gas + hedge_fee
+        cc = self._close_costs(pos, hedges, prices, x, y, u0, u1)
+        slip, gas, max_slip, parts = cc["slippage"], cc["gas"], cc["max_slip"], cc["parts"]
+        swap_cost, swap_gas, hedge_fee, close_cost = cc["swap_cost"], cc["swap_gas"], cc["hedge_fee"], cc["total"]
         st["costs"] += close_cost
         st["close_cost"] = close_cost
         cum = _cumulative(pos, st, hedges, price, u0, u1, up, prices, d0, d1)
@@ -567,6 +601,39 @@ class PaperExecutor:
         log.info("paper position closed", extra={"data": {"position": pos["id"], "reason": reason,
                                                           "net_usd": round(net, 2), "swap_parts": parts}})
         return CloseResult(pos["id"], net)
+
+    def _close_costs(self, pos: sqlite3.Row, hedges: list[dict[str, Any]], prices: dict[str, float],
+                     x: float, y: float, u0: float, u1: float) -> dict[str, Any]:
+        """閉じる時の費用: 両替（値動きする側だけ。ずれが上限を超えるなら分けて売る）+ ガス代 + perp の手数料。"""
+        pool = self.market.pool(pos["pool_id"])
+        t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+        fee, slip, gas = self._costs_now(pos["pool_id"])
+        volatile = (0.0 if self.tokens.is_stable(t0) else x * u0) + (0.0 if self.tokens.is_stable(t1) else y * u1)
+        # 手順2: ずれが上限（max_swap_slippage_pct）を超えるなら、分けて売る（1回あたりのずれが上限に収まる回数）
+        max_slip = self.config.risk.max_swap_slippage_pct / 100
+        parts = max(1, math.ceil(slip / max_slip)) if max_slip > 0 and slip > max_slip else 1
+        swap_cost = volatile * (fee + slip / parts)
+        swap_gas = gas * parts
+        hedge_fee = sum(h["size"] * prices.get(h["token"], h["entry"])
+                        * self.taker_fee(h["market_id"], h.get("hedge_id") or "lighter") for h in hedges)
+        return {"slippage": slip, "gas": gas, "max_slip": max_slip, "parts": parts, "swap_cost": swap_cost,
+                "swap_gas": swap_gas, "hedge_fee": hedge_fee, "total": swap_cost + gas + swap_gas + hedge_fee}
+
+    def estimate_close_cost(self, ref: PositionRef) -> float:
+        """今閉じたらかかる費用の見込み（閉じない。ボーナスが減ったときの比べ方に使う。2026-09-30 オーナー決定③）。"""
+        pos = self._open_pos(ref.position_id)
+        pool = self.market.pool(pos["pool_id"])
+        st = json.loads(pos["state_json"] or "{}")
+        hedges = json.loads(pos["hedges_json"] or "[]")
+        snap = self.market.latest(pos["pool_id"])
+        price = float(snap["price"])
+        prices = self.market.prices(snap["run_id"])
+        t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+        last = st.get("last_prices") or {}
+        u0, u1 = prices.get(t0, last.get(t0)), prices.get(t1, last.get(t1))
+        x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"],
+                          int(pool["token0_decimals"]), int(pool["token1_decimals"]))
+        return float(self._close_costs(pos, hedges, prices, x, y, u0 or 0.0, u1 or 0.0)["total"])
 
     # --- 書き込み -------------------------------------------------------------------------------
 

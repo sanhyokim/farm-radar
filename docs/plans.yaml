@@ -1,0 +1,83 @@
+# 「学ぶ」タブの「予定とメモ」と、「会場」タブの「見送り中の会場」（SPEC 7.2・7.5章。2026-09-30 オーナー追加）
+# 画面はこのファイルを読んで表示します（ファイルを直せば、アプリを作り直さなくても画面が変わります）。
+# 中身は PROGRESS.md の「今後の候補」「Phase 3a の準備」と同じです。どちらかを直したら、もう片方も直してください。
+#
+# plans の書き方:
+#   group:    見出し（予定 / 今後の候補 / Phase 3a の準備）
+#   title:    1行の見出し
+#   text:     説明（平易な日本語）
+#   due:      期限（日本時間。"2026-11-08T13:52:00+09:00" のように引用符で囲む）。期限の7日前から画面で目立たせる
+#   due_from: evaluation と書くと、進行中の評価の終わり（データベースの記録）を期限にする
+#   source:   出典や決めた日
+
+plans:
+  - key: evaluation_end
+    group: 予定
+    title: 2週間の評価が終わる
+    due_from: evaluation
+    text: >-
+      STRIKE/USDG と USDG/NVDA の練習で、予測と実績の差を14日間くらべる評価です。
+      終わったら合否（データの集まり具合95%以上、予測に近かった日が14日中10日以上）を見て、次に進むか決めます。
+    source: 2026-09-29 オーナーが開始（練習タブの「評価を始める」）
+
+  - key: per_venue_share_review
+    group: Phase 3a の準備
+    title: 会場の上限 0.7 を見直す
+    due_from: evaluation
+    text: >-
+      評価のために、1つの会場に置ける割合（per_venue_share）を 0.5 から 0.7 に上げています。
+      本物のお金で動かす前に、50% に戻すかを改めて決めます。
+    source: 2026-09-30 オーナー決定（評価のあいだだけ 0.7）
+
+  - key: alchemy_key
+    group: Phase 3a の準備
+    title: Alchemy のカギを作る
+    text: >-
+      公開の読み取り口（RPC）は回数の制限があり、起動した直後に「取りすぎ」（429）が数回出ます（やり直して取れています）。
+      本物のお金で動かす前に、オーナーが Alchemy のカギを作って .env の ALCHEMY_API_KEY に自分で書きます（チャットには貼らない）。
+      入れると、起動したあとに Alandale の読み取りが30分休むことも減ります。
+    source: 2026-09-30 オーナー決定
+
+  - key: stonx_end
+    group: 今後の候補
+    title: STONX（Ekubo）の配布が終わる予定
+    due: "2026-11-08T13:52:00+09:00"
+    text: >-
+      報酬はチェーンから読め、LP への分け方もチェーン上で決まる会場です。今は実装しません。
+      配布は 2026-11-08 13:52（日本時間）で終わる予定です。延長が決まったら改めて検討します。
+    source: >-
+      2026-09-30 オーナー決定。終了時刻はチェーン上の記録（Ve33 の EmissionsScheduled）から。
+      調べた内容は /mnt/project-files/farm-radar/research/stonx-ekubo-2026-09-30.md
+
+# 調べたが、実装していない会場。「会場」タブの下に理由と一緒に出します。
+skipped_venues:
+  - key: stonx-ekubo
+    name: STONX（Ekubo）
+    chain: Robinhood Chain
+    reason: 配布は 2026-11-08 13:52（日本時間）で終了予定。延長が決まったら改めて検討します。
+    decided: 2026-09-30 オーナー決定
+    source: "https://docs.ekubo.org/products/ve33/（確認日 2026-09-30）"
+  - key: fables
+    name: Fables
+    chain: Robinhood Chain
+    reason: 自分のトークンと投票のしくみ（ボーナス）がまだありません。今はポイント制（2026-10-05 まで）と週の USDG 報酬だけです。
+    decided: 2026-09-29 の調べもの。M6 では2つ目の会場に Alandale を選びました
+    source: "https://www.fables.fi/（確認日 2026-09-29）"
+  - key: ramses-robinhood
+    name: Ramses（Robinhood Chain 版）
+    chain: Robinhood Chain
+    reason: ボーナスを配るしくみ（Voter・Minter）の住所が公式の一覧になく、今は手数料だけのようです（はっきり書かれていないので未確認）。
+    decided: 2026-09-29 の調べもの。M6 では2つ目の会場に Alandale を選びました
+    source: "https://www.ramses.xyz/docs/raw/contract-addresses.md（確認日 2026-09-29）"
+  - key: nest
+    name: Nest
+    chain: HyperEVM（別のチェーン）
+    reason: 株のペアがありません。ボーナスのコイン NEST の値動きが激しいです（7日で −36%、9/29 調べ）。
+    decided: 2026-09-29 の調べもの。M6 では2つ目の会場に Alandale を選びました
+    source: "https://docs.usenest.xyz/（確認日 2026-09-29）"
+  - key: pharaoh
+    name: Pharaoh
+    chain: Avalanche（別のチェーン）
+    reason: ボーナスのコイン PHAR が30日で約2.5倍になっていて、急に下がると報酬の価値も一緒に下がります。Pharaoh 自身の監査は未確認です。
+    decided: 2026-09-29 の調べもの。M6 では2つ目の会場に Alandale を選びました
+    source: "https://docs.phar.gg/（確認日 2026-09-29）"
