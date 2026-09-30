@@ -222,6 +222,19 @@ function TryCard({ poolId, red }: { poolId: string; red: boolean }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   if (!data) return null;
+  // 同じプールで練習中なら、ボタンの代わりにその建玉へのリンクを出す（2026-09-30 オーナー指示。サーバー側でも断る）
+  const already = data.open.find((p) => p.pool_id === poolId);
+  if (already) {
+    return (
+      <Card title={<Term k="練習">練習</Term>}>
+        <p className="text-sm text-slate-200">このプールはすでに練習中です。同じプールで2つ目の練習は開けません。</p>
+        <button onClick={() => nav(`/practice/${already.id}`)}
+          className="mt-2 w-full rounded-xl bg-slate-800 py-3 text-sm font-semibold text-sky-200 ring-1 ring-slate-700">
+          練習中の建玉を見る
+        </button>
+      </Card>
+    );
+  }
   const go = async () => {
     setBusy(true);
     setErr(null);

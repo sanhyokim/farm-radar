@@ -165,6 +165,13 @@ class PaperExecutor:
         if "trades_per_day" in lim and trades + 1 > int(lim["trades_per_day"]):
             raise PaperError(f"1日の取引の上限（{lim['trades_per_day']}件）に達しています。")
 
+    def check_not_already_open(self, pool_id: str) -> None:
+        """同じプールで練習中の建玉があれば、新しく開かない（2026-09-30 オーナー指示。画面を通さない呼び出しでも重ならない）。"""
+        row = self.conn.execute("SELECT id FROM positions WHERE is_paper=1 AND status='open' AND pool_id=? LIMIT 1",
+                                (pool_id,)).fetchone()
+        if row is not None:
+            raise PaperError("このプールはすでに練習中です。同じプールで2つ目の練習は開けません。")
+
     def check_practice_venue(self, venue_id: str, venue_name: str | None = None) -> None:
         """観察だけの会場（会場ファイルの practice: false。M6 の Alandale）では練習を始めない。"""
         try:
@@ -182,6 +189,7 @@ class PaperExecutor:
         """建玉を作る。レンジを指定しなければ、最新のスコアの最適レンジ（±r%）を使う。"""
         pool = self.market.pool(pool_id)
         self.check_practice_venue(pool["venue_id"], pool["venue_name"])
+        self.check_not_already_open(pool_id)
         snap = self.market.latest(pool_id)
         score = latest_score(self.conn, pool_id)
         if snap is None or score is None or score["best_r"] is None:
