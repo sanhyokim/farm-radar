@@ -156,6 +156,10 @@ class RiskSettings:
     # 実績の日利の見せ方（2026-09-29 オーナー指示）
     actual_min_hours: float = 6.0               # 始めてからこの時間未満は「参考（データ不足）」として小さく出す
     compare_min_hours: float = 24.0             # この時間以上たってから「予測との比較」を有効にする
+    # ボーナスが減ったときの比べ方（2026-09-30 オーナー決定③。SPEC 8.5章）
+    bonus_drop_ratio: float = 0.5               # 切り替えのあとのボーナスが前の週のこの割合以下になったら比べる
+    bonus_drop_wait_hours: float = 6.0          # ボーナスが0のままなら、切り替えからこの時間待ってから比べる（配られる前の0と区別）
+    bonus_drop_action: str = "record"           # record = 記録と通知だけ（評価の間はこれ。動かす部分はまだない）
 
 
 def _risk(raw: dict[str, Any]) -> RiskSettings:
@@ -171,12 +175,17 @@ def _risk(raw: dict[str, Any]) -> RiskSettings:
             "rebalance_after_minutes", "rebalance_min_net_pct", "exit_reward_token_24h_pct",
             "emergency_liquidity_drop_1h_pct", "emergency_daily_loss_pct", "max_swap_slippage_pct",
             "max_gas_usd_per_tx", "actual_min_hours", "compare_min_hours", "exit_dump_1h_pct", "exit_dump_24h_pct",
-            "emergency_usdg_below", "emergency_usdg_times", "caution_hedge_cost_pct", "contract_watch")},
+            "emergency_usdg_below", "emergency_usdg_times", "caution_hedge_cost_pct", "contract_watch",
+            "bonus_drop_ratio", "bonus_drop_wait_hours", "bonus_drop_action")},
     )
     for hm in out.fast_window_ny:
         hh, _, mm = hm.partition(":")
         if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
             raise ConfigError("risk.fast_window_ny は \"09:00-10:30\" のように書いてください。")
+    if out.bonus_drop_action != "record":
+        raise ConfigError("risk.bonus_drop_action は今は record（記録と通知だけ）しか使えません。")
+    if not 0 < out.bonus_drop_ratio < 1:
+        raise ConfigError("risk.bonus_drop_ratio は 0 より大きく 1 より小さい数（0.5 など）にしてください。")
     if out.fast_minutes <= 0 or 60 % out.fast_minutes:
         raise ConfigError("risk.fast_minutes は60を割り切れる数（5 など）にしてください。")
     return out
@@ -198,6 +207,7 @@ class EvaluationSettings:
     day_gap_pct: float = 30.0               # 1日の純損益の差が予測の ±この% 以内なら、その日は満たす
     day_gap_capital_pct: float = 0.1        #   または、差が総資産のこの% 以内なら満たす
     pass_days_pct: float = 70.0             # 満たす日が評価日数のこの%以上
+    block_new_practice: bool = True         # 評価の間は新しい練習を始めない（2026-09-30 オーナー決定①）
 
 
 def _evaluation(raw: dict[str, Any]) -> EvaluationSettings:
@@ -206,7 +216,8 @@ def _evaluation(raw: dict[str, Any]) -> EvaluationSettings:
     out = EvaluationSettings(
         days=int(e.get("days", (raw.get("review") or {}).get("evaluation_days", d.days))),
         **{k: float(e.get(k, getattr(d, k))) for k in ("min_coverage_pct", "day_gap_pct", "day_gap_capital_pct",
-                                                        "pass_days_pct")})
+                                                        "pass_days_pct")},
+        block_new_practice=bool(e.get("block_new_practice", d.block_new_practice)))
     if out.days <= 0:
         raise ConfigError("evaluation.days は1以上にしてください。")
     return out

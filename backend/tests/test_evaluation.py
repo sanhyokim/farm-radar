@@ -22,11 +22,11 @@ def test_not_started_and_needs_paper_mode(world):  # noqa: F811
 def test_running_summary_compares_predicted_and_actual(world):  # noqa: F811
     path, conn = world
     cfg = _config(path)
+    _, ref = _open(conn, path)                  # 建玉を開いてから評価を始める（評価の間は新しく開けない）
     r = evaluation.start(conn, cfg, NOW)
     assert r["ends_at"] > r["started_at"]
     with pytest.raises(ValueError, match="もう始まって"):
         evaluation.start(conn, cfg, NOW + timedelta(hours=1))
-    _, ref = _open(conn, path)
     _extend(conn, 6)
     run_paper(conn, cfg, TOKENS, lighter=FakeLighter(), fx=FakeFx(), now=NOW + timedelta(hours=7))
     s = evaluation.summary(conn, cfg, NOW + timedelta(hours=7))
@@ -73,8 +73,8 @@ def test_daily_judgement_and_verdict(world):  # noqa: F811
     base = _config(path)
     # 1日だけの評価。差の許容を総資産の100%にすると、記録のある日は必ず「満たす日」になる
     loose = dataclasses.replace(base, evaluation=dataclasses.replace(base.evaluation, days=1, day_gap_capital_pct=100))
-    evaluation.start(conn, loose, NOW)
     _open(conn, path)
+    evaluation.start(conn, loose, NOW)
     _extend(conn, 26)
     run_paper(conn, loose, TOKENS, lighter=FakeLighter(), fx=FakeFx(), now=NOW + timedelta(hours=26))
     s = evaluation.summary(conn, loose, NOW + timedelta(hours=26))
@@ -106,8 +106,8 @@ def test_coverage_counts_only_the_evaluated_venues(world):  # noqa: F811
     from farm_radar.db import database as db
     path, conn = world
     cfg = _config(path)
-    evaluation.start(conn, cfg, NOW)
     _open(conn, path)
+    evaluation.start(conn, cfg, NOW)
     _extend(conn, 6)
     conn.execute("INSERT INTO venues(id, name, chain) VALUES ('alandale-robinhood', 'Alandale', 'robinhood')")
     db.start_run(conn, "alandale-robinhood", NOW + timedelta(hours=6), NOW + timedelta(hours=6))
@@ -116,3 +116,70 @@ def test_coverage_counts_only_the_evaluated_venues(world):  # noqa: F811
     assert [c["venue_id"] for c in s["coverage"]] == ["up-robinhood"]
     # 建玉がまだないときは、練習のできる会場（config の venues のうち practice: false でないもの）で数える
     assert evaluation.evaluation_venues(conn, cfg, NOW + timedelta(days=30), NOW + timedelta(days=31)) == ["up-robinhood"]
+
+
+def test_new_practice_is_blocked_while_the_evaluation_runs(world):  # noqa: F811
+    # 2026-09-30 オーナー決定①: 評価の間は新しい練習を始めない（上限に余裕があっても）。持っている建玉はそのまま続く
+    import dataclasses
+
+    from farm_radar.execution.paper import PaperError, PaperExecutor
+
+    path, conn = world
+    big = dataclasses.replace(_config(path), limits={"position_usd": 1000, "total_usd": 10000,
+                                                      "per_venue_share": 1.0, "trades_per_day": 20})
+    _open(conn, path)
+    evaluation.start(conn, big, NOW)
+    ex = PaperExecutor(conn, big, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=1))
+    with pytest.raises(PaperError, match="評価中のため") as e:
+        ex.open_position("up-robinhood:p-nvda", 1000.0)
+    assert "まで" in str(e.value)
+    assert conn.execute("SELECT COUNT(*) FROM positions WHERE status='open'").fetchone()[0] == 1
+    # 設定で外せる。評価が終わったあと・途中でやめたあとは始められる
+    off = dataclasses.replace(big, evaluation=dataclasses.replace(big.evaluation, block_new_practice=False))
+    PaperExecutor(conn, off, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=1)).open_position("up-robinhood:p-nvda", 1000.0)
+    after = NOW + timedelta(days=big.evaluation.days, minutes=1)
+    PaperExecutor(conn, big, TOKENS, fx=FakeFx(), now=after).open_position("up-robinhood:p-up", 1000.0)
+
+
+def test_paper_api_shows_the_evaluation_block(client):  # noqa: F811
+    c, conn, path = client
+    assert c.get("/api/paper").json()["evaluation_block"] is None
+    c.post("/api/paper/evaluation/start", json={"confirm": True})
+    block = c.get("/api/paper").json()["evaluation_block"]
+    assert block["until"] and "評価中のため" in block["message"]
+    r = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-weth"})
+    assert r.status_code == 400 and "評価中のため" in r.json()["detail"]
+    c.post("/api/paper/evaluation/stop", json={"confirm": True})
+    assert c.get("/api/paper").json()["evaluation_block"] is None
+
+
+def test_reference_uses_the_score_at_that_time(world):  # noqa: F811
+    # 2026-09-30 オーナー決定②: 始めたときの見込み（合否に使う）と並べて、その時点の最新のスコアで比べた参考を出す
+    from farm_radar.scoring.run import score_venue
+
+    from .test_scoring_run import FakeGT, _ctx
+
+    path, conn = world
+    cfg = _config(path)
+    _open(conn, path)
+    evaluation.start(conn, cfg, NOW)
+    _extend(conn, 12)
+    s0 = evaluation.summary(conn, cfg, NOW + timedelta(hours=12))
+    # スコアが変わらなければ、参考は始めたときの見込みとほぼ同じ
+    assert s0["reference"]["net_day"] == pytest.approx(s0["predicted_net_day"], rel=1e-6)
+    # 途中でボーナスが0になり、スコアを計算し直した（木曜の切り替えのあとに近い形）
+    last = conn.execute("SELECT MAX(ts) FROM pool_snapshots").fetchone()[0]
+    _extend(conn, 14)
+    conn.execute("UPDATE pool_snapshots SET reward_rate_effective_raw='0', reward_rate_raw='0' WHERE ts>?", (last,))
+    conn.commit()
+    score_venue(conn, _ctx(FakeGT()), now=NOW + timedelta(hours=13, minutes=10))
+    run_paper(conn, cfg, TOKENS, lighter=FakeLighter(), fx=FakeFx(), now=NOW + timedelta(hours=26))
+    s = evaluation.summary(conn, cfg, NOW + timedelta(hours=26))
+    ref = s["reference"]
+    assert ref["net_day"] < s["predicted_net_day"]           # ボーナスが消えたあとの見込みは下がる
+    d = s["days"][0]
+    assert d["done"] and d["reference"] is not None and d["reference"] < d["predicted"]
+    assert isinstance(d["reference_ok"], bool) and isinstance(d["flip"], bool)
+    assert ref["need_days"] == s["criteria"]["hold"]["need_days"] and "合否" in ref["note"]
+    # 合否の決め方は変わらない（持ち続ける前提の判定は、始めたときの見込みとの比較のまま）
+    assert s["criteria"]["hold"]["ok_days"] == sum(1 for x in s["days"] if x["done"] and x["hold_ok"])

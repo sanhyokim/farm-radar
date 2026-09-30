@@ -29,7 +29,7 @@ from .collectors import priority
 from .config import REPO_ROOT, ConfigError, contract_address, load_config, load_venue, practice_allowed
 from .db import database as db
 from .execution import views as paper_views
-from .execution.paper import PaperError, PaperExecutor
+from .execution.paper import PaperError, PaperExecutor, evaluation_block_message, running_evaluation_end
 from .execution.base import PositionRef
 from .execution import evaluation as paper_evaluation_mod
 from .hedges import status as hedge_status
@@ -495,6 +495,7 @@ def _paper_status(config, conn) -> dict:
     lim = config.limits
     open_rows = conn.execute("SELECT venue_id, capital FROM positions WHERE is_paper=1 AND status='open'").fetchall()
     st = risk_job.paper_state(conn)
+    eval_end = running_evaluation_end(conn, _now()) if config.evaluation.block_new_practice else None
     venue_cap = (float(lim["total_usd"]) * float(lim["per_venue_share"])
                  if "total_usd" in lim and "per_venue_share" in lim else None)
     return {
@@ -503,6 +504,9 @@ def _paper_status(config, conn) -> dict:
         "capital": config.scoring.total_capital_usd,
         "limits": {k: lim.get(k) for k in ("position_usd", "total_usd", "per_venue_share", "trades_per_day")},
         "venue_cap_usd": venue_cap, "open_total_usd": sum(r["capital"] for r in open_rows),
+        # 評価の間は新しい練習を始めない（2026-09-30 オーナー決定①）。画面はボタンの代わりにこの文を出す
+        "evaluation_block": ({"until": eval_end.isoformat(timespec="seconds"),
+                              "message": evaluation_block_message(eval_end)} if eval_end else None),
         "how_to_enable": "config.yaml の mode を paper にして、アプリを起動し直してください。",
     }
 

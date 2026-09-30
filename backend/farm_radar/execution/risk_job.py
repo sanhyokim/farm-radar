@@ -24,6 +24,7 @@ from ..risk.rules import LEVEL_JA, Finding, PortfolioInput, PositionInput, check
 from ..scoring.run import EXTERNAL_SOURCE, merge_series, own_series
 from ..tokens import TokenBook
 from ..views import JST, series_change
+from . import bonus_drop
 from .base import PositionRef
 from .paper import PaperError, PaperExecutor, latest_score
 
@@ -280,6 +281,8 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
             st["risk_active"] = sorted(active_now)
             conn.execute("UPDATE positions SET state_json=? WHERE id=?", (json.dumps(st), pos["id"]))
             conn.commit()
+    # ボーナスが減ったときの比べ方（2026-09-30 オーナー決定③）。今は記録と知らせだけ
+    events += bonus_drop.run(conn, config, ex, now)
     if events:
         log.info("paper risk events", extra={"data": {"events": events}})
     return events

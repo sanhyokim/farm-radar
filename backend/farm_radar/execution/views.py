@@ -12,13 +12,14 @@ from ..config import RiskSettings
 from ..risk.rules import LEVEL_JA
 from .paper import CATS, latest_score, lp_amounts
 
+OPTION_JA = {"stay": "そのまま", "fees": "ステークをやめて手数料", "exit": "抜ける"}
 RED_START_LABEL = "🔴で開始した練習"
 RED_START_NOTE = ("判定が🔴のプールで始めた練習です。「判定が🔴になったら離脱」のルールは当てはめません"
                   "（ほかの離脱・緊急離脱のルールは当てはめます）。")
 ACTION_JA = {"none": "記録のみ", "rebalanced": "置き直した", "closed": "閉じた", "closed_all": "全部閉じた",
              "skipped_gas": "ガス代が高く見送り", "stopped": "停止", "resumed": "再開"}
 CAUTION_JA = {"edge_near": "レンジの端が近い", "reward_shortfall": "報酬が予測より少ない",
-              "hedge_cost": "ヘッジの費用が大きい"}
+              "hedge_cost": "ヘッジの費用が大きい", "bonus_drop": "切り替えでボーナスが減った（記録だけ）"}
 ESTIMATE_NOTES = [
     "報酬は15分ごとの記録（実際の報酬の量・ステーク流動性・価格）から計算しています。",
     "perp の値段は、プールから出したドル価格で代用しています。",
@@ -100,6 +101,9 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
         "cautions": [CAUTION_JA.get(k, k) for k in st.get("risk_active") or [] if not k.startswith("skip:")],
         "skipped": [k[5:] for k in st.get("risk_active") or [] if k.startswith("skip:")],
         "swap": _swap_info(conn, pos, st, x, y),
+        # ボーナスが減ったときの比べ方の最新の結果（2026-09-30 オーナー決定③。記録だけ）
+        "bonus_drop": ({**st["bonus_drop"], "best_ja": OPTION_JA.get(st["bonus_drop"].get("best"))}
+                       if st.get("bonus_drop") else None),
     }
 
 
@@ -166,6 +170,11 @@ def risk_rules(r: RiskSettings) -> list[dict[str, str]]:
                                                        f"ヘッジの1日の費用が報酬の{r.caution_hedge_cost_pct:g}%超"
                                                        f"（報酬の比べっこは{r.caution_min_hours:g}時間たってから）",
          "action": "記録する"},
+        {"level": "caution", "level_ja": "注意（記録だけ）",
+         "rule": f"木曜の切り替えでボーナスが前の週の{r.bonus_drop_ratio * 100:g}%以下になった"
+                 f"（0のままなら切り替えから{r.bonus_drop_wait_hours:g}時間待ってから調べる）",
+         "action": "次の切り替えまでの見込みで「そのまま／ステークをやめて手数料／抜ける」を比べて、"
+                   "いちばん損が少ないものを記録して知らせる。建玉はそのまま"},
         {"level": "rebalance", "level_ja": "置き直し", "rule": f"レンジの外に{r.rebalance_after_minutes:g}分いた",
          "action": f"今の価格を中心に置き直す（置き直し先の純日利が{r.rebalance_min_net_pct:+g}%以下なら閉じる）"},
         {"level": "exit", "level_ja": "離脱", "rule": f"報酬トークンが24時間で{r.exit_reward_token_24h_pct:g}% / "
