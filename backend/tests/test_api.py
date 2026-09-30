@@ -101,3 +101,14 @@ def test_home_cards_carry_flip_line_and_owner_notes(client):
     assert all(c["reward_estimate_note"] is None for c in cards.values())
     assert client.get("/api/pools/up-robinhood:p-up").json()["venue"]["reward_estimate_note"] is None
     assert api._venue_meta("alandale-robinhood")["reward_estimate_note_ja"] == "推定（1週間を7日で均等に配ると仮定）"
+
+
+def test_plans_skipped_venues_and_emission_end_reach_the_screens(client):
+    # 「予定とメモ」（学ぶ）、「見送り中の会場」（会場）、「配布終了まであと○日」（2026-09-30 オーナー追加）
+    d = client.get("/api/plans").json()
+    assert d["soon_days"] == 7 and {i["key"] for i in d["items"]} >= {"evaluation_end", "stonx_end", "alchemy_key"}
+    assert any(v["key"] == "stonx-ekubo" for v in client.get("/api/venues").json()["skipped"])
+    home = client.get("/api/home").json()
+    assert isinstance(home["plans_soon"], list)
+    assert all(c["emission_end"] is None for c in home["greens"] + home["near"])   # 今の会場は終了日が分からない
+    assert all(r["emission_end"] is None for r in client.get("/api/scores").json()["scores"])

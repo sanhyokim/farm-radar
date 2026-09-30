@@ -349,3 +349,27 @@ def epoch_flip_info(venue: dict[str, Any] | None, now: datetime) -> dict[str, An
     at = next_epoch_flip(now, length, int(epoch.get("offset_seconds") or 0))
     return {"at": at.isoformat(timespec="seconds"), "note_ja": FLIP_NOTE,
             "why_ja": (venue or {}).get("epoch_note_ja")}
+
+
+EMISSION_SOON_DAYS = 7
+
+
+def emission_end_info(venue: dict[str, Any] | None, now: datetime, pool_address: str | None = None) -> dict[str, Any] | None:
+    """配布の終了日（2026-09-30 オーナー追加）。チェーンなどで終了日が分かる会場・プールだけ「配布終了まであと○日」を出す。
+
+    会場ファイルの `emission_end: {at, source}`（会場全体）か、`pool_emission_ends: [{pool, at, source}]`（プールごと。こちらが優先）。
+    終了日が分からない会場（up.・Alandale）は書かない（None）。そのときは今の「⏰ 切り替え」の注意のまま。
+    7日以内なら soon（注意）、過ぎたら ended。
+    """
+    v = venue or {}
+    entry = next((e for e in v.get("pool_emission_ends") or []
+                  if pool_address and str(e.get("pool") or "").lower() == pool_address.lower()), None)
+    entry = entry or v.get("emission_end") or {}
+    if not entry.get("at"):
+        return None
+    at = datetime.fromisoformat(str(entry["at"]))
+    if at.tzinfo is None:
+        raise ValueError(f"emission_end の時刻にはタイムゾーンを書いてください: {entry['at']}")
+    days = (at - now).total_seconds() / 86400
+    return {"at": at.isoformat(timespec="seconds"), "days_left": days, "source": entry.get("source"),
+            "soon": 0 < days <= EMISSION_SOON_DAYS, "ended": days <= 0}

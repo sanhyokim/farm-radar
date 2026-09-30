@@ -1,4 +1,4 @@
-import { useApi, type Venue } from "../api";
+import { useApi, type SkippedVenue, type Venue } from "../api";
 import { bigUsd, pct } from "../format";
 import { Sparkline } from "../charts";
 import { Badge, Card, Loading, Note, Term } from "../ui";
@@ -13,12 +13,13 @@ const COND = {
 } as Record<string, string>;
 
 export default function Venues() {
-  const { data, error } = useApi<{ venues: Venue[] }>("/api/venues");
+  const { data, error } = useApi<{ venues: Venue[]; skipped?: SkippedVenue[] }>("/api/venues");
   if (!data) return <Loading error={error} />;
   return (
     <div className="space-y-3">
       <h1 className="text-lg font-bold text-slate-100">会場</h1>
       {data.venues.map((v) => <VenueCard key={v.venue_id} v={v} />)}
+      <SkippedCard rows={data.skipped ?? []} />
       <DiscoverySection />
     </div>
   );
@@ -78,6 +79,29 @@ function VenueCard({ v }: { v: Venue }) {
         </div>
       )}
       <Note>TVL の合計は、判定をしたプールの TVL（GeckoTerminal）を足したものです。</Note>
+    </Card>
+  );
+}
+
+/** 見送り中の会場: 調べたが、今は実装していない会場と理由（docs/plans.yaml。2026-09-30 オーナー追加） */
+function SkippedCard({ rows }: { rows: SkippedVenue[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <Card title="見送り中の会場">
+      <p className="mb-2 text-xs text-slate-400">調べたけれど、今はアプリに入れていない会場です。</p>
+      <ul className="space-y-2">
+        {rows.map((v) => (
+          <li key={v.key} className="rounded-xl bg-slate-800/40 p-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="font-semibold text-slate-100">{v.name}</span>
+              {v.chain && <span className="shrink-0 text-xs text-slate-400">{v.chain}</span>}
+            </div>
+            <p className="mt-1 text-sm leading-relaxed text-slate-300">{v.reason}</p>
+            {v.decided && <p className="mt-1 text-xs text-slate-400">{v.decided}</p>}
+            {v.source && <p className="break-all text-xs text-slate-500">出典: {v.source}</p>}
+          </li>
+        ))}
+      </ul>
     </Card>
   );
 }

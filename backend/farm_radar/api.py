@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from fastapi.responses import FileResponse, Response
 
 from . import discovery as discovery_mod
+from . import plans as plans_mod
 from . import views
 from .collectors.completeness import check
 from . import ratelimit
@@ -135,7 +136,8 @@ def venues() -> dict:
             **extra,
         })
     conn.close()
-    return {"venues": out}
+    # 調べたが実装していない会場と、その理由（docs/plans.yaml。2026-09-30 オーナー追加）
+    return {"venues": out, "skipped": plans_mod.skipped_venues(config.root)}
 
 
 def _reward_token_prices(conn, config, v: dict, days: float = 7) -> list[tuple[int, float]]:
@@ -273,6 +275,8 @@ def _score_dict(r) -> dict:
     # 次の切り替え（木曜 9:00 JST）と「来週ボーナスがなくなることがある」注意（2026-09-30 オーナー追加）
     meta = _venue_meta(d.get("venue_id"))
     d["epoch_flip"] = views.epoch_flip_info(meta, _now())
+    # 配布の終了日が分かる会場・プールだけ「配布終了まであと○日」（2026-09-30 オーナー追加。今は該当なし）
+    d["emission_end"] = views.emission_end_info(meta, _now(), (d.get("pool_id") or "").partition(":")[2])
     # ボーナスの見込みが仮定つきの推定である会場（Alandale:「1週間を7日で均等に配る」）の一言（2026-09-30 オーナー追加）
     d["reward_estimate_note"] = (meta or {}).get("reward_estimate_note_ja")
     # 報酬トークンそのものを預けるプールの警告（2026-09-30 オーナー追加。scoring/run.py の RWD）
@@ -317,7 +321,7 @@ def home() -> dict:
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
         # epoch_flip はホームのカードの「⏰ 木曜9:00に切り替え」の行に使う（M6 で入れ忘れていた。2026-09-30 オーナーに伝えて直した）
         slim = ["pool_id", "pair", "venue_id", "venue_name", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
-                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices", "epoch_flip",
+                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices", "epoch_flip", "emission_end",
                 "reward_estimate_note", "reward_held"]
         greens = [{k: d.get(k) for k in slim} for d in rows if d["signal"] == "green"]
         # 🟢がないときの参考: 判定できたプールを純日利の高い順に3件
@@ -352,7 +356,16 @@ def home() -> dict:
             "market": {"us_open": vol.us_market_open(int(now.timestamp())), "gas_usd_per_tx": gas,
                        "reward_tokens": rewards, "us_day": market_calendar.status(now)},
             "collection": health_rows,
+            # 期限が7日以内の予定（docs/plans.yaml。2026-09-30 オーナー追加）。ホームの上で目立たせる
+            "plans_soon": [p for p in plans_mod.plan_items(config.root, conn, now) if p["state"] == "soon"],
         }
+
+
+@app.get("/api/plans")
+def plans() -> dict:
+    """「学ぶ」タブの「予定とメモ」（SPEC 7.5章。docs/plans.yaml。期限の7日前から soon）。"""
+    with _open() as (config, conn):
+        return {"items": plans_mod.plan_items(config.root, conn, _now()), "soon_days": plans_mod.SOON_DAYS}
 
 
 @app.get("/api/pools/{pool_id}")

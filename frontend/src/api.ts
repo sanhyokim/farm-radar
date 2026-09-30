@@ -22,7 +22,20 @@ export interface PoolRow {
   reward_estimate_note?: string | null;
   /** 報酬トークンそのものを預けるプールの警告文（2026-09-30 オーナー追加） */
   reward_held?: string | null;
+  /** 配布の終了日が分かる会場・プールだけ（「配布終了まであと○日」。2026-09-30 オーナー追加） */
+  emission_end?: EmissionEnd | null;
 }
+
+export interface EmissionEnd { at: string; days_left: number; soon: boolean; ended: boolean; source?: string | null }
+
+/** 「予定とメモ」の1件（docs/plans.yaml。期限の7日前から soon。2026-09-30 オーナー追加） */
+export interface PlanItem {
+  key: string; group: string; title: string; text: string; source?: string | null;
+  due: string | null; days_left: number | null; state: "soon" | "later" | "past" | null;
+}
+
+/** 調べたが実装していない会場（docs/plans.yaml。2026-09-30 オーナー追加） */
+export interface SkippedVenue { key: string; name: string; chain?: string | null; reason: string; decided?: string | null; source?: string | null }
 
 /** 運営が手で足したボーナス（プール全体・今のエポック）。判定には入れない（2026-09-30 オーナー条件4） */
 export interface ManualBonus {
@@ -62,6 +75,8 @@ export interface Home {
   };
   collection: { venue_id: string; name?: string; observe?: boolean; last_ok_at: string | null; stale: boolean;
     gaps_7d: { start_slot: string; end_slot: string }[] }[];
+  /** 期限が7日以内の予定（2026-09-30 オーナー追加） */
+  plans_soon?: PlanItem[];
 }
 
 export interface Point { ts: string; v: number | null }

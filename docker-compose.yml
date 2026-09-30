@@ -23,7 +23,7 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./venues:/app/venues:ro
-      - ./docs:/app/docs:ro          # 「学ぶ」タブのよくある質問（docs/faq.md）
+      - ./docs:/app/docs:ro          # 「学ぶ」タブのよくある質問（docs/faq.md）と予定とメモ・見送り中の会場（docs/plans.yaml）
       - ./data:/app/data
     ports:
       # 8000 はほかのアプリと重なりやすいので 18000 を使う。iPhone から見るときは .env で FARM_RADAR_BIND=0.0.0.0

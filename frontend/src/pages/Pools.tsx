@@ -1,7 +1,7 @@
 import { Link, useSearchParams } from "react-router-dom";
 import { useApi, type PoolRow, type Signal } from "../api";
 import { SIGNAL, bigUsd, jstDay, pct, rangeText, untilText } from "../format";
-import { HedgeBadge } from "./Home";
+import { EmissionEndLine, HedgeBadge } from "./Home";
 import { Loading, Term } from "../ui";
 
 type Scores = { counts: Record<Signal, number>; scores: PoolRow[] };
@@ -67,6 +67,7 @@ export default function Pools() {
                 <span className="mt-0.5 block"><HedgeBadge h={r.hedge_info} /></span>
                 {r.reward_held && <span className="mt-0.5 block text-xs text-rose-300">⚠ {r.reward_held}</span>}
                 {r.reward_estimate_note && <span className="mt-0.5 block text-xs text-slate-400">ボーナスは{r.reward_estimate_note}</span>}
+                {r.emission_end && <EmissionEndLine e={r.emission_end} />}
               </span>
               <span className={`num shrink-0 text-right font-semibold ${r.net_daily_pct == null ? "text-slate-500" : r.net_daily_pct < 0 ? "text-rose-400" : "text-slate-50"}`}>
                 {pct(r.net_daily_pct)}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { useApi, type EpochFlip, type HedgeInfo, type Home as HomeData, type PoolRow } from "../api";
+import { useApi, type EmissionEnd, type EpochFlip, type HedgeInfo, type Home as HomeData, type PoolRow } from "../api";
 import { SIGNAL, jst, jstDay, pct, rangeText, untilText, usd } from "../format";
 import { Badge, Card, Loading, Note, SignalBadge, Term } from "../ui";
 
@@ -20,6 +20,17 @@ export default function Home() {
           <Term k="観察モード">モード: {mode}</Term>
         </Badge>
       </div>
+
+      {data.plans_soon && data.plans_soon.length > 0 && (
+        <Link to="/learn#plans" className="block rounded-2xl bg-amber-500/10 p-3 ring-1 ring-amber-500/30">
+          <div className="text-xs font-semibold text-amber-200">⏰ 期限が近い予定（7日以内）</div>
+          <ul className="mt-1 space-y-0.5 text-sm text-amber-50">
+            {data.plans_soon.map((p) => (
+              <li key={p.key}>{p.title}（<span className="num">{p.due ? `${jstDay(p.due)}・${untilText(p.due)}` : ""}</span>）</li>
+            ))}
+          </ul>
+        </Link>
+      )}
 
       <Card title="今日の結論">
         <p className="text-lg font-semibold leading-snug text-slate-50">{data.summary}</p>
@@ -119,6 +130,7 @@ export function PoolCard({ p }: { p: PoolRow }) {
       </div>
       {p.reward_held && <HeldLine text={p.reward_held} />}
       {p.reward_estimate_note && <EstimateLine note={p.reward_estimate_note} />}
+      {p.emission_end && <EmissionEndLine e={p.emission_end} />}
       {p.epoch_flip && <FlipLine f={p.epoch_flip} />}
       <button className="mt-1 text-xs text-sky-300" onClick={() => setOpen(!open)}>
         {open ? "閉じる" : "なぜ?"}
@@ -133,6 +145,16 @@ export function FlipLine({ f }: { f: EpochFlip }) {
   return (
     <div className="mt-1 text-xs text-amber-200/90">
       ⏰ {jstDay(f.at)} に<Term k="エポック">切り替え</Term>（{untilText(f.at)}）。来週はボーナスがなくなることもあります
+    </div>
+  );
+}
+
+/** 「配布終了まであと3日9時間（11/8(土) 13:52）」。終了日が分かる会場・プールだけ。7日以内は注意（2026-09-30 オーナー追加） */
+export function EmissionEndLine({ e }: { e: EmissionEnd }) {
+  if (e.ended) return <div className="mt-1 text-xs text-slate-400">配布は {jstDay(e.at)} に終わりました</div>;
+  return (
+    <div className={`mt-1 text-xs ${e.soon ? "text-amber-300" : "text-slate-400"}`}>
+      {e.soon && "⚠ "}配布終了まで{untilText(e.at)}（{jstDay(e.at)}）
     </div>
   );
 }

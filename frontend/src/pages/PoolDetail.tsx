@@ -3,7 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { postApi, useApi, type Breakdown, type ManualBonus, type Paper, type PoolDetail as Detail, type RangeRow } from "../api";
 import { AssetsLine, HourlyBars, RangeNet, Series, Waterfall } from "../charts";
 import { bigUsd, jst, jstDay, pct, rangeText, ratioPct, signedUsd, tone, untilText, usd } from "../format";
-import { HedgeBadge } from "./Home";
+import { EmissionEndLine, HedgeBadge } from "./Home";
 import type { SwapCosts } from "../api";
 import { Badge, Card, Loading, Note, SignalBadge, Term } from "../ui";
 
@@ -56,6 +56,13 @@ export default function PoolDetail() {
           </div>
           <p className="mt-1 text-sm text-amber-200/90">{s.epoch_flip.note_ja}</p>
           {s.epoch_flip.why_ja && <Note>{s.epoch_flip.why_ja}</Note>}
+        </Card>
+      )}
+
+      {s.emission_end && (
+        <Card title="配布の終わり">
+          <EmissionEndLine e={s.emission_end} />
+          {s.emission_end.source && <Note>出典: {s.emission_end.source}</Note>}
         </Card>
       )}
 
