@@ -35,6 +35,9 @@ log = logging.getLogger(__name__)
 
 EXTERNAL_SOURCE = "geckoterminal:1h"
 VOLUME_TEXT = "取引量が不自然に多い（見せかけの取引の可能性）"
+# 報酬トークンそのものを預けるプール（WETH-LUTE、USDG-LUTE など）。預けたコインとボーナスの両方が、
+# 同じコインの値下がりで減る（2026-09-30 オーナー追加。SPEC 4章。軽微 = 最高でも🟡）
+REWARD_HELD_TEXT = "ボーナスのコインを持つため、値下がりを二重に受けます"
 REWARD_DECIMALS = 18   # 既定値。会場ファイルの contracts.reward_token.decimals があればそちらを使う
 
 
@@ -407,6 +410,9 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     volume = market.volume_24h_usd if market else None
     volume_used = volume
     pool_warns = list(base_warns)
+    reward_token = (contract_address(ctx.venue, "reward_token") or "").lower()
+    if reward_token and reward_token in (t0, t1):
+        pool_warns.append(Warn("RWD", "minor", REWARD_HELD_TEXT))
     sus_x = ctx.settings.volume_suspicious_tvl_multiple
     if volume is not None and tvl and volume > sus_x * tvl:
         # 見せかけの取引かもしれないので、手数料収入は0として計算する（安全側。2026-09-29 オーナー決定。
@@ -439,6 +445,8 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         notes.append(f"{VOLUME_TEXT}。手数料の収入は0として計算しています（取引量がTVLの{sus_x:g}倍超え）。")
     if src == "external":
         notes.append("値動きは外部データ（GeckoTerminal）で補っています。")
+    if any(w.code == "RWD" for w in pool_warns):
+        notes.append(REWARD_HELD_TEXT + "。")
 
     manual = _manual_bonus(r, ctx.venue, reward_decimals, reward_usd if alive else None)
     if manual:

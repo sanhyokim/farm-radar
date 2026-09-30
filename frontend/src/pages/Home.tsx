@@ -117,6 +117,8 @@ export function PoolCard({ p }: { p: PoolRow }) {
         <HedgeBadge h={p.hedge_info} />
         {p.range_prices && <Term k="範囲（レンジ）"><span className="text-slate-500">範囲とは</span></Term>}
       </div>
+      {p.reward_held && <HeldLine text={p.reward_held} />}
+      {p.reward_estimate_note && <EstimateLine note={p.reward_estimate_note} />}
       {p.epoch_flip && <FlipLine f={p.epoch_flip} />}
       <button className="mt-1 text-xs text-sky-300" onClick={() => setOpen(!open)}>
         {open ? "閉じる" : "なぜ?"}
@@ -133,6 +135,16 @@ export function FlipLine({ f }: { f: EpochFlip }) {
       ⏰ {jstDay(f.at)} に<Term k="エポック">切り替え</Term>（{untilText(f.at)}）。来週はボーナスがなくなることもあります
     </div>
   );
+}
+
+/** 「⚠ ボーナスのコインを持つため、値下がりを二重に受けます」（WETH-LUTE など。2026-09-30 オーナー追加） */
+export function HeldLine({ text }: { text: string }) {
+  return <div className="mt-1 text-xs text-rose-300">⚠ <Term k="ボーナスのコインを持つプール">{text}</Term></div>;
+}
+
+/** 「ボーナスは推定（1週間を7日で均等に配ると仮定）」（Alandale。2026-09-30 オーナー追加） */
+export function EstimateLine({ note }: { note: string }) {
+  return <div className="mt-1 text-xs text-slate-400">ボーナスは<Term k="推定">{note}</Term></div>;
 }
 
 /** 「保険あり（Lighter）」/「保険なし」の印（2026-09-29 オーナー追加） */

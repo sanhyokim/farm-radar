@@ -271,7 +271,12 @@ def _score_dict(r) -> dict:
     d["hedge_info"] = views.hedge_label(d["details"], d.get("has_perp"))
     d["range_prices"] = views.range_prices(d["details"], d.get("best_r"), d.get("token0_symbol"), d.get("token1_symbol"))
     # 次の切り替え（木曜 9:00 JST）と「来週ボーナスがなくなることがある」注意（2026-09-30 オーナー追加）
-    d["epoch_flip"] = views.epoch_flip_info(_venue_meta(d.get("venue_id")), _now())
+    meta = _venue_meta(d.get("venue_id"))
+    d["epoch_flip"] = views.epoch_flip_info(meta, _now())
+    # ボーナスの見込みが仮定つきの推定である会場（Alandale:「1週間を7日で均等に配る」）の一言（2026-09-30 オーナー追加）
+    d["reward_estimate_note"] = (meta or {}).get("reward_estimate_note_ja")
+    # 報酬トークンそのものを預けるプールの警告（2026-09-30 オーナー追加。scoring/run.py の RWD）
+    d["reward_held"] = next((w["message_ja"] for w in d["warnings"] if w.get("code") == "RWD"), None)
     return d
 
 
@@ -310,8 +315,10 @@ def home() -> dict:
         counts = {"green": 0, "yellow": 0, "red": 0}
         for d in rows:
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
+        # epoch_flip はホームのカードの「⏰ 木曜9:00に切り替え」の行に使う（M6 で入れ忘れていた。2026-09-30 オーナーに伝えて直した）
         slim = ["pool_id", "pair", "venue_id", "venue_name", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
-                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices"]
+                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices", "epoch_flip",
+                "reward_estimate_note", "reward_held"]
         greens = [{k: d.get(k) for k in slim} for d in rows if d["signal"] == "green"]
         # 🟢がないときの参考: 判定できたプールを純日利の高い順に3件
         near = [{k: d.get(k) for k in slim} for d in rows
@@ -379,7 +386,8 @@ def pool(pool_id: str) -> dict:
         "venue": {"id": d["venue_id"], "name": (venue or {}).get("name") or d.get("venue_name"),
                   "practice": practice_allowed(venue) if venue else False,
                   "practice_note": ((venue or {}).get("practice_note_ja")
-                                    or "この会場は観察だけです。練習と2週間の評価には入れていません。")},
+                                    or "この会場は観察だけです。練習と2週間の評価には入れていません。"),
+                  "reward_estimate_note": (venue or {}).get("reward_estimate_note_ja")},
         "price": dict(snap) if snap else None,
         "capital": {"total": capital, "lp": c_lp, "margin": capital * s.allocation_hedge_margin,
                     "reserve": capital * s.allocation_reserve},

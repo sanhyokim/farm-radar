@@ -267,3 +267,19 @@ def test_manual_bonus_is_shown_apart_and_not_judged():
     assert "手で足した" in " ".join(json.loads(weth["details_json"])["inputs"]["notes"])
     # 手で足した分がないプールは None
     assert json.loads(rows["up-robinhood:p-nvda"]["details_json"])["inputs"]["manual_bonus"] is None
+
+
+def test_pool_holding_the_reward_token_gets_the_double_hit_warning():
+    # 2026-09-30 オーナー追加: 報酬トークンそのものを預けるプール（ここでは UP を含む p-up）には
+    # 「ボーナスのコインを持つため、値下がりを二重に受けます」の軽微な警告（最高でも🟡）
+    from farm_radar.scoring.run import REWARD_HELD_TEXT
+    conn = db.connect(":memory:")
+    _fill(conn, 24 * 8)
+    rows = {r["pool_id"].split(":")[1]: r for r in score_venue(conn, _ctx(), now=NOW)}
+    warns = {k: json.loads(r["warnings_json"]) for k, r in rows.items()}
+    held = [w for w in warns["p-up"] if w["code"] == "RWD"]
+    assert held == [{"code": "RWD", "level": "minor", "message_ja": REWARD_HELD_TEXT}]
+    assert REWARD_HELD_TEXT in rows["p-up"]["reason_ja"]
+    assert rows["p-up"]["signal"] != "green"
+    # 報酬トークンを含まないプールには付かない
+    assert not [w for w in warns["p-weth"] + warns["p-nvda"] if w["code"] == "RWD"]

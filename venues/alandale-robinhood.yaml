@@ -22,6 +22,10 @@ epoch_note_ja: >-
   Alandale では、プールごとの来週のボーナスの量を、今週の投票（LUTE をロックした人の票）で決めます。
   票が集まらなかったプールは、来週のボーナスが0になります（例: 2026-09-24〜の週は WETH-QUOTRON が0でした）。
 
+# ボーナスの見込みに添える一言（2026-09-30 オーナー追加。SPEC 5.2.3章）。
+# 一人ひとりへの分け方は運営のサーバーが決めて公開されていないので、「週の量を7日に均等に配る」と仮定して計算している
+reward_estimate_note_ja: "推定（1週間を7日で均等に配ると仮定）"
+
 # 外部の一覧サイトでのこの会場の名前（週1回の候補の一覧から、いま見ている会場を除くため。SPEC 5.2.2章）
 listings:
   defillama: [alandale-v3, alandale-v2]      # https://api.llama.fi/protocols の slug（"Alandale V3" / "Alandale V2"）
