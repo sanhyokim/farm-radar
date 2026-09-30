@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import views
@@ -59,6 +59,25 @@ def paper_summary(cards: list[dict[str, Any]], state: dict[str, Any], mode: str)
             "total": {"capital": capital, "value": sum(r["value"] for r in rows),
                       "change_usd": sum(r["change_usd"] for r in rows),
                       "today_usd": sum(r["today_usd"] for r in rows)}}
+
+
+def value_series(conn: sqlite3.Connection, position_ids: list[int], since: datetime, points: int = 48) -> list[float]:
+    """持っている建玉の評価額の合計の推移（1時間ごと。記録のない時間は前の値のまま）。ホームの小さな線グラフ用。"""
+    if not position_ids:
+        return []
+    marks = ",".join("?" * len(position_ids))
+    rows = conn.execute(f"SELECT position_id, ts, value_usd FROM position_pnl WHERE position_id IN ({marks}) "
+                        "AND value_usd IS NOT NULL ORDER BY ts", position_ids).fetchall()
+    hours: dict[str, dict[int, float]] = {}
+    for r in rows:
+        hours.setdefault(r["ts"][:13], {})[r["position_id"]] = float(r["value_usd"])
+    last: dict[int, float] = {}
+    out = []
+    for h in sorted(hours):
+        last.update(hours[h])
+        if len(last) == len(position_ids) and h >= since.astimezone(UTC).isoformat()[:13]:
+            out.append(sum(last.values()))
+    return views.thin(out, points)
 
 
 def evaluation_light(ev: dict[str, Any], now: datetime) -> dict[str, Any] | None:

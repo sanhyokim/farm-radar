@@ -114,12 +114,16 @@ def pulse() -> dict:
     """画面の左のメニューと見出しに出す「収集は正常か」「何時に計算したか」（軽い。2026-09-30 画面の見直し）。"""
     with _open() as (config, conn):
         now = _now()
-        stale, last = False, None
+        stale, last, flips = False, None, []
         for venue_id in config.venues:
             try:
-                observe = not practice_allowed(load_venue(venue_id, config.root))
+                v = load_venue(venue_id, config.root)
             except (OSError, ConfigError):
-                observe = False
+                v = None
+            observe = v is not None and not practice_allowed(v)
+            f = views.epoch_flip_info(v, now)
+            if f:
+                flips.append(f["at"])
             row = conn.execute("SELECT finished_at FROM collection_runs WHERE venue_id=? AND status='ok' "
                                "ORDER BY id DESC LIMIT 1", (venue_id,)).fetchone()
             at = row[0] if row and row[0] else None
@@ -129,7 +133,10 @@ def pulse() -> dict:
                 if at is None or (now - datetime.fromisoformat(at)).total_seconds() / 60 > config.stale_after_minutes:
                     stale = True
         scored = conn.execute("SELECT MAX(ts) FROM scores").fetchone()[0]
-        return {"mode": config.mode, "stale": stale, "last_ok_at": last, "scored_at": scored,
+        practicing = [r[0] for r in conn.execute("SELECT pool_id FROM positions WHERE is_paper=1 AND status='open'")]
+        return {"mode": config.mode, "stale": stale, "last_ok_at": last, "scored_at": scored, "practicing": practicing,
+                # 次の木曜の切り替え（会場ファイルの周期から。練習の画面の知らせに使う）
+                "next_flip": min(flips) if flips else None,
                 "snapshot_minutes": config.snapshot_minutes, "now": now.isoformat(timespec="seconds")}
 
 
@@ -406,6 +413,7 @@ def home() -> dict:
             "SELECT n.ts, n.net FROM position_pnl n JOIN positions p ON p.id=n.position_id "
             "WHERE p.is_paper=1 AND p.status='open' AND n.ts>?", (since24,))]
         paper_sum["hourly"] = views.hourly_sum_bars(pnl, now, hours=24)
+        paper_sum["spark"] = home_view.value_series(conn, [c["id"] for c in cards], now - timedelta(hours=48))
         ev = home_view.evaluation_light(paper_evaluation_mod.summary(conn, config, now), now)
         flips = [d["epoch_flip"]["at"] for d in rows if d.get("epoch_flip")]
         todo = home_view.todo(conn, config, now, collection=health_rows, paper=paper_sum, cards=cards, evaluation=ev,

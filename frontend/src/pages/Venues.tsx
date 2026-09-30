@@ -1,10 +1,10 @@
 import { useApi, type SkippedVenue, type Venue } from "../api";
 import { bigUsd, pct } from "../format";
-import { Sparkline } from "../charts";
-import { Badge, Card, Loading, Note, Term } from "../ui";
+import { Icon } from "../icons";
+import { Fold, Folds, Loading, Note, PageHead, Pill, Spark, Term } from "../ui";
 import { DiscoverySection } from "./Discovery";
 
-const LAMP = { ok: "bg-emerald-400", warn: "bg-amber-300", bad: "bg-rose-500", unknown: "bg-slate-600" } as const;
+const LAMP = { ok: "dot-g", warn: "dot-y", bad: "dot-r", unknown: "dot-n" } as const;
 const COND = {
   C1: "ボーナスが在庫に比べて多い",
   C2: "報酬トークンの価格が崩れていない",
@@ -13,73 +13,69 @@ const COND = {
 } as Record<string, string>;
 
 export default function Venues() {
-  const { data, error } = useApi<{ venues: Venue[]; skipped?: SkippedVenue[] }>("/api/venues");
-  if (!data) return <Loading error={error} />;
+  const { data, error } = useApi<{ venues: Venue[]; skipped?: SkippedVenue[] }>("/api/venues", 300_000);
+  const head = <PageHead title="会場" right={<span className="cap">{data ? `${data.venues.length}つ` : ""}</span>} />;
+  if (!data) return <>{head}<Loading error={error} /></>;
   return (
-    <div className="space-y-3">
-      <h1 className="text-lg font-bold text-slate-100">会場</h1>
-      {data.venues.map((v) => <VenueCard key={v.venue_id} v={v} />)}
+    <>
+      {head}
+      <div className="grid items-start gap-4 lg:grid-cols-2 lg:gap-6">
+        {data.venues.map((v) => <VenueCard key={v.venue_id} v={v} />)}
+      </div>
       <SkippedCard rows={data.skipped ?? []} />
       <DiscoverySection />
-    </div>
+    </>
   );
 }
 
 function VenueCard({ v }: { v: Venue }) {
   const rt = v.reward_token;
   const tvlNow = v.tvl.length ? v.tvl[v.tvl.length - 1].v : null;
+  const vals = (pts: { v: number | null }[]) => pts.map((p) => p.v).filter((x): x is number => x != null);
   return (
-    <Card title={<span className="text-base text-slate-50">{v.name}</span>} right={<span className="text-xs text-slate-400">{v.venue_id}</span>}>
-      <div className="mb-3 flex flex-wrap gap-1.5">
-        {v.audited === true ? <Badge tone="emerald">監査あり</Badge> : v.audited === false ? <Badge tone="rose">監査なし</Badge> : <Badge tone="amber">監査: 未確認</Badge>}
-        {v.age_days != null && <Badge>稼働 {v.age_days}日</Badge>}
-        {v.practice === false && <Badge tone="sky">観察だけ（練習・評価なし）</Badge>}
-        {v.unverified_contracts.length > 0 && <Badge tone="rose">未確認のコントラクト {v.unverified_contracts.length}件</Badge>}
+    <section className="card flex flex-col gap-4 p-6">
+      <div className="flex items-start justify-between gap-2">
+        <div><h2 className="t20">{v.name}</h2><div className="cap">{v.venue_id}</div></div>
+        {v.practice === false && <Pill icon="eye">観察だけ</Pill>}
       </div>
-
-      <div className="mb-3">
-        <div className="mb-1 text-xs font-semibold text-slate-300">4つの条件（会場全体の目安）</div>
-        <ul className="space-y-1.5">
-          {v.conditions.map((c) => (
-            <li key={c.code} className="flex gap-2 text-sm">
-              <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${LAMP[c.state]}`} />
-              <span className="min-w-0">
-                <span className="text-slate-200">{c.code} {COND[c.code]}</span>
-                <span className="block text-xs text-slate-400">{c.text}</span>
-              </span>
-            </li>
-          ))}
-        </ul>
+      <div className="flex flex-wrap gap-2">
+        {v.audited === true ? <Pill>監査あり</Pill> : v.audited === false ? <Pill tone="r">監査なし</Pill> : <Pill tone="y">監査: 未確認</Pill>}
+        {v.age_days != null && <Pill>稼働 {v.age_days}日</Pill>}
+        {v.unverified_contracts.length > 0 && <Pill tone="r">未確認のコントラクト {v.unverified_contracts.length}件</Pill>}
       </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div className="min-w-0">
-          <div className="text-xs text-slate-400">{rt.symbol ?? "報酬トークン"} の価格（7日）</div>
-          <div className="num text-sm text-slate-100">
-            {rt.price_usd == null ? "—" : `$${rt.price_usd.toPrecision(3)}`}{" "}
-            <span className={rt.change_7d != null && rt.change_7d < 0 ? "text-rose-400" : "text-emerald-400"}>
-              {rt.change_7d == null ? "" : pct(rt.change_7d * 100, 0)}
-            </span>
+      <div className="flex flex-col gap-2">
+        <div className="label">4つの条件（会場全体の目安）</div>
+        {v.conditions.map((c) => (
+          <div key={c.code} className="inset flex items-start gap-4 p-4">
+            <span className={`dot ${LAMP[c.state]} mt-2`} />
+            <span className="min-w-0"><span>{c.code} {COND[c.code]}</span><span className="cap block">{c.text}</span></span>
           </div>
-          <Sparkline data={rt.sparkline} color="#fbbf24" />
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="flex min-w-0 flex-col gap-2">
+          <div className="cap">{rt.symbol ?? "報酬トークン"} の価格（7日）</div>
+          <div className="bold num">{rt.price_usd == null ? "—" : `$${rt.price_usd.toPrecision(3)}`} <span className="cap">{rt.change_7d == null ? "" : pct(rt.change_7d * 100, 0)}</span></div>
+          <Spark values={vals(rt.sparkline)} height={40} />
         </div>
-        <div className="min-w-0">
-          <div className="text-xs text-slate-400"><Term k="TVL">TVL</Term> の合計（7日）</div>
-          <div className="num text-sm text-slate-100">{bigUsd(tvlNow)}</div>
-          <Sparkline data={v.tvl} />
+        <div className="flex min-w-0 flex-col gap-2">
+          <div className="cap"><Term k="TVL">TVL</Term> の合計（7日）</div>
+          <div className="bold num">{bigUsd(tvlNow)}</div>
+          <Spark values={vals(v.tvl)} height={40} />
         </div>
       </div>
       {v.warnings.length > 0 && (
-        <div className="mt-3 space-y-1">
+        <div className="flex flex-col gap-2">
           {v.warnings.map((w, i) => (
-            <p key={i} className={`text-xs ${w.level === "major" ? "text-rose-300" : "text-amber-300"}`}>
-              ⚠ {w.code}（{w.level === "major" ? "重大" : "軽微"}）: {w.title_ja ?? w.key}
-            </p>
+            <div key={i} className="cap flex items-start gap-2 text-sec">
+              <Icon name="alert" size={16} color={w.level === "major" ? "var(--r)" : "var(--y)"} />
+              <span>{w.code}（{w.level === "major" ? "危険" : "軽い警告"}）: {w.title_ja ?? w.key}</span>
+            </div>
           ))}
         </div>
       )}
       <Note>TVL の合計は、判定をしたプールの TVL（GeckoTerminal）を足したものです。</Note>
-    </Card>
+    </section>
   );
 }
 
@@ -87,21 +83,18 @@ function VenueCard({ v }: { v: Venue }) {
 function SkippedCard({ rows }: { rows: SkippedVenue[] }) {
   if (rows.length === 0) return null;
   return (
-    <Card title="見送り中の会場">
-      <p className="mb-2 text-xs text-slate-400">調べたけれど、今はアプリに入れていない会場です。</p>
-      <ul className="space-y-2">
+    <Folds>
+      <Fold title={`見送り中の会場（${rows.length}つ）`}>
+        <p className="cap">調べたけれど、今はアプリに入れていない会場です。</p>
         {rows.map((v) => (
-          <li key={v.key} className="rounded-xl bg-slate-800/40 p-2">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="font-semibold text-slate-100">{v.name}</span>
-              {v.chain && <span className="shrink-0 text-xs text-slate-400">{v.chain}</span>}
-            </div>
-            <p className="mt-1 text-sm leading-relaxed text-slate-300">{v.reason}</p>
-            {v.decided && <p className="mt-1 text-xs text-slate-400">{v.decided}</p>}
-            {v.source && <p className="break-all text-xs text-slate-500">出典: {v.source}</p>}
-          </li>
+          <div key={v.key} className="inset flex flex-col gap-1 p-4">
+            <div className="flex items-baseline justify-between gap-2"><span className="bold">{v.name}</span>{v.chain && <span className="cap">{v.chain}</span>}</div>
+            <p className="sec">{v.reason}</p>
+            {v.decided && <p className="cap">{v.decided}</p>}
+            {v.source && <p className="cap break-all">出典: {v.source}</p>}
+          </div>
         ))}
-      </ul>
-    </Card>
+      </Fold>
+    </Folds>
   );
 }

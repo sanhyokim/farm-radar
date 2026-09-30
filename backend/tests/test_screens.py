@@ -76,6 +76,7 @@ def test_home_has_todo_practice_summary_and_evaluation(client):  # noqa: F811
     assert pos["pair"] and pos["spark"] and pos["status"] and pos["tone"] in ("ok", "attention")
     assert p["total"]["value"] == pos["value"] and p["total"]["today_usd"] == pos["today_usd"]
     assert len(p["hourly"]["bars"]) == 24
+    assert p["spark"] and p["spark"][-1] == pos["value"]
     ev = h["evaluation"]
     assert ev["state"] == "running" and ev["day"] == 1 and len(ev["marks"]) == ev["days"] == 14
     assert ev["marks"][0]["state"] == "running" and ev["marks"][1]["state"] == "none"
