@@ -69,6 +69,9 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
     payback_total = open_cost / per_hour if per_hour > 0 and open_cost > 0 else None
     payback_left = (max(0.0, -net) / per_hour if per_hour > 0 else None) if open_cost > 0 else None
     actual_state = "short" if hours < risk.actual_min_hours else "ok"
+    # 今日（日本時間の0時から）の損益と、評価額の小さな線グラフ（2026-09-30 オーナー依頼 18・27）
+    today = now.astimezone(views.JST).strftime("%Y-%m-%d")
+    today_usd = sum(float(r[c] or 0.0) for r in rows if views.jst_day(r["ts"]) == today for c in CATS)
     return {
         "id": pos["id"], "pool_id": pos["pool_id"], "pair": pair, "venue_id": pos["venue_id"],
         "status": pos["status"], "opened_at": pos["opened_at"], "closed_at": pos["closed_at"],
@@ -79,7 +82,8 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
         "price_open": pos["price_open"], "in_range": in_range,
         "to_lower_pct": (price / pos["lower"] - 1) * 100, "to_upper_pct": (pos["upper"] / price - 1) * 100,
         "amounts": {pool["token0_symbol"]: x, pool["token1_symbol"]: y},
-        "value": cap + net, "change_usd": net,
+        "value": cap + net, "change_usd": net, "today_usd": today_usd,
+        "spark": views.thin([float(r["value_usd"]) for r in rows if r["value_usd"] is not None]),
         "change_pct": net / cap * 100 if cap else 0.0,
         "reward_24h_usd": reward_24h, "reward_hours": min(24.0, (now - datetime.fromisoformat(pos["opened_at"])
                                                                  ).total_seconds() / 3600),

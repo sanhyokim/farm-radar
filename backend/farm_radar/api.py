@@ -18,9 +18,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 
 from . import discovery as discovery_mod
+from . import home_view
 from . import plans as plans_mod
 from . import views
 from .collectors.completeness import check
@@ -42,6 +44,8 @@ from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
 from .tokens import load_tokens
 
 app = FastAPI(title="Farm Radar")
+# スマホで読むときに軽くする（プールの一覧は日本語の文が多い。2026-09-30 画面の見直し）
+app.add_middleware(GZipMiddleware, minimum_size=2000)
 
 
 @app.on_event("startup")
@@ -103,6 +107,30 @@ def health() -> dict:
                 "rate_limits_24h": ratelimit.counts_24h(conn, datetime.now(UTC))}
     finally:
         conn.close()
+
+
+@app.get("/api/pulse")
+def pulse() -> dict:
+    """画面の左のメニューと見出しに出す「収集は正常か」「何時に計算したか」（軽い。2026-09-30 画面の見直し）。"""
+    with _open() as (config, conn):
+        now = _now()
+        stale, last = False, None
+        for venue_id in config.venues:
+            try:
+                observe = not practice_allowed(load_venue(venue_id, config.root))
+            except (OSError, ConfigError):
+                observe = False
+            row = conn.execute("SELECT finished_at FROM collection_runs WHERE venue_id=? AND status='ok' "
+                               "ORDER BY id DESC LIMIT 1", (venue_id,)).fetchone()
+            at = row[0] if row and row[0] else None
+            if not observe:
+                # 練習と評価に使う会場（up.）だけで「止まっている」を決める（観察だけの会場は休むことがある。M6）
+                last = max(filter(None, (last, at)), default=None)
+                if at is None or (now - datetime.fromisoformat(at)).total_seconds() / 60 > config.stale_after_minutes:
+                    stale = True
+        scored = conn.execute("SELECT MAX(ts) FROM scores").fetchone()[0]
+        return {"mode": config.mode, "stale": stale, "last_ok_at": last, "scored_at": scored,
+                "snapshot_minutes": config.snapshot_minutes, "now": now.isoformat(timespec="seconds")}
 
 
 @app.get("/api/venues")
@@ -227,15 +255,20 @@ def alerts(days: int = 7) -> dict:
 
 
 @app.get("/api/scores")
-def scores(venue: str | None = None) -> dict:
-    """プールごとの最新の判定（M2）。net_daily_pct は総資産あたりの%で、判定に使う値。"""
+def scores(venue: str | None = None, slim: bool = False) -> dict:
+    """プールごとの最新の判定（M2）。net_daily_pct は総資産あたりの%で、判定に使う値。
+
+    slim=1 のときは計算の中身（details）を省く（プールの一覧の画面用。2026-09-30 画面の見直し）。
+    """
     config = load_config()
     conn = db.connect(config.database_path)
     try:
         rows = db.latest_scores(conn, venue)
         out, counts = [], {"green": 0, "yellow": 0, "red": 0}
         for r in rows:
-            d = _score_dict(r)
+            d = _score_dict(r, config)
+            if slim:
+                d.pop("details", None)
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
             out.append(d)
         return {"counts": counts, "judge_basis": "総資産あたりの純日利（%）", "scores": out}
@@ -264,7 +297,7 @@ def _venue_meta(venue_id: str | None) -> dict | None:
     return _venue_file(venue_id, mtime)
 
 
-def _score_dict(r) -> dict:
+def _score_dict(r, config=None) -> dict:
     d = dict(r)
     d["warnings"] = json.loads(d.pop("warnings_json") or "[]")
     d["details"] = json.loads(d.pop("details_json") or "{}")
@@ -281,6 +314,15 @@ def _score_dict(r) -> dict:
     d["reward_estimate_note"] = (meta or {}).get("reward_estimate_note_ja")
     # 報酬トークンそのものを預けるプールの警告（2026-09-30 オーナー追加。scoring/run.py の RWD）
     d["reward_held"] = next((w["message_ja"] for w in d["warnings"] if w.get("code") == "RWD"), None)
+    # 画面の見直し（2026-09-30 オーナー依頼 13・23・24・30）: 結論のあとの「いちばん大事な理由」、
+    # 「なぜこの判定か」の短い項目、$550 を両替したときのずれ（%）。表示だけで、判定には使わない
+    slip = (d["details"].get("inputs") or {}).get("slippage")
+    d["slippage_pct"] = float(slip) * 100 if slip is not None else None
+    d["reason_parts"] = views.reason_parts(d.get("reason_ja"))
+    d["key_reason"] = views.key_reason(d)
+    if config is not None:
+        s = config.scoring
+        d["checks"] = views.judge_checks(d, s.green_min_pct, s.yellow_min_pct, s.green_min_tvl_usd)
     return d
 
 
@@ -312,7 +354,7 @@ def home() -> dict:
     with _open() as (config, conn):
         rows = []
         for r in db.latest_scores(conn):
-            d = _score_dict(r)
+            d = _score_dict(r, config)
             d["is_stock_pair"] = conn.execute("SELECT is_stock_pair FROM pools WHERE id=?",
                                               (d["pool_id"],)).fetchone()[0]
             rows.append(d)
@@ -320,14 +362,19 @@ def home() -> dict:
         for d in rows:
             counts[d["signal"]] = counts.get(d["signal"], 0) + 1
         # epoch_flip はホームのカードの「⏰ 木曜9:00に切り替え」の行に使う（M6 で入れ忘れていた。2026-09-30 オーナーに伝えて直した）
-        slim = ["pool_id", "pair", "venue_id", "venue_name", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r", "reason_ja",
-                "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices", "epoch_flip", "emission_end",
-                "reward_estimate_note", "reward_held"]
-        greens = [{k: d.get(k) for k in slim} for d in rows if d["signal"] == "green"]
-        # 🟢がないときの参考: 判定できたプールを純日利の高い順に3件
-        near = [{k: d.get(k) for k in slim} for d in rows
-                if d["signal"] != "green" and d["net_daily_pct"] is not None][:3]
+        slim = ["pool_id", "ts", "pair", "venue_id", "venue_name", "signal", "net_daily_pct", "net_daily_pct_lp", "best_r",
+                "reason_ja", "is_stock_pair", "has_perp", "tvl_usd", "hedge_info", "range_prices", "epoch_flip",
+                "emission_end", "reward_estimate_note", "reward_held", "key_reason", "slippage_pct"]
         now = _now()
+        # 小さな線グラフ（直近48時間の純日利。2026-09-30 画面の見直し）
+        spark_since = now - timedelta(hours=48)
+
+        def card(d: dict) -> dict:
+            return {**{k: d.get(k) for k in slim}, "spark": views.net_series(conn, d["pool_id"], spark_since)}
+
+        greens = [card(d) for d in rows if d["signal"] == "green"]
+        # 🟢がないときの参考: 判定できたプールを純日利の高い順に3件
+        near = [card(d) for d in rows if d["signal"] != "green" and d["net_daily_pct"] is not None][:3]
         gas = next((d["details"].get("inputs", {}).get("gas_usd_per_tx") for d in rows if d["details"]), None)
         rewards = []
         health_rows = []
@@ -347,6 +394,22 @@ def home() -> dict:
                                 "observe": not practice_allowed(v),
                                 "last_ok_at": last_ok[0] if last_ok else None,
                                 "stale": age is None or age > config.stale_after_minutes, "gaps_7d": gaps})
+        plans_soon = [p for p in plans_mod.plan_items(config.root, conn, now) if p["state"] == "soon"]
+        # 今日やること・練習のまとめ・評価の進み具合（2026-09-30 オーナー依頼 17・18・32。表示だけ）
+        open_rows = conn.execute("SELECT * FROM positions WHERE is_paper=1 AND status='open' ORDER BY opened_at"
+                                 ).fetchall()
+        cards = [paper_views.card(conn, p, now, config.risk) for p in open_rows]
+        paper_sum = home_view.paper_summary(cards, risk_job.paper_state(conn), config.mode)
+        # 1時間ごとの損益（練習中の建玉の合計・24時間）
+        since24 = (now - timedelta(hours=24)).isoformat(timespec="seconds")
+        pnl = [dict(r) for r in conn.execute(
+            "SELECT n.ts, n.net FROM position_pnl n JOIN positions p ON p.id=n.position_id "
+            "WHERE p.is_paper=1 AND p.status='open' AND n.ts>?", (since24,))]
+        paper_sum["hourly"] = views.hourly_sum_bars(pnl, now, hours=24)
+        ev = home_view.evaluation_light(paper_evaluation_mod.summary(conn, config, now), now)
+        flips = [d["epoch_flip"]["at"] for d in rows if d.get("epoch_flip")]
+        todo = home_view.todo(conn, config, now, collection=health_rows, paper=paper_sum, cards=cards, evaluation=ev,
+                              plans_soon=plans_soon, flip_at=min(flips) if flips else None)
         return {
             "mode": config.mode,
             "summary": _summary_sentence(rows),
@@ -357,7 +420,9 @@ def home() -> dict:
                        "reward_tokens": rewards, "us_day": market_calendar.status(now)},
             "collection": health_rows,
             # 期限が7日以内の予定（docs/plans.yaml。2026-09-30 オーナー追加）。ホームの上で目立たせる
-            "plans_soon": [p for p in plans_mod.plan_items(config.root, conn, now) if p["state"] == "soon"],
+            "plans_soon": plans_soon,
+            "todo": todo, "paper": paper_sum, "evaluation": ev,
+            "snapshot_minutes": config.snapshot_minutes,
         }
 
 
@@ -379,7 +444,7 @@ def pool(pool_id: str) -> dict:
         ).fetchone()
         if r is None:
             raise HTTPException(404, "このプールの判定はまだありません")
-        d = _score_dict(r)
+        d = _score_dict(r, config)
         snap = conn.execute("SELECT price, tick, ts FROM pool_snapshots WHERE pool_id=? ORDER BY ts DESC LIMIT 1",
                             (pool_id,)).fetchone()
         now = _now()
