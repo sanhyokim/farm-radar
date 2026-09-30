@@ -187,6 +187,7 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
     **今の会場（up.・Alandale）は終了日が分からないので書いていない**（出ない。⏰ 切り替えの注意のまま）。
   - 6: `docs/plans.yaml` の skipped_venues →「会場」タブの下に「見送り中の会場」: STONX（オーナー決定）と、9/29 に調べて M6 で選ばなかった
     Fables・Ramses（Robinhood 版）・Nest・Pharaoh（理由は research/other-venues-2026-09-29.md から）。
+- パソコンへの反映（1 と 3〜6）: オーナーがカードで「まとめる」を選んだ（2026-09-30 21:33 JST）→ 画面の見直しを作ったあとに、1回の更新でまとめて出す。
 - **34 の調べもの完了**: `/mnt/project-files/farm-radar/research/onramp-japan-2026-09-30.md`（35 の「学ぶ」への表示は、順番どおり画面の実装のあと）。
   大事な点: USDG は日本の取引所で買えない／USDC を外に出せると公式で確認できたのは SBI VCトレード（Ethereum のみ・1回100万円まで）／
   Relay・Across で USDC → Robinhood Chain の USDG が数秒・約0.04〜0.07%／ガスは 0.002 ETH で100回以上／
