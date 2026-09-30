@@ -149,6 +149,15 @@ VotingEscrow 0x5d32…7B6、Minter 0x912E…Da5、Multicall3 0xcA11…A11 ほか
 - ホームの「参考: 純日利が高い順」のカードに、M6 で入れた「⏰ 木曜9:00に切り替え」の行が出ていなかった（/api/home のカード用のデータに epoch_flip を入れ忘れ）。
   プール一覧の上とプール詳細には出ていた。表示だけの問題で、評価への影響はなし。
 
+実装（2026-09-30 13:2x JST。PR #11 に追加。テスト 209 件）:
+- 1: 会場ファイルの `reward_estimate_note_ja`（Alandale だけ）を API で渡し、ホームのカード・プール一覧・プール詳細の「1日の見込み」と「手で足したボーナス」の欄に出す。
+- 2: `scoring/run.py` の警告 `RWD`（軽微）。会場の報酬トークンを token0 か token1 に含むプールに付け、理由文にも書く。
+  実データでは up. の WETH-UP・UP-STONKBROKER・UP-RVH と Alandale の USDG-LUTE・WETH-LUTE の5つ。評価の2つには付かない。
+  今はどのプールにも軽微な警告（C4）が付いているので、判定の色は変わらない。
+- 見つけた問題の直し: `/api/home` のカード用のデータに `epoch_flip` を足した。
+- パソコンの手順（古いフォルダーの片づけつき）: `/mnt/project-files/farm-radar/m6-extra-pc-update.md`（今のフォルダーを farm-radar-m6-old にする。
+  m6-old は評価が終わる 10/13 16:05 JST まで残し、ほかの *-old は消してよい）。
+
 ## 今後の候補（実装はしない。オーナーが決めたら始める）
 - **STONX（Ekubo Ve33）**: 報酬はチェーンから読める（全体の量 × プールの票の割合）、LP への分け方もチェーン上、1つのプールだけに手で足す仕組みはない
   （調査 `/mnt/project-files/farm-radar/research/stonx-ekubo-2026-09-30.md`）。
