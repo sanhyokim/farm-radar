@@ -107,3 +107,26 @@ def test_todo_puts_danger_first_and_flip_only_when_near(world):  # noqa: F811
     items = home_view.todo(conn, cfg, NOW, collection=[], paper={"enabled": True, "stopped": False}, cards=[],
                            evaluation=None, plans_soon=[], flip_at=far)
     assert items == []
+
+
+def test_todo_says_when_practice_runs_without_the_evaluation(world):  # noqa: F811
+    # 2026-10-01 オーナー決定: 練習の建玉があるのに評価が動いていないときは「今日やること」に出す（始め忘れに気づけるように）
+    path, conn = world
+    from .test_paper import _config
+    cfg = _config(path)
+    paper = {"enabled": True, "stopped": False, "positions": [{"id": 1}]}
+    items = home_view.todo(conn, cfg, NOW, collection=[], paper=paper, cards=[], evaluation=None,
+                           plans_soon=[], flip_at=None)
+    assert [t["title"] for t in items] == ["練習中ですが、2週間の評価は動いていません"]
+    assert "14日間の評価を始める" in items[0]["action"] and items[0]["to"] == "/practice"
+    running = {"state": "running", "coverage_pct": 100.0, "coverage_ok": True, "min_coverage_pct": 95.0,
+               "left_hours": 200.0}
+    assert home_view.todo(conn, cfg, NOW, collection=[], paper=paper, cards=[], evaluation=running,
+                          plans_soon=[], flip_at=None) == []
+    # 評価の建玉が全部閉じて中断したら、危険として出す（3日間）
+    stopped = {"state": "interrupted", "interrupted": {"at": NOW.isoformat(), "message": "評価は中断しました（テスト）"}}
+    items = home_view.todo(conn, cfg, NOW + timedelta(hours=1), collection=[], paper={**paper, "positions": []},
+                           cards=[], evaluation=stopped, plans_soon=[], flip_at=None)
+    assert [(t["level"], t["title"]) for t in items] == [("danger", "2週間の評価は中断しました")]
+    assert home_view.todo(conn, cfg, NOW + timedelta(days=4), collection=[], paper={**paper, "positions": []},
+                          cards=[], evaluation=stopped, plans_soon=[], flip_at=None) == []

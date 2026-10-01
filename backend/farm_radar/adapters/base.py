@@ -52,6 +52,10 @@ class PoolState:
     liquidity_staked_inrange: int | None  # ゲージにステークされたレンジ内流動性（取得できなければ None）
     raw: tuple[RawCall, ...] = field(default=())
     unstaked_fee: int | None = None     # ステークしていないLPから取る手数料の割合（1e-6単位。100000 = 10%）
+    # 2026-10-01 追加（オーナー決定 A）: プールのコントラクトが持っている2つのコインの量（最小単位）。
+    # 緊急離脱の「プールのお金」に使う（risk_job.pool_funds）。読めなければ None
+    balance0_raw: int | None = None
+    balance1_raw: int | None = None
 
 
 @dataclass(frozen=True)

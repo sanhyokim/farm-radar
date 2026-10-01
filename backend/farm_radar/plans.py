@@ -14,6 +14,7 @@ from typing import Any
 import yaml
 
 from .execution import evaluation
+from .views import JST
 
 SOON_DAYS = 7
 
@@ -25,14 +26,23 @@ def load(root: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
-def _evaluation_end(conn: sqlite3.Connection | None) -> str | None:
-    """進行中（または終わった）評価の終わりの時刻。途中でやめた評価と、まだ始めていないときは None。"""
+def _evaluation_end(conn: sqlite3.Connection | None) -> tuple[str | None, str]:
+    """進行中（または終わった）評価の終わりの時刻と、その出どころの説明。
+
+    日付はアプリの記録（評価を始めたときの行）から読んだものだけ（2026-10-01 オーナー決定）。
+    途中でやめた・中断した評価と、まだ始めていないときは日付なし。
+    """
     if conn is None:
-        return None
+        return None, "アプリの記録を読めませんでした"
     cur = evaluation.current(conn)
-    if cur is None or cur["status"] == "stopped":
-        return None
-    return cur["ends_at"]
+    if cur is None:
+        return None, "アプリの記録に評価がありません（まだ始まっていません）"
+    if cur["status"] in ("stopped", "interrupted"):
+        what = "途中でやめました" if cur["status"] == "stopped" else "中断しました"
+        return None, f"アプリの記録: 前の評価は{what}（もう一度始めると日付が出ます）"
+    s, e = (datetime.fromisoformat(cur[k]).astimezone(JST) for k in ("started_at", "ends_at"))
+    return cur["ends_at"], (f"アプリの記録: 評価を始めた {s.month}/{s.day} {s:%H:%M}、"
+                            f"終わる {e.month}/{e.day} {e:%H:%M}（日本時間）")
 
 
 def due_state(due: datetime | None, now: datetime) -> tuple[float | None, str | None]:
@@ -48,12 +58,17 @@ def due_state(due: datetime | None, now: datetime) -> tuple[float | None, str | 
 def plan_items(root: Path, conn: sqlite3.Connection | None, now: datetime) -> list[dict[str, Any]]:
     out = []
     for p in load(root).get("plans") or []:
-        due_s = _evaluation_end(conn) if p.get("due_from") == "evaluation" else p.get("due")
+        source = p.get("source")
+        if p.get("due_from") == "evaluation":
+            due_s, rec = _evaluation_end(conn)
+            source = f"{source}。{rec}" if source else rec
+        else:
+            due_s = p.get("due")
         due = datetime.fromisoformat(str(due_s)) if due_s else None
         days, state = due_state(due, now)
         out.append({
             "key": p.get("key"), "group": p.get("group") or "メモ", "title": p.get("title"),
-            "text": (p.get("text") or "").strip(), "source": p.get("source"),
+            "text": (p.get("text") or "").strip(), "source": source,
             "due": due.isoformat(timespec="seconds") if due else None, "days_left": days, "state": state,
         })
     return out

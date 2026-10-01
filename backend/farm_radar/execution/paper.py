@@ -130,6 +130,24 @@ def running_evaluation_end(conn: sqlite3.Connection, now: datetime) -> datetime 
     return end if now < end else None
 
 
+def interrupt_evaluation_if_empty(conn: sqlite3.Connection, now: datetime, last_pair: str, reason: str) -> bool:
+    """評価の建玉が全部閉じたら、評価を「中断」にする（2026-10-01 オーナー決定 C。合否は出さない）。
+
+    閉じた理由は問わない（緊急離脱・離脱のルール・オーナーが閉じた）。1つでも残っていれば評価はそのまま続く。
+    """
+    row = conn.execute("SELECT id, status, ends_at FROM evaluations ORDER BY id DESC LIMIT 1").fetchone()
+    if row is None or row["status"] != "running" or _iso(now) >= row["ends_at"]:
+        return False
+    if conn.execute("SELECT 1 FROM positions WHERE is_paper=1 AND status='open' LIMIT 1").fetchone():
+        return False
+    conn.execute("UPDATE evaluations SET status='interrupted', ends_at=?, note=? WHERE id=?",
+                 (_iso(now), json.dumps({"last_pair": last_pair, "reason": reason}, ensure_ascii=False), row["id"]))
+    conn.commit()
+    log.warning("evaluation interrupted", extra={"data": {"evaluation": row["id"], "last_pair": last_pair,
+                                                          "reason": reason}})
+    return True
+
+
 def evaluation_block_message(end: datetime) -> str:
     j = end.astimezone(JST)
     return (f"評価中のため、新しい練習は始められません（評価は {j.month}/{j.day}({WEEKDAY_JA[j.weekday()]}) "
@@ -598,6 +616,7 @@ class PaperExecutor:
         self.conn.execute("UPDATE positions SET status='closed', closed_at=?, close_reason=?, last_ts=?, state_json=? "
                           "WHERE id=?", (ts, reason, row_ts, json.dumps(st), pos["id"]))
         self.conn.commit()
+        interrupt_evaluation_if_empty(self.conn, self.now, f"{pool['token0_symbol']}/{pool['token1_symbol']}", reason)
         log.info("paper position closed", extra={"data": {"position": pos["id"], "reason": reason,
                                                           "net_usd": round(net, 2), "swap_parts": parts}})
         return CloseResult(pos["id"], net)

@@ -9,8 +9,9 @@ from farm_radar import plans, views
 from farm_radar.config import REPO_ROOT, load_venue
 from farm_radar.db import database as db
 
+# テスト用の値（オーナーのパソコンの記録ではない。2026-10-01 オーナーの「値の書き方の決まり」）
 EVAL_START = datetime(2026, 9, 29, 7, 5, 49, tzinfo=UTC)
-EVAL_END = EVAL_START + timedelta(days=14)          # 2026-10-13 16:05 JST
+EVAL_END = EVAL_START + timedelta(days=14)
 
 
 def _conn(tmp_path, status="running"):
@@ -33,6 +34,9 @@ def test_plans_file_has_the_owner_items_and_evaluation_end_comes_from_the_databa
     assert {"evaluation_end", "per_venue_share_review", "alchemy_key", "stonx_end"} <= set(items)
     ev = items["evaluation_end"]
     assert datetime.fromisoformat(ev["due"]) == EVAL_END
+    # 出典は記録から画面が書く（2026-10-01 オーナー決定: 予定とメモの日付は記録から読んだものだけ）
+    assert ev["source"] == "アプリの記録: 評価を始めた 9/29 16:05、終わる 10/13 16:05（日本時間）"
+    assert items["per_venue_share_review"]["source"].endswith(ev["source"])
     assert ev["state"] == "later" and ev["days_left"] == pytest.approx(13.0, abs=0.01)
     # 上限0.7の見直しは評価の終わりが期限。Alchemy のカギは期限なし
     assert items["per_venue_share_review"]["due"] == ev["due"]
@@ -55,11 +59,12 @@ def test_items_turn_soon_seven_days_before_and_past_after(tmp_path):
 
 def test_evaluation_end_is_empty_before_start_and_after_stopping(tmp_path):
     now = datetime(2026, 9, 30, tzinfo=UTC)
-    for i, status in enumerate((None, "stopped")):
+    for i, (status, says) in enumerate(((None, "まだ始まっていません"), ("stopped", "途中でやめました"),
+                                        ("interrupted", "中断しました"))):
         (tmp_path / str(i)).mkdir()
         conn = _conn(tmp_path / str(i), status)
         ev = _by_key(plans.plan_items(REPO_ROOT, conn, now))["evaluation_end"]
-        assert ev["due"] is None and ev["state"] is None and ev["text"]
+        assert ev["due"] is None and ev["state"] is None and ev["text"] and says in ev["source"]
     assert _by_key(plans.plan_items(REPO_ROOT, None, now))["evaluation_end"]["due"] is None
 
 

@@ -92,6 +92,9 @@ class FakeChain:
                 return encode(["string"], ["WETH" if to == WETH else "USDG"])
             if s("decimals()"):
                 return encode(["uint8"], [18 if to == WETH else 6])
+            if s("balanceOf(address)"):
+                # プールが持っているコインの量（2026-10-01: 緊急離脱の「プールのお金」）
+                return encode(["uint256"], [10**21 if to == WETH else 2_000 * 10**6])
         if to in (POOL_A, POOL_B):
             if s("token0()"):
                 return encode(["address"], [WETH])

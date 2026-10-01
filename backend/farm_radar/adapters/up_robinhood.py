@@ -183,6 +183,10 @@ class UpRobinhoodAdapter:
             for name, sig, types in POOL_CALLS:
                 calls.append(Call(p.address, encode_call(sig)))
                 keys.append((p.address, name, types))
+            # プールが持っているコインの量（緊急離脱の「プールのお金」。2026-10-01 オーナー決定 A）
+            for name, tok in (("balance0", p.token0), ("balance1", p.token1)):
+                calls.append(Call(tok, encode_call("balanceOf(address)", ["address"], [p.address])))
+                keys.append((p.address, name, ["uint256"]))
             if p.gauge_address:
                 for name, sig, types in GAUGE_CALLS:
                     calls.append(Call(p.gauge_address, encode_call(sig)))
@@ -217,6 +221,7 @@ class UpRobinhoodAdapter:
         staked = self._get(pool, block, "staked_liquidity")
         fee = self._get(pool, block, "fee")
         unstaked = self._get(pool, block, "unstaked_fee")
+        bal0, bal1 = self._get(pool, block, "balance0"), self._get(pool, block, "balance1")
         d0, d1 = pool.token0_decimals, pool.token1_decimals
         price = price_from_sqrt(sqrt_p, d0, d1) if d0 is not None and d1 is not None else float("nan")
         return PoolState(
@@ -224,6 +229,7 @@ class UpRobinhoodAdapter:
             fee=int(fee[0]) if fee else None, liquidity_total=int(liq[0]),
             liquidity_staked_inrange=int(staked[0]) if staked else None,
             unstaked_fee=int(unstaked[0]) if unstaked else None,
+            balance0_raw=int(bal0[0]) if bal0 else None, balance1_raw=int(bal1[0]) if bal1 else None,
         )
 
     def gauge_rewards(self, pool: PoolInfo, block: int) -> RewardInfo:

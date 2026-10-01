@@ -2,7 +2,8 @@
 
 損益の計算（jobs.run_paper）のあとに呼ぶ。建玉ごとに記録から今の状態を集めて risk/rules.py で調べ、
 見つかった危険のうち一番強いものに合わせて、仮想的に動く:
-- 緊急離脱: 全部閉じて、新しく始めるのを止める（ガス代が高くても実行する）
+- 緊急離脱: 1つのプールだけの危険（プールのお金の減少）は、その建玉だけ閉じる。会場全体の危険（会場プログラムの変化・
+  USDG・今日の損）は、全部閉じて新しく始めるのを止める（2026-10-01 オーナー決定 C。どちらもガス代が高くても実行する）
 - 離脱: その建玉を閉じる（ガス代が上限を超えていたら見送り、記録する）
 - 置き直し: 最新のスコアの最適レンジで、今の価格を中心に置き直す（ガス代が上限を超えていたら見送り）
 - 注意: 記録するだけ
@@ -53,6 +54,7 @@ def record_event(conn: sqlite3.Connection, now: datetime, position_id: int | Non
 
 def _action_ja(action: str) -> str:
     return {"rebalanced": " → 置き直しました。", "closed": " → この建玉を閉じました。",
+            "closed_pool": " → この建玉だけ閉じました（ほかの建玉はそのままです）。",
             "closed_all": " → 全部の建玉を閉じ、新しく始めるのを止めました。",
             "skipped_gas": " → ガス代が高いので見送りました（次の回にもう一度調べます）。",
             "none": "", "stopped": "", "resumed": ""}.get(action, "")
@@ -103,10 +105,40 @@ def today_net(conn: sqlite3.Connection, now: datetime) -> float:
     return float(row[0] or 0.0)
 
 
-def _liquidity_at(conn: sqlite3.Connection, pool_id: str, before: str) -> float | None:
-    row = conn.execute("SELECT liquidity_total FROM pool_snapshots WHERE pool_id=? AND ts<=? "
-                       "ORDER BY ts DESC LIMIT 1", (pool_id, before)).fetchone()
-    return float(int(row[0])) if row and row[0] is not None else None
+# 「1時間前」の記録として使う範囲: 55分前より前で、90分前より新しいもの（パソコンが止まっていて古い記録しかないときは比べない）
+HOUR_AGO_MIN = timedelta(minutes=55)
+HOUR_AGO_MAX = timedelta(minutes=90)
+
+
+def _hour_ago_row(conn: sqlite3.Connection, pool_id: str, snap_ts: str, column: str) -> sqlite3.Row | None:
+    t = datetime.fromisoformat(snap_ts)
+    return conn.execute(f"SELECT * FROM pool_snapshots WHERE pool_id=? AND ts<=? AND ts>=? AND {column} IS NOT NULL "
+                        "ORDER BY ts DESC LIMIT 1",
+                        (pool_id, (t - HOUR_AGO_MIN).isoformat(timespec="seconds"),
+                         (t - HOUR_AGO_MAX).isoformat(timespec="seconds"))).fetchone()
+
+
+def _liquidity_at(conn: sqlite3.Connection, pool_id: str, snap_ts: str) -> float | None:
+    row = _hour_ago_row(conn, pool_id, snap_ts, "liquidity_total")
+    return float(int(row["liquidity_total"])) if row is not None else None
+
+
+def pool_funds(snap: sqlite3.Row, then: sqlite3.Row | None, dec0: int | None, dec1: int | None
+               ) -> tuple[float | None, float | None]:
+    """プールのお金（2026-10-01 オーナー決定 A）。今と1時間前のコインの量を、どちらも今の値段で数える（token1 の単位）。
+
+    値段が動いただけでは変わらず、お金が引き出されたときだけ減る。読めないときは None。
+    """
+    price = snap["price"]
+    if dec0 is None or dec1 is None or price is None or not price == price:
+        return None, None
+
+    def value(row: sqlite3.Row | None) -> float | None:
+        if row is None or row["balance0_raw"] is None or row["balance1_raw"] is None:
+            return None
+        return int(row["balance0_raw"]) / 10 ** dec0 * float(price) + int(row["balance1_raw"]) / 10 ** dec1
+
+    return value(snap), value(then)
 
 
 def token_moves(conn: sqlite3.Connection, pos: sqlite3.Row, tokens: TokenBook, snap_ts: str,
@@ -139,7 +171,8 @@ def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, to
                         (pos["pool_id"],)).fetchone()
     if snap is None:
         return None
-    pool = conn.execute("SELECT token0_symbol, token1_symbol FROM pools WHERE id=?", (pos["pool_id"],)).fetchone()
+    pool = conn.execute("SELECT token0_symbol, token1_symbol, token0_decimals, token1_decimals FROM pools WHERE id=?",
+                        (pos["pool_id"],)).fetchone()
     st = json.loads(pos["state_json"] or "{}")
     out_since = st.get("out_since")
     minutes_out = ((datetime.fromisoformat(snap["ts"]) - datetime.fromisoformat(out_since)).total_seconds() / 60
@@ -152,7 +185,8 @@ def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, to
     since = (datetime.fromisoformat(snap["ts"]) - timedelta(hours=window)).isoformat(timespec="seconds")
     inc = conn.execute("SELECT SUM(income) FROM position_pnl WHERE position_id=? AND ts>?",
                        (pos["id"], since)).fetchone()[0]
-    one_h_ago = (datetime.fromisoformat(snap["ts"]) - timedelta(minutes=55)).isoformat(timespec="seconds")
+    funds_now, funds_then = pool_funds(snap, _hour_ago_row(conn, pos["pool_id"], snap["ts"], "balance0_raw"),
+                                       pool["token0_decimals"] if pool else None, pool["token1_decimals"] if pool else None)
     return PositionInput(
         pair=f"{pool['token0_symbol']}/{pool['token1_symbol']}" if pool else pos["pool_id"],
         lower=pos["lower"], upper=pos["upper"], price=float(snap["price"]), started_red=bool(pos["started_red"]),
@@ -163,7 +197,8 @@ def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, to
         actual_income_day=(float(inc or 0.0) / window * 24) if window > 0 else None,
         income_hours=window,
         liquidity_now=float(int(snap["liquidity_total"])) if snap["liquidity_total"] is not None else None,
-        liquidity_1h_ago=_liquidity_at(conn, pos["pool_id"], one_h_ago) if hours >= 55 / 60 else None,
+        liquidity_1h_ago=_liquidity_at(conn, pos["pool_id"], snap["ts"]),
+        funds_now=funds_now, funds_1h_ago=funds_then, funds_unit=(pool["token1_symbol"] or "") if pool else "",
         token_moves=token_moves(conn, pos, tokens, snap["ts"], own_tok or {}, own_pool or {}) if tokens else (),
         hedge_cost_day=(float(st.get("funding_paid", 0.0)) / hours * 24) if hours > 0 and pos["hedges_json"]
         and json.loads(pos["hedges_json"]) else None,
@@ -244,8 +279,11 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
         active_now: set[str] = set()
         top = findings[0] if findings else None
         if top and top.level == "emergency":
-            events.append(_emergency(conn, ex, top, now, pos["id"], pos["venue_id"], pos["pool_id"]))
-            return events
+            # 1つのプールだけの危険は、その建玉だけ閉じる（2026-10-01 オーナー決定 C）。ほかの建玉と評価は続く
+            ex.close_position(PositionRef(pos["id"]), reason=f"emergency:{top.kind}")
+            events.append(record_event(conn, now, pos["id"], "emergency", top.kind, top.message_ja, "closed_pool",
+                                       top.data, pos["venue_id"], pos["pool_id"]))
+            continue
         if top and top.level in ("exit", "rebalance"):
             too_high, gas = ex.gas_too_high(pos["pool_id"])
             key = f"skip:{top.kind}"

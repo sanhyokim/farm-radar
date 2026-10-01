@@ -142,7 +142,12 @@ class RiskSettings:
     rebalance_after_minutes: float = 15.0       # 置き直し: レンジの外にこの分数いたら
     rebalance_min_net_pct: float = 0.0          # 置き直し先の純日利（総資産あたり%）がこれ以下なら、置き直さずに離脱
     exit_reward_token_24h_pct: float = -20.0    # 離脱: 報酬トークンが24時間でこの%以下
-    emergency_liquidity_drop_1h_pct: float = 50.0   # 緊急離脱: プールの流動性が1時間でこの%以上減った
+    # 緊急離脱: プールのお金（プールが持っているコインの量 × 今の値段）が1時間でこの%以上減った（2026-10-01 オーナー決定 A。
+    # 前の名前 emergency_liquidity_drop_1h_pct も読む。前はレンジ内の流動性で比べていて、値段が動くだけで働いた）
+    emergency_pool_funds_drop_1h_pct: float = 50.0
+    # 注意（記録と表示だけ）: 今の値段のところの流動性（レンジ内の流動性）が1時間でこの%以上減った。
+    # ボーナスの取り分の計算に関わるため（2026-10-01 オーナー決定。緊急離脱には使わない）
+    caution_active_liquidity_drop_1h_pct: float = 50.0
     emergency_daily_loss_pct: float = 5.0       # 緊急離脱: 今日（日本時間）の損が総資産（建玉の投入額の合計）のこの%に達した
     # 2026-09-29 オーナー決定（SPEC 12.2章）
     exit_dump_1h_pct: float = -15.0             # 離脱（投げ売り）: 値動きする側のトークンがプール価格で1時間でこの%以下
@@ -163,8 +168,10 @@ class RiskSettings:
 
 
 def _risk(raw: dict[str, Any]) -> RiskSettings:
-    r = raw.get("risk") or {}
+    r = dict(raw.get("risk") or {})
     d = RiskSettings()
+    if "emergency_pool_funds_drop_1h_pct" not in r and "emergency_liquidity_drop_1h_pct" in r:
+        r["emergency_pool_funds_drop_1h_pct"] = r["emergency_liquidity_drop_1h_pct"]   # 前の名前（2026-10-01 まで）
     win = str(r.get("fast_window_ny", "-".join(d.fast_window_ny))).split("-")
     if len(win) != 2:
         raise ConfigError("risk.fast_window_ny は \"09:00-10:30\" のように書いてください。")
@@ -173,7 +180,8 @@ def _risk(raw: dict[str, Any]) -> RiskSettings:
         **{k: type(getattr(d, k))(r.get(k, getattr(d, k))) for k in (
             "fast_minutes", "caution_edge_pct", "caution_reward_shortfall_pct", "caution_min_hours",
             "rebalance_after_minutes", "rebalance_min_net_pct", "exit_reward_token_24h_pct",
-            "emergency_liquidity_drop_1h_pct", "emergency_daily_loss_pct", "max_swap_slippage_pct",
+            "emergency_pool_funds_drop_1h_pct", "caution_active_liquidity_drop_1h_pct",
+            "emergency_daily_loss_pct", "max_swap_slippage_pct",
             "max_gas_usd_per_tx", "actual_min_hours", "compare_min_hours", "exit_dump_1h_pct", "exit_dump_24h_pct",
             "emergency_usdg_below", "emergency_usdg_times", "caution_hedge_cost_pct", "contract_watch",
             "bonus_drop_ratio", "bonus_drop_wait_hours", "bonus_drop_action")},

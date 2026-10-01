@@ -5,7 +5,8 @@
 何をするか（置き直す・閉じる・全部閉じる）は呼ぶ側（execution/risk_job.py）が決める。
 
 レベル（強い順）:
-- emergency（緊急離脱）: 全部閉じて、新しく始めるのを止める
+- emergency（緊急離脱）: 1つのプールだけの危険（check_position）は、その建玉だけ閉じる。
+  会場全体の危険（check_portfolio）は、全部閉じて新しく始めるのを止める（2026-10-01 オーナー決定 C）
 - exit（離脱）: その建玉を閉じる
 - rebalance（置き直し）: 新しいレンジに移す。置き直し先の純日利が低ければ離脱
 - caution（注意）: 記録するだけ
@@ -14,6 +15,12 @@
 - 投げ売り（離脱）、USDG の外部価格（緊急離脱）、ヘッジの費用（注意）、会場プログラムの変化（緊急離脱。
   読み取りは execution/contract_watch.py、ここでは変化の一覧を受け取るだけ）
 - ヘッジの証拠金維持率・資金調達率の急騰は、Phase 3 で実際の perp を使うときに決める
+
+2026-10-01 オーナー決定 A（9/30 16:45 JST の USDG/NVDA の読み違いから）:
+- 緊急離脱の「お金が抜けた」判定は、プールのお金（プールが持っているコインの量を、今と1時間前のどちらも今の値段で数えたもの）で比べる。
+  値段が動いただけでは変わらず、引き出されたときだけ減る
+- 今の値段のところの流動性（pool.liquidity()）は、値段が大きな建玉の範囲の端をまたぐだけで半分以下になるので、緊急離脱には使わない。
+  ボーナスの取り分の計算に関わるので、急に減ったら「注意」（記録と表示だけ）
 """
 
 from __future__ import annotations
@@ -53,8 +60,11 @@ class PositionInput:
     predicted_income_day: float | None = None    # 予測の1日の収入（ドル）
     actual_income_day: float | None = None       # 実績の1日あたりの収入（ドル）
     income_hours: float = 0.0                    # 実績の収入を数えた時間（時間）
-    liquidity_now: float | None = None           # プールの流動性（今）
-    liquidity_1h_ago: float | None = None        # プールの流動性（1時間前）
+    liquidity_now: float | None = None           # 今の値段のところの流動性（レンジ内。今）。注意の表示だけに使う
+    liquidity_1h_ago: float | None = None        # 同じ（1時間前）
+    funds_now: float | None = None               # プールのお金（今。コインの量 × 今の値段。単位は funds_unit）
+    funds_1h_ago: float | None = None            # プールのお金（1時間前のコインの量 × 今の値段）
+    funds_unit: str = ""                         # プールのお金の単位（token1 の記号）
     # 値動きする側のトークンの変化（記号, 1時間の変化, 24時間の変化。−0.15 = −15%。分からなければ None）
     token_moves: tuple[tuple[str, float | None, float | None], ...] = ()
     hedge_cost_day: float | None = None          # ヘッジの1日あたりの費用（資金調達料。ドル）
@@ -75,14 +85,30 @@ def check_position(p: PositionInput, pf: PortfolioInput, s: RiskSettings) -> lis
     """1つの建玉の危険を調べる。強い順に並べて返す（何もなければ空）。"""
     out: list[Finding] = []
 
-    # 緊急離脱: プールの流動性が1時間で大きく減った（ラグプルの兆候）
+    # 緊急離脱（その建玉だけ閉じる）: プールのお金が1時間で大きく減った（ラグプルの兆候。2026-10-01 オーナー決定 A+C）
+    funds_change = None
+    if p.funds_now is not None and p.funds_1h_ago and p.funds_1h_ago > 0:
+        funds_change = (p.funds_now / p.funds_1h_ago - 1) * 100
+        if -funds_change >= s.emergency_pool_funds_drop_1h_pct:
+            out.append(Finding("emergency", "pool_funds_drop",
+                               f"{p.pair} のプールのお金（プールが持っているコインの量。1時間前も今の値段で数えて比べます）が"
+                               f"1時間で{-funds_change:.0f}%減りました（基準は{s.emergency_pool_funds_drop_1h_pct:g}%）。"
+                               "お金が引き出された可能性があります。",
+                               {"drop_pct": -funds_change, "funds_now": p.funds_now, "funds_1h_ago": p.funds_1h_ago,
+                                "unit": p.funds_unit}))
+
+    # 注意（記録と表示だけ）: 今の値段のところの流動性が1時間で大きく減った（2026-10-01 オーナー決定。緊急離脱には使わない）
     if p.liquidity_now is not None and p.liquidity_1h_ago and p.liquidity_1h_ago > 0:
         drop = (1 - p.liquidity_now / p.liquidity_1h_ago) * 100
-        if drop >= s.emergency_liquidity_drop_1h_pct:
-            out.append(Finding("emergency", "liquidity_drop",
-                               f"{p.pair} のプールのお金（流動性）が1時間で{drop:.0f}%減りました"
-                               f"（基準は{s.emergency_liquidity_drop_1h_pct:g}%）。お金を抜かれる前ぶれの可能性があります。",
-                               {"drop_pct": drop}))
+        if drop >= s.caution_active_liquidity_drop_1h_pct:
+            funds_txt = ("プールのお金は読めていません" if funds_change is None
+                         else f"プールのお金は{funds_change:+.1f}%")
+            out.append(Finding("caution", "active_liquidity_drop",
+                               f"{p.pair} の今の値段のところに置かれたお金（レンジ内の流動性）が1時間で{drop:.0f}%減りました"
+                               f"（基準は{s.caution_active_liquidity_drop_1h_pct:g}%。{funds_txt}）。"
+                               "値段が大きな建玉の範囲の端をまたいだときによく起きます。ボーナスの取り分の見込みが変わることがあります"
+                               "（表示だけで、建玉は動かしません）。",
+                               {"drop_pct": drop, "funds_change_pct": funds_change}))
 
     # 離脱: 報酬トークンが24時間で大きく下がった
     if pf.reward_change_24h is not None and pf.reward_change_24h * 100 <= s.exit_reward_token_24h_pct:

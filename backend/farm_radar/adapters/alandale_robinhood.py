@@ -159,6 +159,10 @@ class AlandaleRobinhoodAdapter:
         for p in pools:
             calls += [Call(p.address, encode_call("globalState()")), Call(p.address, encode_call("liquidity()"))]
             keys += [(p.address, "global_state", GLOBAL_STATE), (p.address, "liquidity", ["uint128"])]
+            # プールが持っているコインの量（緊急離脱の「プールのお金」。2026-10-01 オーナー決定 A）
+            for name, tok in (("balance0", p.token0), ("balance1", p.token1)):
+                calls.append(Call(tok, encode_call("balanceOf(address)", ["address"], [p.address])))
+                keys.append((p.address, name, ["uint256"]))
             if p.gauge_address:
                 calls += [Call(voter, encode_call("isAlive(address)", ["address"], [p.gauge_address])),
                           Call(rewarder, encode_call("rewardPerGaugePerEpoch(uint256,address)", ["uint256", "address"],
@@ -236,6 +240,7 @@ class AlandaleRobinhoodAdapter:
         if gs is None or liq is None:
             raise RuntimeError("globalState / liquidity を読めませんでした")
         sqrt_p, tick, last_fee, _plugin, community_fee, _unlocked = gs
+        bal0, bal1 = self._get(pool, block, "balance0"), self._get(pool, block, "balance1")
         d0, d1 = pool.token0_decimals, pool.token1_decimals
         price = price_from_sqrt(int(sqrt_p), d0, d1) if d0 is not None and d1 is not None else float("nan")
         return PoolState(
@@ -246,6 +251,7 @@ class AlandaleRobinhoodAdapter:
             liquidity_staked_inrange=int(liq[0]),
             # LP の手数料から金庫へ回す割合（1000分の1 → 100万分の1）。今は全プール 100%（LP の手数料は0）
             unstaked_fee=int(community_fee) * (1_000_000 // COMMUNITY_FEE_DENOMINATOR),
+            balance0_raw=int(bal0[0]) if bal0 else None, balance1_raw=int(bal1[0]) if bal1 else None,
         )
 
     def gauge_rewards(self, pool: PoolInfo, block: int) -> RewardInfo:

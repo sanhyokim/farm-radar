@@ -10,6 +10,8 @@
 2. 1日ごとの純損益で、予測と実績の差が「±30%以内」または「総資産の0.1%以内」の日が、評価日数の70%以上
 3. 報酬を「持ち続ける前提」と「すぐ売る前提」の両方で判定して並べる
 「1日」は評価を始めた時刻から24時間ずつ区切る。記録のない日は「満たさない日」に数える。
+2026-10-01 オーナー決定 C: 1つの建玉が閉じても、評価は残りの建玉で続ける。評価の建玉が全部閉じたら「中断」（interrupted）にして
+合否は出さない（paper.interrupt_evaluation_if_empty）。練習の建玉が1つもないときは始められない。
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from ..config import Config, ConfigError, load_venue, practice_allowed
 from ..risk.rules import LEVEL_JA
 from .flip import live_per_day
 from .paper import CATS
+from .views import close_reason_ja
 
 PRED_KEYS = {"income": ("income", 1), "direction": ("direction_risk", -1), "gamma": ("gamma", -1),
              "hedge": ("hedge", -1), "haircut": ("haircut", -1), "other": ("rebalance", -1)}
@@ -46,6 +49,8 @@ def start(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str, 
     cur = current(conn)
     if cur is not None and cur["ends_at"] > _iso(now) and cur["status"] == "running":
         raise ValueError("評価はもう始まっています。")
+    if conn.execute("SELECT 1 FROM positions WHERE is_paper=1 AND status='open' LIMIT 1").fetchone() is None:
+        raise ValueError("練習の建玉が1つもないので、評価を始められません。先に練習を開いてください（2026-10-01 の決まり）。")
     ends = now + timedelta(days=config.evaluation.days)
     conn.execute("INSERT INTO evaluations(started_at, ends_at, status) VALUES (?,?, 'running')",
                  (_iso(now), _iso(ends)))
@@ -78,6 +83,11 @@ def evaluation_venues(conn: sqlite3.Connection, config: Config, start: datetime,
     return out
 
 
+def _jst(t: datetime) -> str:
+    j = t.astimezone(views.JST)
+    return f"{j:%Y-%m-%d %H:%M}（日本時間）"
+
+
 def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str, Any]:
     cur = current(conn)
     base = {"evaluation_days": config.evaluation.days, "mode": config.mode}
@@ -87,7 +97,7 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
     end_t = datetime.fromisoformat(cur["ends_at"])
     until = min(now, end_t)
     state = "running" if cur["status"] == "running" and now < end_t else (
-        "stopped" if cur["status"] == "stopped" else "finished")
+        cur["status"] if cur["status"] in ("stopped", "interrupted") else "finished")
     hours = max(0.0, (until - start_t).total_seconds() / 3600)
 
     # データの集まり具合（会場ごと）。数えるのは評価の建玉がある会場だけ（2026-09-30 オーナー条件:
@@ -213,8 +223,8 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         ok_days = sum(1 for d in day_rows if d["done"] and d[f"{key}_ok"])
         if state == "finished":
             result = "pass" if cov_ok and ok_days >= need else "fail"
-        elif state == "stopped":
-            result = "stopped"
+        elif state in ("stopped", "interrupted"):
+            result = state
         else:
             result = "running"
         return {"ok_days": ok_days, "need_days": need, "result": result}
@@ -236,8 +246,28 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         "pass_days_pct": ev.pass_days_pct, "days": n_days, "done_days": done_days,
         "hold": verdict("hold"), "sell": verdict("sell"),
     }
+    # 評価の期間に閉じた建玉（2026-10-01 オーナー決定 C: 閉じた建玉はそこで記録を終え、評価は残りで続ける）
+    closed = [{"id": r["id"], "pair": f"{r['s0']}/{r['s1']}", "closed_at": r["closed_at"],
+               "reason": r["close_reason"], "reason_ja": close_reason_ja(r["close_reason"])}
+              for r in conn.execute(
+                  """SELECT p.id, p.closed_at, p.close_reason, pl.token0_symbol AS s0, pl.token1_symbol AS s1
+                     FROM positions p LEFT JOIN pools pl ON pl.id=p.pool_id
+                     WHERE p.is_paper=1 AND p.closed_at>? AND p.closed_at<=? ORDER BY p.closed_at""",
+                  (_iso(start_t), _iso(until)))]
+    open_n = conn.execute("SELECT COUNT(*) FROM positions WHERE is_paper=1 AND status='open'").fetchone()[0]
+    interrupted = None
+    if state == "interrupted":
+        note = json.loads(cur["note"] or "{}") if "note" in cur.keys() else {}
+        interrupted = {"at": cur["ends_at"], "last_pair": note.get("last_pair"),
+                       "reason_ja": close_reason_ja(note.get("reason")),
+                       "message": (f"評価の建玉が全部閉じたので、評価は中断しました（最後に閉じたのは {note.get('last_pair') or '—'}、"
+                                   f"理由: {close_reason_ja(note.get('reason')) or '—'}）。合否は出しません。"
+                                   "もう一度始めるときは、練習を開いてから「評価を始める」を押します。")}
     return {
         **base, "state": state, "started_at": cur["started_at"], "ends_at": cur["ends_at"],
+        # コマンドで確かめやすいように日本時間の文字も返す（2026-10-01 オーナー依頼3）
+        "started_jst": _jst(start_t), "ends_jst": _jst(end_t),
+        "closed_positions": closed, "open_positions": open_n, "interrupted": interrupted,
         "elapsed_hours": hours, "left_hours": max(0.0, (end_t - now).total_seconds() / 3600) if state == "running" else 0,
         "coverage": coverage, "positions": len(per_pos),
         "observed_hours": obs_hours, "estimated_hours": est_hours,

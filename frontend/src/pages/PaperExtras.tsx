@@ -150,6 +150,7 @@ export function CsvBody({ months }: { months: string[] }) {
 const EVAL_STATE: Record<Evaluation["state"], [string, "n" | "g" | "y"]> = {
   not_started: ["まだ始めていません", "n"], running: ["評価中", "n"],
   stopped: ["途中でやめました", "y"], finished: ["期間が終わりました", "n"],
+  interrupted: ["中断しました", "y"],
 };
 
 /** 評価のまとめ（full）から、進み具合の形（ホームと同じ）を作る */
@@ -160,11 +161,12 @@ export function toLight(ev: Evaluation): EvalLight | null {
   const rows = ev.days ?? [];
   return {
     state: ev.state, started_at: ev.started_at, ends_at: ev.ends_at, day, days: c.days, left_hours: ev.left_hours ?? 0,
+    closed_positions: ev.closed_positions, interrupted: ev.interrupted,
     coverage_pct: c.coverage_pct, min_coverage_pct: c.min_coverage_pct, coverage_ok: c.coverage_ok,
     ok_days: c.hold.ok_days, need_days: c.hold.need_days,
     marks: Array.from({ length: c.days }, (_, k) => {
       const r = rows[k];
-      if (r) return { day: k + 1, state: r.done ? (r.hold_ok ? "ok" : "ng") : "running", flip: !!r.flip };
+      if (r) return { day: k + 1, state: r.done ? (r.hold_ok ? "ok" : "ng") : ev.state === "running" ? "running" : "none", flip: !!r.flip };
       return { day: k + 1, state: ev.state === "running" && k === day - 1 ? "running" : "none", flip: false };
     }),
   };
@@ -277,7 +279,7 @@ export function EvaluationCard() {
           {ask && (
             <div className="inset flex flex-col gap-4 p-4">
               <p>{ask === "start"
-                ? `今から${days}日間の評価を始めます。パソコンが止まっている時間は「推定」になり、比べる対象から外れます。評価の間は新しい練習を始められません。よろしいですか？`
+                ? `今から${days}日間の評価を始めます。パソコンが止まっている時間は「推定」になり、比べる対象から外れます。評価の間は新しい練習を始められません。建玉が全部閉じたら、評価は「中断」になります。よろしいですか？`
                 : "評価をやめます（ここまでの記録は残ります）。よろしいですか？"}</p>
               <div className="flex gap-2">
                 <button disabled={busy} onClick={() => run(ask)} className="btn">はい</button>
@@ -294,7 +296,8 @@ export function EvaluationCard() {
 const hoursJa = (h: number) => (h >= 24 ? `${Math.floor(h / 24)}日${Math.round(h % 24)}時間` : `${h.toFixed(1)}時間`);
 
 const RESULT: Record<EvalVerdict["result"], [string, "n" | "g" | "y" | "r"]> = {
-  running: ["評価中", "n"], stopped: ["途中でやめた", "y"], pass: ["合格", "g"], fail: ["不合格", "r"],
+  running: ["評価中", "n"], stopped: ["途中でやめた", "y"], interrupted: ["中断（合否なし）", "y"],
+  pass: ["合格", "g"], fail: ["不合格", "r"],
 };
 
 /** 合格の基準（2026-09-29 オーナー決定）と、持ち続ける前提・すぐ売る前提それぞれの判定 */
