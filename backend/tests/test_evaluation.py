@@ -31,6 +31,10 @@ def test_running_summary_compares_predicted_and_actual(world):  # noqa: F811
     run_paper(conn, cfg, TOKENS, lighter=FakeLighter(), fx=FakeFx(), now=NOW + timedelta(hours=7))
     s = evaluation.summary(conn, cfg, NOW + timedelta(hours=7))
     assert s["state"] == "running" and s["positions"] == 1
+    # コマンドで確かめる用の日本時間の文字（2026-10-01 オーナー依頼3）
+    j = NOW.astimezone(evaluation.views.JST)
+    assert s["started_jst"] == f"{j:%Y-%m-%d %H:%M}（日本時間）"
+    assert s["ends_jst"].endswith("（日本時間）") and s["ends_jst"] > s["started_jst"]
     assert 5 < s["observed_hours"] <= 6.0 and s["estimated_hours"] == 0
     assert s["left_hours"] == pytest.approx(cfg.evaluation.days * 24 - 7)
     # 実績は1時間ごとの行の合計（開いた時の1回きりの費用は入らない）を1日あたりにしたもの

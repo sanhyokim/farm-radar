@@ -83,6 +83,11 @@ def evaluation_venues(conn: sqlite3.Connection, config: Config, start: datetime,
     return out
 
 
+def _jst(t: datetime) -> str:
+    j = t.astimezone(views.JST)
+    return f"{j:%Y-%m-%d %H:%M}（日本時間）"
+
+
 def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str, Any]:
     cur = current(conn)
     base = {"evaluation_days": config.evaluation.days, "mode": config.mode}
@@ -260,6 +265,8 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
                                    "もう一度始めるときは、練習を開いてから「評価を始める」を押します。")}
     return {
         **base, "state": state, "started_at": cur["started_at"], "ends_at": cur["ends_at"],
+        # コマンドで確かめやすいように日本時間の文字も返す（2026-10-01 オーナー依頼3）
+        "started_jst": _jst(start_t), "ends_jst": _jst(end_t),
         "closed_positions": closed, "open_positions": open_n, "interrupted": interrupted,
         "elapsed_hours": hours, "left_hours": max(0.0, (end_t - now).total_seconds() / 3600) if state == "running" else 0,
         "coverage": coverage, "positions": len(per_pos),

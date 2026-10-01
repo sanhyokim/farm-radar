@@ -266,7 +266,7 @@ function RestFolds({ data }: { data: Paper }) {
       {data.enabled && (
         <Fold title="見張りのルール">
           {data.risk.map((r) => (
-            <div key={r.level} className="inset flex flex-col items-start gap-2 p-4">
+            <div key={r.level_ja} className="inset flex flex-col items-start gap-2 p-4">
               <Pill tone={LEVEL_TONE[r.level]}>{r.level_ja}</Pill><div>{r.rule}</div><div className="cap">→ {r.action}</div>
             </div>
           ))}
