@@ -186,7 +186,7 @@ export interface PoolDetail {
 }
 
 export interface PaperCard {
-  id: number; pool_id: string; pair: string; venue_id: string; status: "open" | "closed";
+  id: number; pool_id: string; pair: string; venue_id: string; status: "open" | "closed"; reference?: boolean;
   opened_at: string; closed_at: string | null; close_reason: string | null; last_ts: string;
   capital: number; c_lp: number; mode: string; r_pct: number; lower: number; upper: number; price: number;
   price_open: number; in_range: boolean; to_lower_pct: number; to_upper_pct: number;
@@ -237,6 +237,8 @@ export interface Paper {
   timeline: TimelineItem[]; outlook: Outlook | null; ledger_months: string[];
   /** 評価の間は新しい練習を始めない（2026-09-30 オーナー決定①） */
   evaluation_block: { until: string; message: string } | null;
+  /** 参考の練習（合否に使わない。2026-10-01 案B） */
+  reference?: { open: number; max: number; outside_limits: boolean; can_open: boolean; note: string };
 }
 
 export interface TimelineItem {
@@ -259,12 +261,27 @@ export interface Evaluation {
     min_coverage_pct: number; coverage_pct: number | null; coverage_ok: boolean; day_gap_pct: number;
     day_gap_capital_pct: number; pass_days_pct: number; days: number; done_days: number;
     hold: EvalVerdict; sell: EvalVerdict;
+    /** 合否の比べる相手（2026-10-01）: weekly = 切り替えのあとはその週の見込み */
+    prediction?: "weekly" | "start";
+    start_only?: { hold: EvalVerdict; sell: EvalVerdict } | null;
   };
   days?: { day: number; start: string; done: boolean; hours: number; capital: number; predicted: number | null;
     predicted_sell: number | null; hold: number | null; sell: number | null; hold_ok: boolean; sell_ok: boolean;
-    reference?: number | null; reference_ok?: boolean | null; flip?: boolean }[];
+    reference?: number | null; reference_ok?: boolean | null; flip?: boolean;
+    week_hours?: number; predicted_start?: number | null; start_ok?: boolean }[];
+  weekly?: { enabled: boolean; used: { flip_at: string; score_ts: string }[]; note: string | null };
+  reference_tracks?: { tracks: RefTrack[]; note: string };
   /** 参考: その時間の見込みとの比較（2026-09-30 オーナー決定②。合否には使わない） */
   reference?: { ok_days: number; need_days: number; differs_days: number[]; flip_days: number[]; net_day: number | null; note: string };
+}
+
+/** 参考の練習の「見込みと実際」（建玉ごと。合否に使わない。2026-10-01 案B） */
+export interface RefTrack {
+  id: number; pool_id: string; pair: string; status: "open" | "closed"; opened_at: string; closed_at: string | null;
+  close_reason_ja: string | null; mode: string; capital: number; ends_at: string;
+  done_days: number; ok_days: number; need_days: number; observed_hours: number; estimated_hours: number;
+  predicted_net_day: number | null; actual_net_day: number | null;
+  days: { day: number; done: boolean; hours: number; predicted: number | null; hold: number | null; ok: boolean }[];
 }
 
 export interface EvalVerdict { ok_days: number; need_days: number; result: "running" | "stopped" | "interrupted" | "pass" | "fail" }

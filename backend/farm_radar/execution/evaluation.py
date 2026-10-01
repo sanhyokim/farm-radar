@@ -325,9 +325,12 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         "differs_days": [d["day"] for d in done_rows if d["reference_ok"] is not None and d["reference_ok"] != d["hold_ok"]],
         "flip_days": [d["day"] for d in day_rows if d["flip"]],
         "net_day": (ref_net / (ref_hours / 24)) if ref_hours > 0 else None,
-        "note": ("参考です。合否は、始めたときの見込みとの比較で決めます（変わりません）。"
-                 "こちらは15分ごとの記録を、その時点の最新のスコア（木曜の切り替えのあとは、ボーナスが変わったあとの見込み）と比べたものです。"
-                 "始めたときの見込みでは外れて、こちらでは当たっている日は、外れた理由が切り替えだった可能性が高い日です。"),
+        "note": (("参考です。合否は、週ごとの見込み（切り替えのあとはその週の見込み）との比較で決めます。" if weekly else
+                  "参考です。合否は、始めたときの見込みとの比較で決めます（変わりません）。")
+                 + "こちらは15分ごとの記録を、その時点の最新のスコア（木曜の切り替えのあとは、ボーナスが変わったあとの見込み）と比べたものです。"
+                 + ("合否の見込みでは外れて、こちらでは当たっている日は、外れた理由がその日のうちの見込みの変化だった可能性が高い日です。"
+                    if weekly else
+                    "始めたときの見込みでは外れて、こちらでは当たっている日は、外れた理由が切り替えだった可能性が高い日です。")),
     }
     criteria = {
         "min_coverage_pct": ev.min_coverage_pct, "coverage_pct": cov * 100 if cov is not None else None,
@@ -381,7 +384,9 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
                             "始めたときの見込みだけで比べた結果も、参考として並べます。") if weekly else None},
         "reference_tracks": reference_tracks(conn, config, now),
         "disclaimer": "この評価は予測が当たるかの確認で、儲かるかの判定ではありません。",
-        "note": ("予測はスコア（始めた時の1日の見込み）を、実際に記録した時間の分だけ足したもの。実績は同じ時間の6区分の合計。"
+        "note": (("予測はスコア（始めた時の1日の見込み。木曜の切り替えのあとはその週の見込み）を、"
+                  if weekly else "予測はスコア（始めた時の1日の見込み）を、")
+                 + "実際に記録した時間の分だけ足したもの。実績は同じ時間の6区分の合計。"
                  "パソコンが止まっていた時間（推定）と、開く・閉じる時の1回きりの費用は比べる対象から外しています。"
                  "1日は評価を始めた時刻から24時間ずつ区切ります。記録のない日は「満たさない日」に数えます。"),
     }

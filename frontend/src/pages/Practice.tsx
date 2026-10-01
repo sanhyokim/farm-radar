@@ -99,6 +99,7 @@ export function PositionCard({ c, link = true }: { c: PaperCard; link?: boolean 
         </div>
         {c.spark && c.spark.length > 1 && <Spark values={c.spark} height={40} />}
         <Payback c={c} />
+        {c.reference && <div className="cap flex items-center gap-2"><span className="dot dot-n dot-sm" /><span>参考の練習（評価の合否には使いません）</span></div>}
         {c.red_label && <div className="cap flex items-center gap-2"><span className="dot dot-r dot-sm" /><span>判定が危険のときに始めた練習</span></div>}
         {c.bonus_drop && (
           <div className="inset flex items-start gap-4 p-4">
