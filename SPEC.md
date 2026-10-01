@@ -613,6 +613,7 @@ class HedgeAdapter(Protocol):
 
 > **設計案の承認待ち。オーナーが「よい」と言うまで作らない（急がない）。**
 > 設計案: 「Farm Radar 作り直しの設計案（渡り鳥）」 https://claude.ai/artifact/CrZ5bd6GdSx5nEs8U69zvt
+> 同じ内容の Markdown 版: docs/redesign-plan-2026-10-01.md（2026-10-01 時点の書き出し。図は文字に置き換えた）
 > 承認されるまでは、0〜12章が今の作りの仕様のまま。この章の数字はすべて仮。付録A（Phase 3）は今までどおり実装しない。
 
 ### 13.1 決まったこと（オーナーの依頼。2026-10-01 21:49 JST）
