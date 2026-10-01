@@ -46,6 +46,7 @@ def test_running_summary_compares_predicted_and_actual(world):  # noqa: F811
 def test_stop_keeps_record(world):  # noqa: F811
     path, conn = world
     cfg = _config(path)
+    _open(conn, path)
     evaluation.start(conn, cfg, NOW)
     evaluation.stop(conn, NOW + timedelta(hours=2))
     s = evaluation.summary(conn, cfg, NOW + timedelta(hours=5))
@@ -59,6 +60,10 @@ def test_api_needs_confirm(client):  # noqa: F811
     c, conn, path = client
     assert c.get("/api/paper/evaluation").json()["state"] == "not_started"
     assert c.post("/api/paper/evaluation/start", json={}).status_code == 400
+    # 練習の建玉がないときは始められない（2026-10-01 の決まり）
+    r = c.post("/api/paper/evaluation/start", json={"confirm": True})
+    assert r.status_code == 400 and "練習の建玉が1つもない" in r.json()["detail"]
+    assert c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-weth"}).status_code == 200
     d = c.post("/api/paper/evaluation/start", json={"confirm": True}).json()
     assert "14日間" in d["message"]
     assert c.get("/api/paper/evaluation").json()["state"] == "running"
@@ -94,6 +99,7 @@ def test_daily_judgement_and_verdict(world):  # noqa: F811
 def test_day_without_records_does_not_count(world):  # noqa: F811
     path, conn = world
     cfg = _config(path)
+    _open(conn, path)
     evaluation.start(conn, cfg, NOW)
     s = evaluation.summary(conn, cfg, NOW + timedelta(hours=49))
     assert [d["hold_ok"] for d in s["days"]][:2] == [False, False]
@@ -144,10 +150,11 @@ def test_new_practice_is_blocked_while_the_evaluation_runs(world):  # noqa: F811
 def test_paper_api_shows_the_evaluation_block(client):  # noqa: F811
     c, conn, path = client
     assert c.get("/api/paper").json()["evaluation_block"] is None
+    assert c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-weth"}).status_code == 200
     c.post("/api/paper/evaluation/start", json={"confirm": True})
     block = c.get("/api/paper").json()["evaluation_block"]
     assert block["until"] and "評価中のため" in block["message"]
-    r = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-weth"})
+    r = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-nvda"})
     assert r.status_code == 400 and "評価中のため" in r.json()["detail"]
     c.post("/api/paper/evaluation/stop", json={"confirm": True})
     assert c.get("/api/paper").json()["evaluation_block"] is None

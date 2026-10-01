@@ -49,10 +49,16 @@ export interface HomePaper {
   spark?: number[];
 }
 
+/** 評価の期間に閉じた建玉（2026-10-01 オーナー決定 C: 閉じた建玉はそこで記録を終え、評価は残りで続ける） */
+export interface EvalClosed { id: number; pair: string; closed_at: string; reason: string | null; reason_ja: string | null }
+/** 評価の建玉が全部閉じて中断したとき（合否は出さない） */
+export interface EvalInterrupted { at: string; last_pair: string | null; reason_ja: string | null; message: string }
+
 export interface EvalLight {
-  state: "running" | "stopped" | "finished"; started_at: string; ends_at: string; day: number; days: number;
+  state: "running" | "stopped" | "finished" | "interrupted"; started_at: string; ends_at: string; day: number; days: number;
   left_hours: number; coverage_pct: number | null; min_coverage_pct: number; coverage_ok: boolean;
   ok_days: number; need_days: number; marks: { day: number; state: "ok" | "ng" | "running" | "none"; flip: boolean }[];
+  closed_positions?: EvalClosed[]; interrupted?: EvalInterrupted | null;
 }
 
 /** 左のメニューと見出し用の軽い状態 */
@@ -239,8 +245,9 @@ export interface TimelineItem {
 }
 
 export interface Evaluation {
-  state: "not_started" | "running" | "stopped" | "finished"; mode: string; evaluation_days: number;
+  state: "not_started" | "running" | "stopped" | "finished" | "interrupted"; mode: string; evaluation_days: number;
   started_at?: string; ends_at?: string; elapsed_hours?: number; left_hours?: number;
+  closed_positions?: EvalClosed[]; open_positions?: number; interrupted?: EvalInterrupted | null;
   coverage?: { venue_id: string; expected: number; ok: number; ratio: number | null; missing_hours: number }[];
   positions?: number; observed_hours?: number; estimated_hours?: number;
   compare?: { key: string; label: string; predicted: number | null; actual: number | null }[];
@@ -260,7 +267,7 @@ export interface Evaluation {
   reference?: { ok_days: number; need_days: number; differs_days: number[]; flip_days: number[]; net_day: number | null; note: string };
 }
 
-export interface EvalVerdict { ok_days: number; need_days: number; result: "running" | "stopped" | "pass" | "fail" }
+export interface EvalVerdict { ok_days: number; need_days: number; result: "running" | "stopped" | "interrupted" | "pass" | "fail" }
 
 export interface Outlook {
   value_now: number; capital: number; daily_usd: number | null; daily_pct: number | null;

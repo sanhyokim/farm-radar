@@ -111,7 +111,8 @@ export function EvalProgress({ e, strip = true, ring = 88 }: { e: EvalLight; str
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-6">
-        <Ring frac={running ? e.day / e.days : 1} size={ring} big={running ? `${e.day}日目` : e.state === "finished" ? "終了" : "中止"} small={`/ ${e.days}日`} />
+        <Ring frac={running ? e.day / e.days : 1} size={ring}
+          big={running ? `${e.day}日目` : e.state === "finished" ? "終了" : e.state === "interrupted" ? "中断" : "中止"} small={`/ ${e.days}日`} />
         <div className="flex flex-col gap-2">
           <div>
             <div className="bold num">{e.coverage_pct == null ? "—" : `${e.coverage_pct.toFixed(1)}%`}</div>
@@ -124,9 +125,19 @@ export function EvalProgress({ e, strip = true, ring = 88 }: { e: EvalLight; str
         </div>
       </div>
       {strip && <DayStrip e={e} />}
+      {/* 始めた日時は記録から（2026-10-01 オーナー決定: 画面とコマンドの両方で running と開始日時を確かめる） */}
       <div className="cap">
-        {running ? `あと${hoursJa(e.left_hours)}（${jstDay(e.ends_at)} まで）` : `${jstDay(e.ends_at)} に終わりました`}
+        始めた {jstDay(e.started_at)} ・ {running ? `あと${hoursJa(e.left_hours)}（${jstDay(e.ends_at)} まで）`
+          : `${jstDay(e.ends_at)} に${e.state === "interrupted" ? "中断しました" : "終わりました"}`}
       </div>
+      {e.interrupted && <div className="sec" style={{ color: "var(--r)" }}>{e.interrupted.message}</div>}
+      {(e.closed_positions ?? []).length > 0 && (
+        <div className="flex flex-col gap-1">
+          {(e.closed_positions ?? []).map((c) => (
+            <span key={c.id} className="cap">{c.pair}: {jstDay(c.closed_at)} に閉じました（{c.reason_ja ?? "—"}）。評価はここまでの記録で数えます</span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

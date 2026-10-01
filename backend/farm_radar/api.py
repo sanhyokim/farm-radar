@@ -633,7 +633,9 @@ def paper_evaluation_start(req: ConfirmRequest) -> dict:
             r = paper_evaluation_mod.start(conn, config, _now())
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        return {"message": f"評価を始めました（{config.evaluation.days}日間）。", **r}
+        s, e = (datetime.fromisoformat(r[k]).astimezone(views.JST) for k in ("started_at", "ends_at"))
+        return {"message": (f"評価を始めました（{config.evaluation.days}日間。始めた {s.month}/{s.day} {s:%H:%M}、"
+                            f"終わる {e.month}/{e.day} {e:%H:%M}（日本時間））。"), **r}
 
 
 @app.post("/api/paper/evaluation/stop")

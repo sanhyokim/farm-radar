@@ -63,6 +63,9 @@ class FakeChain:
                 return encode(["string"], ["WETH" if to == WETH else "USDG"])
             if s("decimals()"):
                 return encode(["uint8"], [18 if to == WETH else 6])
+            if s("balanceOf(address)"):
+                # プールが持っているコインの量（2026-10-01: 緊急離脱の「プールのお金」）
+                return encode(["uint256"], [10**21 if to == WETH else 2_000 * 10**6])
         if to in (POOL_A, POOL_B):
             if s("slot0()"):
                 return encode(["uint160", "int24", "uint16", "uint16", "uint16", "bool"], [SQRT_P, 13863, 0, 1, 1, True])
@@ -156,6 +159,9 @@ def test_state_and_rewards_from_one_prefetch(adapter, chain):
     st = adapter.pool_state(pools[0], 7_000_000)
     assert st.liquidity_total == 10**20 and st.liquidity_staked_inrange == 6 * 10**19
     assert st.unstaked_fee == 100000 and st.price == pytest.approx(4.0 * 10**12)
+    # プールが持っているコインの量も同じ Multicall で読む（2026-10-01: 緊急離脱の「プールのお金」）
+    tok0 = pools[0].token0
+    assert (st.balance0_raw, st.balance1_raw) == ((10**21, 2_000 * 10**6) if tok0 == WETH else (2_000 * 10**6, 10**21))
     rw = adapter.gauge_rewards(pools[0], 7_000_000)
     assert rw.reward_token == UP and rw.reward_rate_raw == 10**17 and rw.reward_rate_effective_raw == 10**17
     assert rw.reward_per_day == pytest.approx(8640.0)

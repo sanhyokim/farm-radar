@@ -17,9 +17,11 @@ RED_START_LABEL = "🔴で開始した練習"
 RED_START_NOTE = ("判定が🔴のプールで始めた練習です。「判定が🔴になったら離脱」のルールは当てはめません"
                   "（ほかの離脱・緊急離脱のルールは当てはめます）。")
 ACTION_JA = {"none": "記録のみ", "rebalanced": "置き直した", "closed": "閉じた", "closed_all": "全部閉じた",
+             "closed_pool": "この建玉だけ閉じた",
              "skipped_gas": "ガス代が高く見送り", "stopped": "停止", "resumed": "再開"}
 CAUTION_JA = {"edge_near": "レンジの端が近い", "reward_shortfall": "報酬が予測より少ない",
-              "hedge_cost": "ヘッジの費用が大きい", "bonus_drop": "切り替えでボーナスが減った（記録だけ）"}
+              "hedge_cost": "ヘッジの費用が大きい", "bonus_drop": "切り替えでボーナスが減った（記録だけ）",
+              "active_liquidity_drop": "今の値段のところの流動性が急に減った（表示だけ）"}
 ESTIMATE_NOTES = [
     "報酬は15分ごとの記録（実際の報酬の量・ステーク流動性・価格）から計算しています。",
     "perp の値段は、プールから出したドル価格で代用しています。",
@@ -147,7 +149,10 @@ def close_reason_ja(reason: str | None) -> str | None:
     if reason == "owner_exit_all":
         return "オーナーが全部閉じた"
     if reason.startswith("emergency:"):
-        return "緊急離脱"
+        detail = {"pool_funds_drop": "プールのお金が減った", "liquidity_drop": "前の決まり: レンジ内の流動性",
+                  "contract_change": "会場プログラムの変化", "usdg_depeg": "USDG の値段", "daily_loss": "今日の損"
+                  }.get(reason.partition(":")[2])
+        return f"緊急離脱・{detail}" if detail else "緊急離脱"
     if reason.startswith("risk:"):
         return "離脱のルール"
     return reason
@@ -172,7 +177,9 @@ def risk_rules(r: RiskSettings) -> list[dict[str, str]]:
         {"level": "caution", "level_ja": "注意", "rule": f"レンジの端まで{r.caution_edge_pct:g}%未満 / "
                                                        f"報酬の実績が予測より{r.caution_reward_shortfall_pct:g}%以上少ない / "
                                                        f"ヘッジの1日の費用が報酬の{r.caution_hedge_cost_pct:g}%超"
-                                                       f"（報酬の比べっこは{r.caution_min_hours:g}時間たってから）",
+                                                       f"（報酬の比べっこは{r.caution_min_hours:g}時間たってから） / "
+                                                       f"今の値段のところの流動性が1時間で−{r.caution_active_liquidity_drop_1h_pct:g}%"
+                                                       "（ボーナスの取り分の見込みが変わる）",
          "action": "記録する"},
         {"level": "caution", "level_ja": "注意（記録だけ）",
          "rule": f"木曜の切り替えでボーナスが前の週の{r.bonus_drop_ratio * 100:g}%以下になった"
@@ -185,9 +192,11 @@ def risk_rules(r: RiskSettings) -> list[dict[str, str]]:
                                                     f"値動きする側のトークンが1時間で{r.exit_dump_1h_pct:g}%か"
                                                     f"24時間で{r.exit_dump_24h_pct:g}%（投げ売り）/ "
                                                     "プールの判定が🔴になった（🔴で始めた練習は除く）", "action": "その建玉を閉じる"},
-        {"level": "emergency", "level_ja": "緊急離脱",
-         "rule": f"プールの流動性が1時間で−{r.emergency_liquidity_drop_1h_pct:g}% / "
-                 "会場プログラムの停止・持ち主の変更・入れ替え / "
+        {"level": "emergency", "level_ja": "緊急離脱（そのプール）",
+         "rule": f"プールのお金（持っているコインの量。1時間前も今の値段で数える）が1時間で−{r.emergency_pool_funds_drop_1h_pct:g}%",
+         "action": "その建玉だけ閉じる。ほかの建玉と評価は続く（評価の建玉が全部閉じたら評価は中断）"},
+        {"level": "emergency", "level_ja": "緊急離脱（全体）",
+         "rule": "会場プログラムの停止・持ち主の変更・入れ替え / "
                  f"USDG の外部の価格が{r.emergency_usdg_times}回続けて ${r.emergency_usdg_below:g} 未満 / "
                  f"今日の損が総資産の{r.emergency_daily_loss_pct:g}%",
          "action": "全部閉じて、新しく始めるのを止める"},

@@ -62,9 +62,24 @@ def test_reward_token_drop_exits_even_for_red_start():
     assert f[0].level == "exit" and f[0].kind == "reward_token_drop"
 
 
-def test_liquidity_drop_is_emergency_and_ranks_first():
-    f = check_position(_p(signal="red", liquidity_now=40.0, liquidity_1h_ago=100.0), PF, S)
-    assert f[0].level == "emergency" and f[1].kind == "signal_red"
+def test_pool_funds_drop_is_emergency_and_ranks_first():
+    # 2026-10-01 オーナー決定 A: 緊急離脱は「プールのお金」（コインの量 × 今の値段）で比べる
+    f = check_position(_p(signal="red", funds_now=40.0, funds_1h_ago=100.0), PF, S)
+    assert f[0].level == "emergency" and f[0].kind == "pool_funds_drop" and f[1].kind == "signal_red"
+    assert f[0].data["drop_pct"] == pytest.approx(60.0)
+    assert check_position(_p(funds_now=51.0, funds_1h_ago=100.0), PF, S) == []      # 49%減は基準の手前
+
+
+def test_active_liquidity_drop_is_only_a_caution():
+    # 2026-10-01 オーナー決定: 今の値段のところの流動性は緊急離脱に使わない。急に減ったら注意（表示だけ）。
+    # 数字は 9/30 07:30Z → 07:45Z の USDG/NVDA（オーナーのパソコンの記録と同じ値）。プールのお金はほぼ同じ
+    f = check_position(_p(liquidity_now=658636162808296553.0, liquidity_1h_ago=1457680445825820096.0,
+                          funds_now=100.2, funds_1h_ago=100.0), PF, S)
+    assert [(x.level, x.kind) for x in f] == [("caution", "active_liquidity_drop")]
+    assert "55%" in f[0].message_ja and "+0.2%" in f[0].message_ja
+    # プールのお金が読めないときも、流動性だけで緊急離脱にはしない
+    f = check_position(_p(liquidity_now=40.0, liquidity_1h_ago=100.0), PF, S)
+    assert [x.level for x in f] == ["caution"] and "読めていません" in f[0].message_ja
 
 
 def test_reward_shortfall_waits_for_enough_hours():
@@ -210,14 +225,82 @@ def test_high_gas_skips_normal_exit_once(world, calm):  # noqa: F811
     assert [e["action"] for e in ev] == ["skipped_gas"]           # 続いている間は1回だけ記録する
 
 
-def test_liquidity_drop_closes_all_and_stops(world, calm):  # noqa: F811
+NVDA_POOL = "up-robinhood:p-nvda"
+
+
+def _big(path):
+    """2つの建玉を開ける上限（テスト用）。"""
+    return dataclasses.replace(_config(path), limits={"position_usd": 1000, "total_usd": 10000,
+                                                      "per_venue_share": 1.0, "trades_per_day": 20})
+
+
+def _balances(conn, pool_id, b0, b1, ts=None):
+    """プールが持っているコインの量を記録に入れる（ts を省くと全部の記録）。"""
+    q = "UPDATE pool_snapshots SET balance0_raw=?, balance1_raw=? WHERE pool_id=?" + (" AND ts=?" if ts else "")
+    conn.execute(q, (str(b0), str(b1), pool_id, *((ts,) if ts else ())))
+    conn.commit()
+
+
+def test_pool_funds_drop_closes_only_that_pool(world, calm):  # noqa: F811
+    # 2026-10-01 オーナー決定 A+C: プールのお金が1時間で半分以下 → その建玉だけ閉じる。ほかの建玉と評価は続く
+    from farm_radar.execution import evaluation
+    path, conn = world
+    _set_score(conn)
+    cfg = _big(path)
+    ex = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW)
+    weth = ex.open_position(WETH_POOL, 1000.0)
+    nvda = ex.open_position(NVDA_POOL, 1000.0)
+    evaluation.start(conn, cfg, NOW)
+    _extend(conn, 2)
+    _balances(conn, WETH_POOL, 10 ** 21, 2_000 * 10 ** 6)
+    _balances(conn, NVDA_POOL, 10 ** 21, 2_000 * 10 ** 6)
+    last = conn.execute("SELECT MAX(ts) FROM pool_snapshots").fetchone()[0]
+    _balances(conn, WETH_POOL, 3 * 10 ** 20, 600 * 10 ** 6, last)          # 70% 引き出された
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=3))
+    assert _pos(conn, weth.position_id)["status"] == "closed"
+    assert _pos(conn, weth.position_id)["close_reason"] == "emergency:pool_funds_drop"
+    assert _pos(conn, nvda.position_id)["status"] == "open"
+    ev = [e for e in _events(conn) if e["level"] == "emergency"]
+    assert len(ev) == 1 and ev[0]["kind"] == "pool_funds_drop" and ev[0]["action"] == "closed_pool"
+    assert "70%" in ev[0]["message_ja"]
+    assert not risk_job.paper_state(conn)["stopped"]                      # 全体は止めない
+    s = evaluation.summary(conn, cfg, NOW + timedelta(hours=3))
+    assert s["state"] == "running" and s["open_positions"] == 1
+    assert [c["reason_ja"] for c in s["closed_positions"]] == ["緊急離脱・プールのお金が減った"]
+    # 残りの建玉も閉じたら、評価は「中断」（合否は出さない）。新しい練習の止めもなくなる
+    PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=4)).close_position(nvda)
+    s = evaluation.summary(conn, cfg, NOW + timedelta(hours=5))
+    assert s["state"] == "interrupted" and s["criteria"]["hold"]["result"] == "interrupted"
+    assert "中断" in s["interrupted"]["message"] and s["interrupted"]["last_pair"]
+    with pytest.raises(ValueError, match="練習の建玉が1つもない"):
+        evaluation.start(conn, cfg, NOW + timedelta(hours=5))
+
+
+def test_active_liquidity_drop_keeps_the_position(world, calm):  # noqa: F811
+    # 9/30 16:45 JST の読み違いの形: レンジ内の流動性だけ半分以下、プールのお金は同じ → 閉じない。注意を1回だけ記録
     path, conn = world
     _set_score(conn)
     ex, ref = _open(conn, path)
     _extend(conn, 2)
+    _balances(conn, WETH_POOL, 10 ** 21, 2_000 * 10 ** 6)
     last = conn.execute("SELECT MAX(ts) FROM pool_snapshots").fetchone()[0]
     conn.execute("UPDATE pool_snapshots SET liquidity_total=? WHERE ts=? AND pool_id=?", (str(10 ** 17), last, WETH_POOL))
     conn.commit()
+    run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=3))
+    assert _pos(conn, ref.position_id)["status"] == "open"
+    assert not risk_job.paper_state(conn)["stopped"]
+    assert [(e["level"], e["kind"]) for e in _events(conn)] == [("caution", "active_liquidity_drop")]
+    c = pviews.card(conn, _pos(conn, ref.position_id), NOW + timedelta(hours=3))
+    assert "今の値段のところの流動性が急に減った（表示だけ）" in c["cautions"]
+
+
+def test_venue_wide_emergency_still_closes_all_and_stops(world, calm, monkeypatch):  # noqa: F811
+    # 会場全体の危険（今日の損など）は、今までどおり全部閉じて新しく始めるのを止める
+    path, conn = world
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    _extend(conn, 2)
+    monkeypatch.setattr(risk_job, "today_net", lambda conn, now: -60.0)
     run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=3))
     assert _pos(conn, ref.position_id)["status"] == "closed"
     assert risk_job.paper_state(conn)["stopped"] and "緊急離脱" in risk_job.paper_state(conn)["reason"]
@@ -225,6 +308,20 @@ def test_liquidity_drop_closes_all_and_stops(world, calm):  # noqa: F811
     with pytest.raises(PaperError, match="停止"):
         PaperExecutor(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=3)).open_position(
             WETH_POOL, 1000.0)
+
+
+def test_hour_ago_record_must_be_recent(world, calm):  # noqa: F811
+    # 1時間前の記録は 55〜90 分前のものだけ使う（パソコンが止まっていて古い記録しかないときは比べない）
+    path, conn = world
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    _extend(conn, 3, step_minutes=120)                                    # 2時間おきの記録
+    _balances(conn, WETH_POOL, 10 ** 21, 2_000 * 10 ** 6)
+    last = conn.execute("SELECT MAX(ts) FROM pool_snapshots").fetchone()[0]
+    _balances(conn, WETH_POOL, 10 ** 20, 200 * 10 ** 6, last)
+    pos = _pos(conn, ref.position_id)
+    inp = risk_job.position_input(conn, pos, NOW + timedelta(hours=7), TOKENS)
+    assert inp.funds_now is not None and inp.funds_1h_ago is None and inp.liquidity_1h_ago is None
 
 
 def test_caution_is_recorded_once_per_episode(world, calm, monkeypatch):  # noqa: F811

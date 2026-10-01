@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS pool_snapshots (
   -- 2026-09-30 追加（M6。週ごとの量で配る会場 = Alandale）
   reward_epoch_total_raw TEXT,        -- 今のエポックのボーナスの合計（最小単位）
   reward_manual_raw TEXT,             -- そのうち運営が手で足した分（続く保証がないので判定に使わない）
+  -- 2026-10-01 追加（オーナー決定 A）: プールが持っているコインの量（最小単位）。緊急離脱の「プールのお金」に使う
+  balance0_raw TEXT,
+  balance1_raw TEXT,
   tvl REAL,
   volume_24h REAL,
   R_usd_day REAL,
@@ -227,7 +230,9 @@ CREATE INDEX IF NOT EXISTS idx_reviews_ts ON reviews(ts);
 
 -- 2週間の評価（M5d。SPEC 11章）。オーナーがボタンで始める。status: running / stopped / finished
 CREATE TABLE IF NOT EXISTS evaluations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, ends_at TEXT NOT NULL, status TEXT NOT NULL
+  id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, ends_at TEXT NOT NULL, status TEXT NOT NULL,
+  -- status: running / stopped（オーナーがやめた）/ interrupted（建玉が全部閉じた。2026-10-01）。終わりは ends_at で分かる
+  note TEXT                           -- 中断したときの、最後に閉じた建玉と理由（JSON）
 );
 
 -- perp（Lighter）の市場ごとの取引手数料（%）。開く・置き直す・閉じる時のヘッジの手数料に使う（2026-09-29 オーナー指示）

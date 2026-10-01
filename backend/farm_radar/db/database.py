@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 
@@ -31,7 +31,9 @@ _ADDED_COLUMNS = {
                        "reward_rate_effective_raw": "TEXT", "gauge_alive": "INTEGER",
                        "unstaked_fee": "INTEGER", "epoch_just_flipped": "INTEGER",
                        # M6: 今のエポックのボーナスの合計と、そのうち運営が手で足した分（最小単位。Alandale）
-                       "reward_epoch_total_raw": "TEXT", "reward_manual_raw": "TEXT"},
+                       "reward_epoch_total_raw": "TEXT", "reward_manual_raw": "TEXT",
+                       # 2026-10-01: プールが持っているコインの量（緊急離脱の「プールのお金」）
+                       "balance0_raw": "TEXT", "balance1_raw": "TEXT"},
     "scores": {"venue_id": "TEXT", "block_number": "INTEGER", "direction_risk": "REAL",
                "net_daily_pct_lp": "REAL", "mode": "TEXT", "in_range_ratio": "REAL",
                "in_range_ratio_hold": "REAL", "sigma_pair": "REAL", "sigma_token0": "REAL",
@@ -48,6 +50,8 @@ _ADDED_COLUMNS = {
     "ledger": {"value_usd": "REAL", "fx_rate": "REAL", "fx_date": "TEXT"},
     # M5b: 停止の理由
     "paper_state": {"reason": "TEXT"},
+    # 2026-10-01: 評価が「中断」になったときの、最後に閉じた建玉と理由（JSON）
+    "evaluations": {"note": "TEXT"},
 }
 
 

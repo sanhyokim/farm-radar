@@ -92,6 +92,8 @@ def evaluation_light(ev: dict[str, Any], now: datetime) -> dict[str, Any] | None
         "coverage_pct": crit["coverage_pct"], "min_coverage_pct": crit["min_coverage_pct"],
         "coverage_ok": crit["coverage_ok"],
         "ok_days": crit["hold"]["ok_days"], "need_days": crit["hold"]["need_days"],
+        # 2026-10-01 オーナー決定 C: 途中で閉じた建玉と、全部閉じて中断したときの説明
+        "closed_positions": ev.get("closed_positions") or [], "interrupted": ev.get("interrupted"),
         # 1日ごとの印: ok（予測に近かった）/ ng（外れた）/ running（今日。まだ24時間たっていない）/ none（まだ先）
         "marks": [_mark(ev, k, day) for k in range(crit["days"])],
     }
@@ -101,7 +103,8 @@ def _mark(ev: dict[str, Any], k: int, day: int) -> dict[str, Any]:
     rows = ev["days"]
     if k < len(rows):
         r = rows[k]
-        return {"day": k + 1, "state": ("ok" if r["hold_ok"] else "ng") if r["done"] else "running", "flip": r["flip"]}
+        state = ("ok" if r["hold_ok"] else "ng") if r["done"] else ("running" if ev["state"] == "running" else "none")
+        return {"day": k + 1, "state": state, "flip": r["flip"]}
     return {"day": k + 1, "state": "running" if ev["state"] == "running" and k == day - 1 else "none", "flip": False}
 
 
@@ -151,13 +154,25 @@ def todo(conn: sqlite3.Connection, config: Config, now: datetime, *, collection:
     since = (now - timedelta(hours=24)).isoformat(timespec="seconds")
     for e in conn.execute("SELECT * FROM risk_events WHERE ts>? AND level IN ('exit', 'emergency') ORDER BY ts DESC",
                           (since,)):
-        add("danger", "練習の建玉を自動で閉じました（" + ("緊急離脱" if e["level"] == "emergency" else "離脱") + "）",
+        kind = ("緊急離脱・そのプールだけ" if e["action"] == "closed_pool" else
+                "緊急離脱" if e["level"] == "emergency" else "離脱")
+        add("danger", f"練習の建玉を自動で閉じました（{kind}）",
             f"{e['message_ja']}（{_hm(e['ts'])}）。練習タブで中身を確かめてください。", "/practice")
     # 4. 練習が止まっている
     if paper["enabled"] and paper["stopped"]:
         add("attention", "練習は停止中です",
             "新しい建玉は作れません。持っている建玉の見張りは続いています。練習タブで理由を見て、よければ再開してください。",
             "/practice")
+    # 4b. 練習の建玉があるのに、2週間の評価が動いていない（2026-10-01 オーナー決定。評価の始め忘れに気づけるように）
+    ev_state = evaluation["state"] if evaluation else "not_started"
+    if paper["enabled"] and paper.get("positions") and ev_state in ("not_started", "stopped", "interrupted"):
+        add("attention", "練習中ですが、2週間の評価は動いていません",
+            "評価を始めるなら、練習タブのいちばん下の「14日間の評価を始める」を押し、確認の「はい」まで進めてください。"
+            "始まると、練習タブとホームに「評価中」と始めた日時が出ます。", "/practice")
+    # 4c. 評価の建玉が全部閉じて、評価が中断した（2026-10-01 オーナー決定 C。合否は出さない）
+    if evaluation and ev_state == "interrupted" and evaluation.get("interrupted") \
+            and now - datetime.fromisoformat(evaluation["interrupted"]["at"]) <= timedelta(days=3):
+        add("danger", "2週間の評価は中断しました", evaluation["interrupted"]["message"], "/practice")
     # 5. 持っている建玉の注意と、ボーナスが減ったときの比べ方（記録だけ）
     for c in cards:
         for text in c["cautions"]:
