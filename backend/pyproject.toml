@@ -29,3 +29,4 @@ testpaths = ["tests"]
 
 [tool.setuptools.package-data]
 "farm_radar.db" = ["schema.sql"]
+"farm_radar.feeds" = ["schema.sql"]   # 一覧の保存（N2a）の表

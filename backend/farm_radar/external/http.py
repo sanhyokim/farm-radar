@@ -21,7 +21,11 @@ USER_AGENT = "farm-radar/0.1 (read-only)"
 
 
 class ExternalError(Exception):
-    """外部APIから使える応答が得られなかった。"""
+    """外部APIから使える応答が得られなかった。status は最後の HTTP の番号（429 = 回数制限。通信の失敗なら None）。"""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class JsonGetter:
@@ -57,6 +61,7 @@ class JsonGetter:
     def _fetch(self, path: str, params: dict[str, Any] | None) -> httpx.Response:
         url = path if path.startswith("https://") else f"{self.base_url}/{path.lstrip('/')}"
         last_error = ""
+        last_status: int | None = None
         host = ratelimit.host_of(url) if url.startswith("https://") else self._host
         for attempt in range(self.max_retries + 1):
             # 同じサイトへの呼び出しは、ほかの読み手（別の会場・ジョブ）とも間隔を共有する（M6）
@@ -65,10 +70,12 @@ class JsonGetter:
                 resp = self._client.get(url, params=params)
             except httpx.HTTPError as exc:
                 last_error = str(exc)
+                last_status = None
             else:
                 if resp.status_code == 200:
                     return resp
                 last_error = f"HTTP {resp.status_code}"
+                last_status = resp.status_code
                 if resp.status_code == 429:
                     ratelimit.record(host, "external")
                 if resp.status_code not in (429, 500, 502, 503, 504):
@@ -76,4 +83,4 @@ class JsonGetter:
             if attempt < self.max_retries:
                 self._sleep(self.backoff_seconds * (2 ** attempt))
         log.warning("external api failed", extra={"data": {"url": url, "error": last_error}})
-        raise ExternalError(f"{url}: {last_error}")
+        raise ExternalError(f"{url}: {last_error}", last_status)

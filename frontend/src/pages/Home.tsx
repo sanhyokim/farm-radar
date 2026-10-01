@@ -5,6 +5,7 @@ import { jst, pct, signedUsd, usd } from "../format";
 import { Icon } from "../icons";
 import { Fold, Folds, Line, Loading, PageHead, Pill, Spark, Term, usePulse, useWide } from "../ui";
 import { CountsInline, EvalProgress, PoolLine, TodoCard, fromSignalCounts } from "./parts";
+import { FeedsCard } from "./Feeds";
 
 // ホーム（SPEC 7.1章。2026-09-30 オーナー依頼 17〜21・32）
 // スマホ: 今日やること → 練習 → 評価と判定の数 → 参考のプール → 1時間ごとのグラフ
@@ -32,6 +33,7 @@ export default function Home() {
         <div className="grid grid-cols-12 items-start gap-6">
           <div className="col-span-7 flex flex-col gap-6"><TodoCard items={data.todo} />{practice}{pools}</div>
           <div className="col-span-5 flex flex-col gap-6">
+            <FeedsCard />
             {hourly}
             {data.evaluation && (
               <Link to="/practice" className="card flex flex-col gap-4 p-6">
@@ -49,6 +51,7 @@ export default function Home() {
     <>
       <PageHead title="ホーム" right={modePill} at={data.scored_at} />
       <TodoCard items={data.todo} />
+      <FeedsCard />
       {practice}
       <div className="grid grid-cols-2 gap-4">
         {data.evaluation ? (
@@ -184,10 +187,11 @@ function MarketFolds({ data }: { data: HomeData }) {
         ))}
       </Fold>
       <Fold title={<span className="flex items-center gap-2">データ集め{stale && <Pill tone="y">止まっています</Pill>}</span>}>
-        <p className="sec">{stale ? "最新のデータが古くなっています。パソコンと Docker が動いているか確かめてください。" : `${data.snapshot_minutes}分ごとに集めています。`}</p>
+        <p className="sec">{data.chain_reads === false ? "この版はチェーンを読みません（一覧の保存だけ）。チェーンのデータは今までの版（ポート 18000）で集めています。"
+          : stale ? "最新のデータが古くなっています。パソコンと Docker が動いているか確かめてください。" : `${data.snapshot_minutes}分ごとに集めています。`}</p>
         {data.collection.map((c) => (
           <Line key={c.venue_id} k={`${c.name ?? c.venue_id}${c.observe ? "（観察だけ）" : ""}`}
-            v={c.last_ok_at ? jst(c.last_ok_at) : "まだ"} note={c.stale ? (c.observe ? "読み取りを休んでいます（評価の会場を優先）" : "止まっています") : "最後に集めた時刻"} />
+            v={c.last_ok_at ? jst(c.last_ok_at) : "まだ"} note={c.off ? "この版では読みません" : c.stale ? (c.observe ? "読み取りを休んでいます（評価の会場を優先）" : "止まっています") : "最後に集めた時刻"} />
         ))}
         {gaps.length > 0 && (
           <div className="flex flex-col gap-1">

@@ -13,6 +13,18 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 
+  feeds:                # 一覧の保存（Merkl・DefiLlama・送金サービス・Aero のお知らせ。読み取りだけ。チェーンは読まない。SPEC 13.4）
+    build: { context: ., dockerfile: backend/Dockerfile }
+    command: python -m farm_radar.feeds.scheduler
+    env_file:
+      - path: .env
+        required: false   # .env がなくても起動できる
+    environment: { FARM_RADAR_ROOT: /app }
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data             # data/feeds.sqlite3 と data/feeds/（圧縮した元の応答）
+    restart: unless-stopped
+
   api:                  # 画面とAPI（画面 http://localhost:18000 、状態 http://localhost:18000/api/health）
     build: { context: ., dockerfile: backend/Dockerfile }
     command: uvicorn farm_radar.api:app --host 0.0.0.0 --port 8000
