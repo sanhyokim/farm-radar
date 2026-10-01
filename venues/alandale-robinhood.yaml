@@ -15,7 +15,7 @@ launch_date: "2026-08-04"  # AlgebraFactory の作成日（ブロック 27,916,1
 practice: false
 practice_note_ja: >-
   Alandale は観察だけの会場です。判定は見られますが、練習（仮想のお金）と2週間の評価には入れていません。
-  評価の対象は STRIKE と NVDA の2つのままです。
+  評価の対象は WETH/USDG と NVDA の2つのままです。
 
 # プールのカードに出す「切り替えで来週ボーナスがなくなることがある」理由（2026-09-30 オーナー追加）
 epoch_note_ja: >-
