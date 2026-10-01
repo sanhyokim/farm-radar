@@ -80,6 +80,32 @@ def test_venues_have_condition_lamps_and_trends(client):
     assert v["age_days"] > 0 and v["tvl"]
 
 
+def test_json_says_utf8(client):
+    """Windows の PowerShell 5.1 が日本語を文字化けさせないように、返事に charset=utf-8 をつける（2026-10-01）。"""
+    r = client.get("/api/home")
+    assert r.headers["content-type"].replace(" ", "").lower() == "application/json;charset=utf-8"
+
+
+def test_c2_lamp_uses_the_shown_7day_change(client):
+    """C2 のランプは、同じ画面の「7日の変化」と同じ値で決める。分からないときは灰色（2026-10-01 オーナー指摘）。"""
+    v = client.get("/api/venues").json()["venues"][0]
+    c2 = next(c for c in v["conditions"] if c["code"] == "C2")
+    ch = v["reward_token"]["change_7d"]
+    cfg = load_config()
+    line = cfg.scoring.reward_token_7d_major_pct
+    if ch is None:
+        assert c2["state"] == "unknown"
+    else:
+        assert c2["state"] == ("bad" if ch * 100 <= line else "ok")
+        assert f"{ch * 100:+.0f}%" in c2["text"] or f"{ch * 100:.0f}%" in c2["text"]
+    # 線をまたぐ値・分からない値でも、画面の値どおりになる
+    meta = {"warnings": [], "contracts": {}, "audited": True}
+    latest = [{"net_daily_pct": 0.1, "income": 1.0, "has_perp": 1, "warnings_json": "[]"}]
+    states = {x: next(c for c in api._conditions(meta, latest, cfg, x) if c["code"] == "C2")["state"]
+              for x in (-0.31, -0.29, None)}
+    assert states == {-0.31: "bad", -0.29: "ok", None: "unknown"}
+
+
 def test_breakdown_luck_ratio():
     b = views.breakdown(income=10, gamma=2, rebalance=1, hedge=0, haircut=0, direction_risk=0)
     assert b["core"] == 8 and b["net"] == 7
