@@ -27,7 +27,7 @@ from ..tokens import TokenBook
 from ..views import JST, series_change
 from . import bonus_drop
 from .base import PositionRef
-from .paper import PaperError, PaperExecutor, latest_score
+from .paper import REFERENCE, PaperError, PaperExecutor, latest_score, official_sql
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ def _action_ja(action: str) -> str:
     return {"rebalanced": " → 置き直しました。", "closed": " → この建玉を閉じました。",
             "closed_pool": " → この建玉だけ閉じました（ほかの建玉はそのままです）。",
             "closed_all": " → 全部の建玉を閉じ、新しく始めるのを止めました。",
+            "closed_reference": " → 参考の練習だけ閉じました（評価の建玉はそのままです）。",
             "skipped_gas": " → ガス代が高いので見送りました（次の回にもう一度調べます）。",
             "none": "", "stopped": "", "resumed": ""}.get(action, "")
 
@@ -98,10 +99,13 @@ def reward_change_24h(conn: sqlite3.Connection, config: Config, tokens: TokenBoo
     return (row[0] if row and row[0] else "報酬トークン"), series_change(series, int(now.timestamp()), 24)
 
 
-def today_net(conn: sqlite3.Connection, now: datetime) -> float:
+def today_net(conn: sqlite3.Connection, now: datetime, reference: bool | None = None) -> float:
+    """今日（日本時間の0時から）の練習の損益。reference=False なら合否用の建玉だけ、True なら参考の練習だけ
+    （2026-10-01 案B: 参考の損で評価の建玉まで閉じないように分ける）。"""
     start = now.astimezone(JST).replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+    where = "" if reference is None else (" AND p.purpose='reference'" if reference else f" AND {official_sql('p.')}")
     row = conn.execute("SELECT SUM(n.net) FROM position_pnl n JOIN positions p ON p.id=n.position_id "
-                       "WHERE p.is_paper=1 AND n.ts>=?", (start.isoformat(timespec="seconds"),)).fetchone()
+                       "WHERE p.is_paper=1 AND n.ts>=?" + where, (start.isoformat(timespec="seconds"),)).fetchone()
     return float(row[0] or 0.0)
 
 
@@ -255,8 +259,11 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
     venue_id = positions[0]["venue_id"]
     own_tok, own_pool = own_series(conn, venue_id, tokens.stablecoins, now - timedelta(days=2))
     symbol, change = reward_change_24h(conn, config, tokens, venue_id, now, own_tok)
-    pf = PortfolioInput(reward_symbol=symbol, reward_change_24h=change, today_net_usd=today_net(conn, now),
-                        open_capital_usd=sum(p["capital"] for p in positions),
+    # 今日の損は、合否用の建玉と参考の練習で分けて数える（2026-10-01 案B）
+    refs = [p for p in positions if (p["purpose"] or "") == REFERENCE]
+    mains = [p for p in positions if (p["purpose"] or "") != REFERENCE]
+    pf = PortfolioInput(reward_symbol=symbol, reward_change_24h=change, today_net_usd=today_net(conn, now, False),
+                        open_capital_usd=sum(p["capital"] for p in mains),
                         usdg_prices=usdg_prices(conn, tokens, now, s.emergency_usdg_times),
                         contract_changes=tuple(contract_changes or ()))
     events: list[int] = []
@@ -265,6 +272,21 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
     for f in check_portfolio(pf, s):
         events.append(_emergency(conn, ex, f, now, None, venue_id, None))
         return events
+    # 参考の練習の今日の損が基準を超えたら、参考の練習だけ閉じる（評価の建玉と、新しく始められるかはそのまま）
+    if refs:
+        ref_pf = PortfolioInput(today_net_usd=today_net(conn, now, True), open_capital_usd=sum(p["capital"] for p in refs))
+        for f in check_portfolio(ref_pf, s):
+            closed = []
+            for p in refs:
+                try:
+                    ex.close_position(PositionRef(p["id"]), reason=f"risk:{f.kind}")
+                    closed.append(p["id"])
+                except PaperError:
+                    log.warning("close failed", extra={"data": {"position": p["id"]}})
+            events.append(record_event(conn, now, None, "exit", f.kind, "参考の練習: " + f.message_ja,
+                                       "closed_reference", {**f.data, "closed": closed}, venue_id, None))
+            positions = mains
+            break
 
     for pos in positions:
         pos = conn.execute("SELECT * FROM positions WHERE id=?", (pos["id"],)).fetchone()

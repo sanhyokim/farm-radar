@@ -574,6 +574,7 @@ def reports(days: int = 30) -> dict:
 
 class OpenRequest(BaseModel):
     pool_id: str
+    purpose: str | None = None     # 'reference' = 参考の練習（合否に使わない。2026-10-01 案B）
 
 
 def _paper_tokens(config, pool_venue: str):
@@ -582,8 +583,11 @@ def _paper_tokens(config, pool_venue: str):
 
 def _paper_status(config, conn) -> dict:
     lim = config.limits
-    open_rows = conn.execute("SELECT venue_id, capital FROM positions WHERE is_paper=1 AND status='open'").fetchall()
+    open_rows = conn.execute("SELECT venue_id, capital, purpose FROM positions WHERE is_paper=1 AND status='open'"
+                             ).fetchall()
     st = risk_job.paper_state(conn)
+    ev = config.evaluation
+    ref_open = sum(1 for r in open_rows if (r["purpose"] or "") == "reference")
     eval_end = running_evaluation_end(conn, _now()) if config.evaluation.block_new_practice else None
     venue_cap = (float(lim["total_usd"]) * float(lim["per_venue_share"])
                  if "total_usd" in lim and "per_venue_share" in lim else None)
@@ -592,7 +596,14 @@ def _paper_status(config, conn) -> dict:
         "stopped_reason": st["reason"], "stopped_since": st["since"],
         "capital": config.scoring.total_capital_usd,
         "limits": {k: lim.get(k) for k in ("position_usd", "total_usd", "per_venue_share", "trades_per_day")},
-        "venue_cap_usd": venue_cap, "open_total_usd": sum(r["capital"] for r in open_rows),
+        "venue_cap_usd": venue_cap,
+        "open_total_usd": sum(r["capital"] for r in open_rows
+                              if not (ev.reference_outside_limits and (r["purpose"] or "") == "reference")),
+        # 参考の練習（2026-10-01 案B）: 評価の間も始められ、合否に使わない
+        "reference": {"open": ref_open, "max": ev.reference_max_open, "outside_limits": ev.reference_outside_limits,
+                      "can_open": ref_open < ev.reference_max_open,
+                      "note": ("参考の練習は、評価の合否に使いません。種類の違うプールで見込みが当たるかを確かめるためのものです。"
+                               + ("合計と会場ごとの上限の計算にも入れません。" if ev.reference_outside_limits else ""))},
         # 評価の間は新しい練習を始めない（2026-09-30 オーナー決定①）。画面はボタンの代わりにこの文を出す
         "evaluation_block": ({"until": eval_end.isoformat(timespec="seconds"),
                               "message": evaluation_block_message(eval_end)} if eval_end else None),
@@ -775,7 +786,7 @@ def paper_open(req: OpenRequest) -> dict:
             raise HTTPException(404, "このプールは見つかりません")
         ex = PaperExecutor(conn, config, _paper_tokens(config, pool_row["venue_id"]), now=_now())
         try:
-            ref = ex.open_position(req.pool_id, config.scoring.total_capital_usd)
+            ref = ex.open_position(req.pool_id, config.scoring.total_capital_usd, purpose=req.purpose)
         except PaperError as exc:
             raise HTTPException(400, str(exc)) from None
         return {"position_id": ref.position_id}

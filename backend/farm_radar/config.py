@@ -216,6 +216,11 @@ class EvaluationSettings:
     day_gap_capital_pct: float = 0.1        #   または、差が総資産のこの% 以内なら満たす
     pass_days_pct: float = 70.0             # 満たす日が評価日数のこの%以上
     block_new_practice: bool = True         # 評価の間は新しい練習を始めない（2026-09-30 オーナー決定①）
+    # 参考の練習（2026-10-01 オーナー提案【3】案B）: 合否に使わない練習を、評価の間も並べて動かす
+    reference_max_open: int = 3             # 同時に持てる参考の建玉の数
+    reference_outside_limits: bool = True   # 参考の建玉は、合計と会場ごとの上限（limits）の計算に入れない（1つの金額と1日の件数は守る）
+    # 週ごとの見込み（2026-10-01 オーナー提案【2】3）: 木曜の切り替えのあとは、その週の見込みで合否を出す
+    weekly_prediction: bool = True
 
 
 def _evaluation(raw: dict[str, Any]) -> EvaluationSettings:
@@ -225,7 +230,10 @@ def _evaluation(raw: dict[str, Any]) -> EvaluationSettings:
         days=int(e.get("days", (raw.get("review") or {}).get("evaluation_days", d.days))),
         **{k: float(e.get(k, getattr(d, k))) for k in ("min_coverage_pct", "day_gap_pct", "day_gap_capital_pct",
                                                         "pass_days_pct")},
-        block_new_practice=bool(e.get("block_new_practice", d.block_new_practice)))
+        block_new_practice=bool(e.get("block_new_practice", d.block_new_practice)),
+        reference_max_open=int(e.get("reference_max_open", d.reference_max_open)),
+        reference_outside_limits=bool(e.get("reference_outside_limits", d.reference_outside_limits)),
+        weekly_prediction=bool(e.get("weekly_prediction", d.weekly_prediction)))
     if out.days <= 0:
         raise ConfigError("evaluation.days は1以上にしてください。")
     return out

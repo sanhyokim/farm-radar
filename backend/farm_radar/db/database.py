@@ -44,7 +44,9 @@ _ADDED_COLUMNS = {
     "positions": {"venue_id": "TEXT", "mode": "TEXT", "liquidity": "TEXT", "amount0": "REAL", "amount1": "REAL",
                   "price_open": "REAL", "usd0_open": "REAL", "usd1_open": "REAL", "c_lp": "REAL",
                   "hedges_json": "TEXT", "started_red": "INTEGER", "signal_open": "TEXT",
-                  "predicted_json": "TEXT", "last_ts": "TEXT", "state_json": "TEXT"},
+                  "predicted_json": "TEXT", "last_ts": "TEXT", "state_json": "TEXT",
+                  # 2026-10-01: 参考の練習（'reference'）。空なら普通の練習（評価の合否に使う）
+                  "purpose": "TEXT"},
     "position_pnl": {"haircut": "REAL", "haircut_sell": "REAL", "in_range": "REAL", "reward_amount": "REAL",
                      "value_usd": "REAL", "detail_json": "TEXT"},
     "ledger": {"value_usd": "REAL", "fx_rate": "REAL", "fx_date": "TEXT"},

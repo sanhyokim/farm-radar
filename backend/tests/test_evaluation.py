@@ -194,3 +194,160 @@ def test_reference_uses_the_score_at_that_time(world):  # noqa: F811
     assert ref["need_days"] == s["criteria"]["hold"]["need_days"] and "合否" in ref["note"]
     # 合否の決め方は変わらない（持ち続ける前提の判定は、始めたときの見込みとの比較のまま）
     assert s["criteria"]["hold"]["ok_days"] == sum(1 for x in s["days"] if x["done"] and x["hold_ok"])
+
+
+# --- 参考の練習（2026-10-01 オーナー提案【3】案B） --------------------------------------------------
+
+def _strip(s):
+    return {k: v for k, v in s.items() if k != "reference_tracks"}
+
+
+def test_reference_practice_does_not_change_the_evaluation(world):  # noqa: F811
+    """評価の間に参考の練習を開いても、合否の計算（合否用の建玉だけ）は1つも変わらない。"""
+    from farm_radar.execution.paper import PaperExecutor
+
+    path, conn = world
+    cfg = _config(path)
+    _open(conn, path)
+    evaluation.start(conn, cfg, NOW)
+    ex = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(minutes=30))
+    ref = ex.open_position("up-robinhood:p-nvda", 1000.0, purpose="reference")
+    _extend(conn, 30)
+    run_paper(conn, cfg, TOKENS, lighter=FakeLighter(), fx=FakeFx(), now=NOW + timedelta(hours=30))
+    at = NOW + timedelta(hours=30)
+    with_ref = evaluation.summary(conn, cfg, at)
+    assert with_ref["positions"] == 1 and with_ref["open_positions"] == 1
+    tr = with_ref["reference_tracks"]["tracks"]
+    assert [t["id"] for t in tr] == [ref.position_id] and tr[0]["pair"] == "USDG/NVDA" and tr[0]["done_days"] == 1
+    assert tr[0]["days"][0]["predicted"] is not None and tr[0]["need_days"] == 10
+    # 参考の練習を消して数え直しても、合否の側は同じ
+    conn.execute("DELETE FROM position_pnl WHERE position_id=?", (ref.position_id,))
+    conn.execute("DELETE FROM risk_events WHERE position_id=?", (ref.position_id,))
+    conn.execute("DELETE FROM ledger WHERE position_id=?", (ref.position_id,))
+    conn.execute("DELETE FROM positions WHERE id=?", (ref.position_id,))
+    conn.commit()
+    without = evaluation.summary(conn, cfg, at)
+    assert _strip(with_ref) == _strip(without)
+    assert without["reference_tracks"]["tracks"] == []
+
+
+def test_reference_practice_limits_and_room(world):  # noqa: F811
+    """参考の練習は上限（合計・会場ごと）の外。同時に持てる数と1つの金額は守る。設定で上限の中にも戻せる。"""
+    import dataclasses
+
+    from farm_radar.execution.paper import PaperError, PaperExecutor
+
+    path, conn = world
+    cfg = dataclasses.replace(_config(path), limits={"position_usd": 1000, "total_usd": 1000,
+                                                      "per_venue_share": 1.0, "trades_per_day": 20})
+    _open(conn, path)                                     # 合計の上限 $1,000 をこれで使い切る
+    ex = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(minutes=5))
+    with pytest.raises(PaperError, match="合計の上限"):
+        ex.open_position("up-robinhood:p-nvda", 1000.0)
+    ex.open_position("up-robinhood:p-nvda", 1000.0, purpose="reference")
+    with pytest.raises(PaperError, match="1つの建玉の上限"):
+        ex.open_position("up-robinhood:p-up", 2000.0, purpose="reference")
+    one = dataclasses.replace(cfg, evaluation=dataclasses.replace(cfg.evaluation, reference_max_open=1))
+    with pytest.raises(PaperError, match="同時に1つまで"):
+        PaperExecutor(conn, one, TOKENS, fx=FakeFx(), now=NOW).open_position("up-robinhood:p-up", 1000.0, purpose="reference")
+    inside = dataclasses.replace(cfg, evaluation=dataclasses.replace(cfg.evaluation, reference_outside_limits=False))
+    with pytest.raises(PaperError, match="合計の上限"):
+        PaperExecutor(conn, inside, TOKENS, fx=FakeFx(), now=NOW).open_position("up-robinhood:p-up", 1000.0, purpose="reference")
+    with pytest.raises(PaperError, match="種類"):
+        ex.open_position("up-robinhood:p-up", 1000.0, purpose="other")
+
+
+def test_reference_practice_while_evaluating_and_interrupt(world):  # noqa: F811
+    """評価の間でも参考の練習は始められる。評価の建玉が全部閉じたら、参考が残っていても評価は中断。"""
+    from farm_radar.execution.base import PositionRef
+    from farm_radar.execution.paper import PaperError, PaperExecutor
+
+    path, conn = world
+    cfg = _config(path)
+    _, main = _open(conn, path)
+    evaluation.start(conn, cfg, NOW)
+    ex = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(minutes=5))
+    with pytest.raises(PaperError, match="評価中のため"):
+        ex.open_position("up-robinhood:p-nvda", 1000.0)
+    ex.open_position("up-robinhood:p-nvda", 1000.0, purpose="reference")
+    ex.close_position(PositionRef(main.position_id))
+    s = evaluation.summary(conn, cfg, NOW + timedelta(minutes=10))
+    assert s["state"] == "interrupted" and s["open_positions"] == 0
+    assert len(s["reference_tracks"]["tracks"]) == 1
+
+
+def test_reference_daily_loss_closes_only_reference(world, monkeypatch):  # noqa: F811
+    """参考の練習の今日の損が基準を超えても、閉じるのは参考の練習だけ。評価の建玉と再開の状態はそのまま。"""
+    from farm_radar.execution import risk_job
+    from farm_radar.execution.paper import PaperExecutor
+
+    path, conn = world
+    cfg = _config(path)
+    _, main = _open(conn, path)
+    evaluation.start(conn, cfg, NOW)
+    ex = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(minutes=5))
+    ref = ex.open_position("up-robinhood:p-nvda", 1000.0, purpose="reference")
+    monkeypatch.setattr(risk_job, "today_net", lambda conn, now, reference=None: -500.0 if reference else 0.0)
+    risk_job.run_risk(conn, cfg, TOKENS, PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=1)),
+                      NOW + timedelta(hours=1))
+    st = {r["id"]: r["status"] for r in conn.execute("SELECT id, status FROM positions")}
+    assert st[main.position_id] == "open" and st[ref.position_id] == "closed"
+    assert not risk_job.paper_state(conn)["stopped"]
+    ev = conn.execute("SELECT * FROM risk_events WHERE action='closed_reference'").fetchone()
+    assert ev is not None and ev["message_ja"].startswith("参考の練習")
+    assert evaluation.summary(conn, cfg, NOW + timedelta(hours=1))["state"] == "running"
+
+
+def test_api_reference_practice(client):  # noqa: F811
+    c, conn, path = client
+    assert c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-weth"}).status_code == 200
+    c.post("/api/paper/evaluation/start", json={"confirm": True})
+    d = c.get("/api/paper").json()
+    assert d["reference"]["can_open"] and d["reference"]["max"] == 3 and "合否に使いません" in d["reference"]["note"]
+    r = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-nvda", "purpose": "reference"})
+    assert r.status_code == 200
+    d = c.get("/api/paper").json()
+    assert {p["pair"]: p["reference"] for p in d["open"]} == {"WETH/USDG": False, "USDG/NVDA": True}
+    assert d["reference"]["open"] == 1 and d["open_total_usd"] == 1000
+    e = c.get("/api/paper/evaluation").json()
+    assert e["open_positions"] == 1 and len(e["reference_tracks"]["tracks"]) == 1
+
+
+# --- 週ごとの見込み（2026-10-01 オーナー提案【2】3） -------------------------------------------------
+
+def test_weekly_prediction_after_the_flip(world):  # noqa: F811
+    """木曜の切り替えのあとは、落ち着いたあと（2時間後）の最初のスコアで比べる。始めたときの見込みの結果も並べる。"""
+    import dataclasses
+    from datetime import UTC, datetime
+
+    from farm_radar.scoring.run import score_venue
+
+    from .test_scoring_run import FakeGT, _ctx
+
+    path, conn = world
+    cfg = _config(path)
+    flip = datetime(2026, 10, 1, 0, 0, tzinfo=UTC)                   # NOW（月曜）のあとの最初の切り替え
+    _open(conn, path)
+    evaluation.start(conn, cfg, NOW)
+    _extend(conn, 80)
+    # 切り替えのあとはボーナスが0になった
+    conn.execute("UPDATE pool_snapshots SET reward_rate_effective_raw='0', reward_rate_raw='0' WHERE ts>=?",
+                 (flip.isoformat(),))
+    conn.commit()
+    score_venue(conn, _ctx(FakeGT()), now=flip + timedelta(hours=2, minutes=10))
+    run_paper(conn, cfg, TOKENS, lighter=FakeLighter(), fx=FakeFx(), now=NOW + timedelta(hours=80))
+    at = NOW + timedelta(hours=80)
+    s = evaluation.summary(conn, cfg, at)
+    assert s["criteria"]["prediction"] == "weekly" and s["weekly"]["enabled"]
+    assert [u["flip_at"] for u in s["weekly"]["used"]] == [flip.isoformat()]
+    days = s["days"]
+    assert [d["week_hours"] > 0 for d in days[:4]] == [False, False, False, True]
+    assert days[3]["predicted"] < days[3]["predicted_start"]          # ボーナスが消えたあとの見込みは下がる
+    assert days[0]["predicted"] == pytest.approx(days[0]["predicted_start"])
+    assert s["criteria"]["start_only"]["hold"]["ok_days"] == sum(1 for d in days if d["done"] and d["start_ok"])
+    # 設定で切ると、今までどおり始めたときの見込みだけで比べる
+    off = dataclasses.replace(cfg, evaluation=dataclasses.replace(cfg.evaluation, weekly_prediction=False))
+    s2 = evaluation.summary(conn, off, at)
+    assert s2["criteria"]["prediction"] == "start" and s2["criteria"]["start_only"] is None
+    assert s2["days"][3]["predicted"] == pytest.approx(days[3]["predicted_start"])
+    assert s2["weekly"]["used"] == []

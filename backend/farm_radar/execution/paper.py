@@ -121,6 +121,25 @@ def latest_score(conn: sqlite3.Connection, pool_id: str, at: str | None = None) 
 WEEKDAY_JA = "月火水木金土日"
 
 
+# 参考の練習（2026-10-01 オーナー提案【3】案B）。合否に使う建玉は、この印がないもの
+REFERENCE = "reference"
+
+
+def official_sql(alias: str = "") -> str:
+    """SQL の条件: 合否に使う建玉（参考の練習でない）。alias は表の別名（"p." など）。"""
+    return f"COALESCE({alias}purpose, '') <> '{REFERENCE}'"
+
+
+OFFICIAL_SQL = official_sql()
+
+
+def is_reference(pos: sqlite3.Row | dict[str, Any]) -> bool:
+    try:
+        return (pos["purpose"] or "") == REFERENCE
+    except (IndexError, KeyError):
+        return False
+
+
 def running_evaluation_end(conn: sqlite3.Connection, now: datetime) -> datetime | None:
     """進行中の2週間の評価の終わり（なければ None）。途中でやめた評価と、終わった評価は含めない。"""
     row = conn.execute("SELECT ends_at, status FROM evaluations ORDER BY id DESC LIMIT 1").fetchone()
@@ -138,7 +157,8 @@ def interrupt_evaluation_if_empty(conn: sqlite3.Connection, now: datetime, last_
     row = conn.execute("SELECT id, status, ends_at FROM evaluations ORDER BY id DESC LIMIT 1").fetchone()
     if row is None or row["status"] != "running" or _iso(now) >= row["ends_at"]:
         return False
-    if conn.execute("SELECT 1 FROM positions WHERE is_paper=1 AND status='open' LIMIT 1").fetchone():
+    # 参考の練習は評価の建玉に数えない（2026-10-01 案B）
+    if conn.execute(f"SELECT 1 FROM positions WHERE is_paper=1 AND status='open' AND {OFFICIAL_SQL} LIMIT 1").fetchone():
         return False
     conn.execute("UPDATE evaluations SET status='interrupted', ends_at=?, note=? WHERE id=?",
                  (_iso(now), json.dumps({"last_pair": last_pair, "reason": reason}, ensure_ascii=False), row["id"]))
@@ -175,8 +195,12 @@ class PaperExecutor:
 
     # --- 上限と状態 -------------------------------------------------------------------------
 
-    def check_can_open(self, venue_id: str, capital: float) -> None:
-        """上限（config.yaml の limits。変更はオーナーだけ）と、モード・停止の確認。守れなければ PaperError。"""
+    def check_can_open(self, venue_id: str, capital: float, reference: bool = False) -> None:
+        """上限（config.yaml の limits。変更はオーナーだけ）と、モード・停止の確認。守れなければ PaperError。
+
+        参考の練習（2026-10-01 案B）は、evaluation.reference_outside_limits が true なら、合計と会場ごとの上限の
+        計算に入れない（参考の建玉どうしでも、普通の建玉に対しても）。1つの金額の上限と1日の件数の上限は守る。
+        """
         if self.config.mode != "paper":
             raise PaperError("今は「見るだけ」モードです。練習するには config.yaml の mode を paper にしてください。")
         st = self.conn.execute("SELECT stopped FROM paper_state WHERE id=1").fetchone()
@@ -185,13 +209,16 @@ class PaperExecutor:
         lim = self.config.limits
         if capital > float(lim.get("position_usd", capital)):
             raise PaperError(f"1つの建玉の上限（${lim['position_usd']:,.0f}）を超えています。")
+        outside = self.config.evaluation.reference_outside_limits
+        caps = not (reference and outside)
+        where = f" AND {OFFICIAL_SQL}" if outside else ""
         open_rows = self.conn.execute("SELECT venue_id, capital FROM positions WHERE is_paper=1 AND status='open'"
-                                      ).fetchall()
+                                      + where).fetchall()
         total = sum(r["capital"] for r in open_rows) + capital
-        if "total_usd" in lim and total > float(lim["total_usd"]):
+        if caps and "total_usd" in lim and total > float(lim["total_usd"]):
             raise PaperError(f"建玉の合計の上限（${lim['total_usd']:,.0f}）を超えます。")
         venue_total = sum(r["capital"] for r in open_rows if r["venue_id"] == venue_id) + capital
-        if "per_venue_share" in lim and "total_usd" in lim and \
+        if caps and "per_venue_share" in lim and "total_usd" in lim and \
                 venue_total > float(lim["total_usd"]) * float(lim["per_venue_share"]):
             cap = float(lim["total_usd"]) * float(lim["per_venue_share"])
             raise PaperError(f"1つの会場に置ける上限（合計の{float(lim['per_venue_share']) * 100:.0f}% = "
@@ -221,6 +248,14 @@ class PaperExecutor:
         if end is not None:
             raise PaperError(evaluation_block_message(end))
 
+    def check_reference_room(self) -> None:
+        """参考の練習は、同時に evaluation.reference_max_open 個まで。"""
+        n = self.conn.execute("SELECT COUNT(*) FROM positions WHERE is_paper=1 AND status='open' AND purpose=?",
+                              (REFERENCE,)).fetchone()[0]
+        mx = self.config.evaluation.reference_max_open
+        if n >= mx:
+            raise PaperError(f"参考の練習は同時に{mx}つまでです。先にほかの参考の練習を閉じてください。")
+
     def check_practice_venue(self, venue_id: str, venue_name: str | None = None) -> None:
         """観察だけの会場（会場ファイルの practice: false。M6 の Alandale）では練習を始めない。"""
         try:
@@ -234,17 +269,27 @@ class PaperExecutor:
     # --- 開く ---------------------------------------------------------------------------------
 
     def open_position(self, pool_id: str, capital: float, lower: float | None = None,
-                      upper: float | None = None, r_pct: float | None = None) -> PositionRef:
-        """建玉を作る。レンジを指定しなければ、最新のスコアの最適レンジ（±r%）を使う。"""
+                      upper: float | None = None, r_pct: float | None = None,
+                      purpose: str | None = None) -> PositionRef:
+        """建玉を作る。レンジを指定しなければ、最新のスコアの最適レンジ（±r%）を使う。
+
+        purpose='reference' は参考の練習（2026-10-01 案B）: 評価の間も始められ、評価の合否には使わない。
+        """
+        if purpose not in (None, REFERENCE):
+            raise PaperError("練習の種類が分かりません。")
+        reference = purpose == REFERENCE
         pool = self.market.pool(pool_id)
         self.check_practice_venue(pool["venue_id"], pool["venue_name"])
         self.check_not_already_open(pool_id)
-        self.check_not_in_evaluation()
+        if reference:
+            self.check_reference_room()
+        else:
+            self.check_not_in_evaluation()
         snap = self.market.latest(pool_id)
         score = latest_score(self.conn, pool_id)
         if snap is None or score is None or score["best_r"] is None:
             raise PaperError("このプールはまだ計算できていないので、練習を始められません。")
-        self.check_can_open(pool["venue_id"], capital)
+        self.check_can_open(pool["venue_id"], capital, reference=reference)
         details = json.loads(score["details_json"] or "{}")
         inp = details.get("inputs") or {}
         price = float(snap["price"])
@@ -309,11 +354,11 @@ class PaperExecutor:
         cur = self.conn.execute(
             """INSERT INTO positions(pool_id, is_paper, opened_at, capital, r, lower, upper, status, venue_id, mode,
                  liquidity, amount0, amount1, price_open, usd0_open, usd1_open, c_lp, hedges_json, started_red,
-                 signal_open, predicted_json, last_ts, state_json)
-               VALUES (?,1,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 signal_open, predicted_json, last_ts, state_json, purpose)
+               VALUES (?,1,?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (pool_id, ts, capital, r_pct / 100, lower, upper, pool["venue_id"], mode, str(liq), x0, y0, price, u0, u1,
              c_lp_open, json.dumps(hedges), started_red, score["signal"], json.dumps(predicted), snap["ts"],
-             json.dumps(state)))
+             json.dumps(state), purpose))
         pid = int(cur.lastrowid)
         led = [("deposit", pool["token0_symbol"], x0, u0, "LPに入れる"),
                ("deposit", pool["token1_symbol"], y0, u1, "LPに入れる"),

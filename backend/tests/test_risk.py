@@ -300,7 +300,7 @@ def test_venue_wide_emergency_still_closes_all_and_stops(world, calm, monkeypatc
     _set_score(conn)
     ex, ref = _open(conn, path)
     _extend(conn, 2)
-    monkeypatch.setattr(risk_job, "today_net", lambda conn, now: -60.0)
+    monkeypatch.setattr(risk_job, "today_net", lambda conn, now, reference=None: -60.0)
     run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=3))
     assert _pos(conn, ref.position_id)["status"] == "closed"
     assert risk_job.paper_state(conn)["stopped"] and "緊急離脱" in risk_job.paper_state(conn)["reason"]
