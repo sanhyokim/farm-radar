@@ -13,6 +13,9 @@
 - 幅に配るプールの「幅の中にいる時間の割合」「置き直しの回数」「目減り（ガンマ）」「ヘッジしない値動きの損」は、
   今の版で承認された式（scoring/model.py。2026-09-27・09-29 オーナー承認）をそのまま使う。
 - 全体に配るプールの目減りは、値動き σ の2乗 ÷ 8（50:50 のプールの1日の目減りの近似）。
+- ボーナスのコインの値下がり: ふつうは記録の7日の傾きで1日分を引く（今の版と同じ）。控えめは、記録がないコインに仮の値下がり
+  （月 −30%。2026-10-02 オーナー決定）を当て、いる日数のあいだに下がる分も数える（stay_factor。引き方はオーナーに確認中）。
+- 予備はガス代の分だけ（チェーンごとのドル。2026-10-02 オーナー決定）。残りを機会と保険に分ける。
 - 自分で読んだ会場（up. など）は、今の版の計算（scoring/model.py の evaluate）を、金額と分け方だけ変えて使い直す。
 仮の数字（幅 ±15%、控えめの 1.5 倍、5% の上限など）は config.yaml の opportunities にあり、N5 の試しで決め直す（13.3）。
 """
@@ -300,30 +303,64 @@ def margin_need(perp: dict[str, Any], withstand_rise: float) -> float:
     return max(perp.get("imf") or 0.0, withstand_rise + (1 + withstand_rise) * (perp.get("mmf") or 0.0))
 
 
-def _split(s: OpportunitySettings, config: Config, hedge: bool, margin_per_pool: float = 0.0) -> dict[str, float]:
-    """総額を、機会に置く分・保険に預ける分・予備に分ける（割合）。
+def reserve_usd(s: OpportunitySettings, chain: str | None) -> float:
+    """予備（ガス代の分）のドル。チェーンごと（2026-10-02 13:44 JST オーナー決定）。書いていないチェーンは一番大きい値。"""
+    return s.reserve_usd.get(chain or "", max(s.reserve_usd.values(), default=0.0))
+
+
+def _split(hedge: bool, margin_per_pool: float = 0.0, reserve: float = 0.0) -> dict[str, float]:
+    """総額を、機会に置く分・保険に預ける分・予備に分ける（割合）。reserve は予備の割合（ガス代のドル ÷ 総額）。
 
     保険あり: 予備を引いた残りを P ×（1 ＋ 保険に預ける割合）に分ける（2026-10-02 オーナー決定「自動で計算」）。
     margin_per_pool = 機会に置く1ドルあたりに保険へ預けるお金（売る量の割合 × margin_need の合計）。
-    保険なし: 予備のほかは全部、機会に置く。
+    保険なし: 予備のほかは全部、機会に置く。予備は保険が要らない場所でも残す（2026-10-02 13:44 JST オーナー決定）。
     """
-    reserve = config.scoring.allocation_reserve
+    reserve = min(max(reserve, 0.0), 1.0)
     if hedge:
         pool = (1 - reserve) / (1 + margin_per_pool)
         return {"pool": pool, "hedge_margin": pool * margin_per_pool, "reserve": reserve}
     return {"pool": 1 - reserve, "hedge_margin": 0.0, "reserve": reserve}
 
 
+def provisional_trend(s: OpportunitySettings) -> float:
+    """値段の記録がないボーナスのコインの、仮の1日の変化（月 −30% → 1日 約 −1.18%）。"""
+    return (1 - s.unknown_reward_drop_monthly_pct / 100) ** (1 / 30) - 1
+
+
+def stay_factor(trend_daily: float | None, days: float) -> float:
+    """いる日数のあいだのボーナスのコインの平均の値段 ÷ 今の値段（下がるときだけ。2026-10-02 オーナー決定待ちの案）。
+
+    毎日受け取って売るとき、t 日目の値打ちは (1 + r)^t 倍。0〜days 日の平均 = ((1+r)^days − 1) ÷ (days × ln(1+r))。
+    """
+    if trend_daily is None or trend_daily >= 0 or days <= 0:
+        return 1.0
+    g = math.log1p(trend_daily)
+    return math.expm1(g * days) / (g * days)
+
+
 def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, legs: list[Leg], sigma_pair: float | None,
-             campaigns: list[dict[str, Any]], tvl: float, base_apr_pct: float, reward_trend: float | None,
+             campaigns: list[dict[str, Any]], tvl: float, base_apr_pct: float, cautious: bool,
              s: OpportunitySettings, config: Config, gas: float, fee: float, stay_days: float) -> Variant:
+    """campaigns の各キャンペーンには evaluate_merkl が `_volatile`（ボーナスのコインが値動きする）と
+    `_trend`（そのコインの7日の傾き。記録がなければ None）を付けておく。
+
+    ボーナスのコインの値下がり: ふつうは記録の傾きで1日分を引く（今の版の承認済みの式）。
+    控えめは、記録がなければ仮の値下がり（月 −30%）を当て、いる日数のあいだに下がる分も数える（stay_factor）。
+    """
     c_pos = amount * split["pool"]
-    income, points = 0.0, False
+    income, points, haircut = 0.0, False, 0.0
     for c in campaigns:
         if (c.get("reward_type") or "TOKEN").upper() != "TOKEN":
             points = True
             continue
         inc, _ = campaign_income(c, c_pos, tvl)
+        if c.get("_volatile"):
+            trend = c.get("_trend")
+            if cautious:
+                trend = trend if trend is not None else provisional_trend(s)
+                inc *= stay_factor(trend, stay_days)
+            if trend is not None and trend < 0:
+                haircut += inc * -trend
         income += inc
     r = s.merkl_range_pct / 100
     irr = None
@@ -338,8 +375,9 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
     elif kind == "pool_full" and sigma_pair is not None:
         gamma_day = c_pos * sigma_pair ** 2 / 8
     n_reb = m.rebalances_per_day(sigma_pair, r) if kind == "pool_range" and sigma_pair else 0.0
+    if kind == "pool_range" and irr is not None:
+        haircut *= irr                                     # 幅の外にいる間はボーナスも値下がりの分もない
     income += c_pos * base_apr_pct / 100 / 365            # 元の利回り（貸し出しの利息など。分かるときだけ）
-    haircut = income * -reward_trend if reward_trend is not None and reward_trend < 0 else 0.0
     exposure = c_pos * 0.5 if kind.startswith("pool") else c_pos      # 1つのコインあたりの値動きの量
     hedge_cost = direction = 0.0
     hedged_notional = 0.0
@@ -436,22 +474,27 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
         if sigma_pair is None:
             op.computable, op.reason = False, "2つのコインの比率の値動きが分からない"
             return op
-    # ボーナスのコインの値動き（同じチェーンで値段の記録があるときだけ）
-    trends, reward_syms = [], set()
+    # ボーナスのコインの値動き（同じチェーンで値段の記録があるときだけ）。キャンペーンごとに印を付けて _variant で使う
+    reward_syms, guessed = set(), set()
+    marked = []
     for c in live:
-        if (c.get("reward_type") or "TOKEN").upper() != "TOKEN":
-            continue
-        rs = data.token(data.coin(c.get("distribution_chain_id"), c.get("reward_address")))
-        stable = data.is_stable(rs, c.get("reward_symbol"))
-        if not stable:
-            reward_syms.add(c.get("reward_symbol") or "?")
-            if rs is not None and rs.trend_daily is not None:
-                trends.append(rs.trend_daily)
-    reward_trend = min(trends) if trends else None
+        c = dict(c, _volatile=False, _trend=None)
+        if (c.get("reward_type") or "TOKEN").upper() == "TOKEN":
+            rs = data.token(data.coin(c.get("distribution_chain_id"), c.get("reward_address")))
+            if not data.is_stable(rs, c.get("reward_symbol")):
+                sym = c.get("reward_symbol") or "?"
+                reward_syms.add(sym)
+                c["_volatile"] = True
+                c["_trend"] = rs.trend_daily if rs is not None else None
+                if c["_trend"] is None:
+                    guessed.add(sym)
+        marked.append(c)
+    live = marked
     op.unprotected = [f"ボーナスのコイン（{x}）の値下がり" for x in sorted(reward_syms)]
     op.unprotected += [f"{lg.symbol} の値下がり（保険の売り場がない）" for lg in legs if not lg.stable and lg.perp is None]
-    if reward_syms and reward_trend is None:
-        op.flags.append(Flag("RWD_TREND", LEVEL_INFO, "ボーナスのコインの値動きの記録がなく、値下がりは引いていない"))
+    if guessed:
+        op.flags.append(Flag("RWD_GUESS", LEVEL_WARN, f"値下がり未計算（仮の値で計算）: ボーナスのコイン（{'・'.join(sorted(guessed))}）の"
+                             f"値段の記録がない。控えめの見込みは月 −{s.unknown_reward_drop_monthly_pct:g}% とみなした"))
     base_apr = (_float(info.get("native_apr")) or 0.0) if op.kind == "hold" else 0.0
     gas = s.gas_usd_per_tx.get(base.chain or "", max(s.gas_usd_per_tx.values(), default=0.2))
     fee = s.pool_fee_pct / 100
@@ -469,11 +512,12 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
         row: dict[str, dict[str, Variant | None]] = {}
         for case, mult in (("normal", 1.0), ("cautious", s.cautious_tvl_multiple)):
             kw = dict(amount=amount, kind=op.kind, legs=legs, sigma_pair=sigma_pair, campaigns=live,
-                      tvl=tvl * mult, base_apr_pct=base_apr, reward_trend=reward_trend, s=s, config=config,
+                      tvl=tvl * mult, base_apr_pct=base_apr, cautious=case == "cautious", s=s, config=config,
                       gas=gas, fee=fee, stay_days=stay)
+            res = reserve_usd(s, base.chain) / amount
             row[case] = {
-                "no_hedge": _variant(hedge=False, split=_split(s, config, False), **kw),
-                "hedge": _variant(hedge=True, split=_split(s, config, True, margin_per_pool), **kw) if can_hedge else None,
+                "no_hedge": _variant(hedge=False, split=_split(False, reserve=res), **kw),
+                "hedge": _variant(hedge=True, split=_split(True, margin_per_pool, res), **kw) if can_hedge else None,
             }
         op.calc[_akey(amount)] = row
     # 残りの日数で入る・出る費用を取り返せない（$1,000・控えめ・良い方で判断）
@@ -562,22 +606,29 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
                            hedgeable=fund is not None, funding_cost_daily=fund or 0.0,
                            taker_fee=(h.get("taker_pct") or 0.0) / 100 if fund is not None else None)
 
-    def pool_inputs(hedged: bool, mult: float) -> m.PoolInputs | None:
+    trend_rec = inp.get("reward_token_trend_daily")
+
+    def pool_inputs(hedged: bool, mult: float, cautious: bool = False) -> m.PoolInputs | None:
         t0, t1 = side(0, hedged), side(1, hedged)
         if t0 is None or t1 is None:
             return None
+        # 控えめ: 記録がなければ仮の値下がり（月 −30%）を当て、いる日数のあいだに下がる分も数える（evaluate_merkl と同じ）
+        trend = (trend_rec if trend_rec is not None else provisional_trend(s)) if cautious else trend_rec
+        reward_day = float(inp.get("reward_usd_day") or 0) * (stay_factor(trend, stay) if cautious else 1.0)
         lt = int((inp.get("liquidity_latest") or {}).get("total") or inp.get("liquidity_total") or 0)
         ls = int((inp.get("liquidity_latest") or {}).get("staked") or inp.get("liquidity_staked_inrange") or 0)
         med = inp.get("liquidity_median_24h") or {}
         lt, ls = max(lt, int(med.get("total") or 0)), max(ls, int(med.get("staked") or 0))
         return m.PoolInputs(price=float(inp["price"]), token0=t0, token1=t1, fee=float(inp.get("fee") or 0),
                             unstaked_fee=(row["uf"] or 0) / 1e6, liquidity_total=int(lt * mult),
-                            liquidity_staked=int(ls * mult), reward_usd_day=float(inp.get("reward_usd_day") or 0),
+                            liquidity_staked=int(ls * mult), reward_usd_day=reward_day,
                             fees_usd_day=inp.get("fees_usd_day"), sigma_pair=float(inp["sigma_pair"]),
-                            reward_trend_daily=inp.get("reward_token_trend_daily"),
+                            reward_trend_daily=trend,
                             slippage=float(inp.get("slippage") or 0),
                             rewards_only=mechanic_value(venue, "lp_receives_swap_fees", True) is False)
 
+    flip_days = base.days_left
+    stay = max(1 / 24, min(s.stay_days, flip_days)) if flip_days else s.stay_days
     probe = pool_inputs(True, 1.0)
     if probe is None:
         op.computable, op.reason = False, "コインのドル価格か値動きが分からない"
@@ -594,8 +645,6 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
                             count_funding_income=sc.count_funding_income, reward_sell_hours=sc.reward_sell_hours)
     margin_per_pool = sum(0.5 * margin_need(margin_perp(syms[i]), s.hedge_withstand_rise_pct / 100)
                           for i, t in enumerate((probe.token0, probe.token1)) if not t.stable and t.hedgeable)
-    flip_days = base.days_left
-    stay = max(1 / 24, min(s.stay_days, flip_days)) if flip_days else s.stay_days
     op.cap_usd = (base.tvl_usd or 0) * s.max_pool_share or None
     for amount in s.amounts_usd:
         row_out: dict[str, dict[str, Variant | None]] = {}
@@ -605,8 +654,8 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
                 if hedged and not can_hedge:
                     row_out[case][key] = None
                     continue
-                split = _split(s, config, hedged, margin_per_pool)
-                inputs = pool_inputs(hedged, mult)
+                split = _split(hedged, margin_per_pool, reserve_usd(s, base.chain) / amount)
+                inputs = pool_inputs(hedged, mult, case == "cautious")
                 ev = m.evaluate(inputs, replace(params0, c_total=amount, lp_share=split["pool"]))
                 b = ev.best
                 c_lp = amount * split["pool"]
@@ -621,6 +670,9 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
         op.calc[_akey(amount)] = row_out
     if volatile and not can_hedge:
         op.flags.append(Flag("NO_HEDGE", LEVEL_INFO, "保険の売り場がないので、保険なしだけ"))
+    if trend_rec is None:
+        op.flags.append(Flag("RWD_GUESS", LEVEL_WARN, f"値下がり未計算（仮の値で計算）: ボーナスのコイン（{base.bonus_token or '報酬のコイン'}）の"
+                             f"値動きの記録がない。控えめの見込みは月 −{s.unknown_reward_drop_monthly_pct:g}% とみなした"))
     op.flags += [Flag("VENUE", LEVEL_WARN, n) for n in base.notes]
     return op
 

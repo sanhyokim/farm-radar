@@ -149,6 +149,8 @@ function OppCard({ o }: { o: Opportunity }) {
   const excl = o.flags.filter((f) => f.level === "exclude");
   const info = o.flags.filter((f) => f.level === "info");
   const noHedgeMarket = o.flags.some((f) => f.code === "NO_HEDGE");
+  // 値段の記録がないボーナスのコイン: 控えめの見込みは仮の値下がりで計算（オーナー依頼 2026-10-02）
+  const guess = o.flags.some((f) => f.code === "RWD_GUESS");
   return (
     <section className="card flex flex-col gap-4 p-6">
       <div className="flex items-start justify-between gap-4">
@@ -165,6 +167,7 @@ function OppCard({ o }: { o: Opportunity }) {
         <div className="flex flex-col">
           <span className="cap"><Term k="控えめの見込み">控えめの見込み</Term>（{b?.hedge ? "保険あり" : "保険なし"}・年利）</span>
           <span className="t32 num">{apr(b?.apr_pct)}</span>
+          {guess && <span className="pt-1"><Pill tone="y" icon="alert">値下がり未計算（仮の値で計算）</Pill></span>}
         </div>
         <div className="flex flex-col items-end">
           <span className="cap">1日に残る額</span>

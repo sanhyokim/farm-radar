@@ -413,6 +413,10 @@ class OpportunitySettings:
     stable_max_sigma: float = 0.005                       # 1日の値動きがこれ未満で $1 から2%以内なら「値動きしない」
     perp_alias: dict[str, str] = field(default_factory=lambda: {"WETH": "ETH", "WBTC": "BTC", "cbBTC": "BTC"})
     hedge_withstand_rise_pct: float = 50.0                # 保険に預けるお金: 値段がこの%上がっても強制的に閉じられない額（仮）
+    # 予備はガス代の分だけ（チェーンごとのドル。2026-10-02 13:44 JST オーナー決定。額は仮）
+    reserve_usd: dict[str, float] = field(default_factory=lambda: {"robinhood": 20.0, "base": 10.0})
+    # 値段の記録がないボーナスのコイン: 控えめの見込みで、この%だけ月に下がるとみなす（2026-10-02 オーナー決定。仮）
+    unknown_reward_drop_monthly_pct: float = 30.0
 
 
 def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
@@ -435,12 +439,16 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             stable_max_sigma=float(o.get("stable_max_sigma", d.stable_max_sigma)),
             perp_alias={str(k): str(v) for k, v in (o.get("perp_alias") or d.perp_alias).items()},
             hedge_withstand_rise_pct=float(o.get("hedge_withstand_rise_pct", d.hedge_withstand_rise_pct)),
+            reserve_usd={str(k): float(v) for k, v in (o.get("reserve_usd") or d.reserve_usd).items()},
+            unknown_reward_drop_monthly_pct=float(o.get("unknown_reward_drop_monthly_pct",
+                                                        d.unknown_reward_drop_monthly_pct)),
         )
     except (TypeError, ValueError, AttributeError) as exc:
         raise ConfigError(f"config.yaml の opportunities の書き方を確かめてください（{exc}）。") from None
     if not out.amounts_usd or any(a <= 0 for a in out.amounts_usd) or not 0 < out.max_pool_share <= 1 \
             or out.cautious_tvl_multiple < 1 or out.stay_days <= 0 or not 0 < out.merkl_range_pct < 100 \
-            or not 0 < out.hedge_withstand_rise_pct <= 500:
+            or not 0 < out.hedge_withstand_rise_pct <= 500 or any(v < 0 for v in out.reserve_usd.values()) \
+            or not 0 <= out.unknown_reward_drop_monthly_pct < 100:
         raise ConfigError("config.yaml の opportunities の数字を確かめてください（金額は正、割合は0〜1、倍率は1以上）。")
     return out
 
