@@ -31,7 +31,11 @@ def main() -> None:
     fs = config.feeds
     store.connect(fs.database_path).close()            # 表を作っておく
     ratelimit.set_sink(fs.database_path)               # 429 を受けたら feeds.sqlite3 に記録する
-    runner = FeedRunner(fs)
+    from ..registry import coin_chains
+    coins = coin_chains(config.chains, config.root)
+    if not coins:                                      # chains フォルダーが見えないと、コインの値段を読めない
+        log.warning("coin prices off: no chain with defillama_coins_key", extra={"data": {"chains": config.chains}})
+    runner = FeedRunner(fs, coin_chains=coins)
     lock = threading.Lock()                            # 同時に2つ読まない（回数制限とパソコンの負荷のため）
 
     def job(cadence: str) -> None:

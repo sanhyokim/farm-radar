@@ -21,4 +21,5 @@ tokens_file: null
 # 外の一覧での名前
 geckoterminal_network: base        # https://api.geckoterminal.com/api/v2/networks で確認（2026-10-02）
 defillama_name: Base               # https://api.llama.fi/v2/chains の name（chainId 8453。2026-10-02 確認）
+defillama_coins_key: base         # https://coins.llama.fi の値段の名前（"base:<住所>"。2026-10-02 に USDC・WETH で確認）
 lists_checked_at: "2026-10-02"     # Merkl・Across・Relay・LI.FI の一覧に chain_id 8453 があることを確認

@@ -23,6 +23,7 @@ services:
     environment: { FARM_RADAR_ROOT: /app }
     volumes:
       - ./config.yaml:/app/config.yaml:ro
+      - ./chains:/app/chains:ro      # チェーンの登録（N2b: コインの値段を読むチェーンを決める）
       - ./data:/app/data             # data/feeds.sqlite3 と data/feeds/（圧縮した元の応答）
     restart: unless-stopped
 

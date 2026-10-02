@@ -17,6 +17,21 @@ JST = ZoneInfo("Asia/Tokyo")
 SCHEMA_VERSION = 1
 _SCHEMA = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
+# N2b で古い表に足した列（2026-10-02）。パソコンで動いている保存のデータベースにも、起動したときに足す
+_ADD_COLUMNS = {
+    "merkl_opportunity_snaps": {"max_daily_rewards": "REAL"},
+    "merkl_campaigns": {"distribution_method": "TEXT", "settings_json": "TEXT", "restricted": "INTEGER",
+                        "hidden": "INTEGER", "reward_type": "TEXT", "reward_verified": "INTEGER"},
+}
+
+
+def _add_columns(conn: sqlite3.Connection) -> None:
+    for table, cols in _ADD_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, typ in cols.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+
 
 def iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat(timespec="seconds")
@@ -29,6 +44,7 @@ def connect(path: Path | str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")   # 保存とAPIが同時に読み書きできるように
     conn.executescript(_SCHEMA)
+    _add_columns(conn)
     if conn.execute("SELECT COUNT(*) FROM feeds_schema_version").fetchone()[0] == 0:
         conn.execute("INSERT INTO feeds_schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
     conn.commit()
@@ -111,7 +127,8 @@ def write_merkl(conn: sqlite3.Connection, ts: str, opportunities: list[dict[str,
         for c in merkl_campaigns(o):
             camps[c["campaign_id"]] = c
     conn.executemany("INSERT OR REPLACE INTO merkl_opportunity_snaps(ts, opportunity_id, status, apr, max_apr, "
-                     "native_apr, tvl, daily_rewards, live_campaigns) VALUES (?,?,?,?,?,?,?,?,?)", snaps)
+                     "native_apr, tvl, daily_rewards, live_campaigns, max_daily_rewards) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                     snaps)
     if camps:
         cols = list(next(iter(camps.values())))
         marks = ",".join("?" for _ in cols)
@@ -132,6 +149,42 @@ def write_yields(conn: sqlite3.Connection, now: datetime, items: list[Item]) -> 
     conn.executemany("INSERT OR REPLACE INTO yield_snaps(day, pool, chain, project, symbol, tvl_usd, apy_base, "
                      "apy_reward, apy) VALUES (?,?,?,?,?,?,?,?,?)", rows)
     return len(rows)
+
+
+def write_lighter_markets(conn: sqlite3.Connection, ts: str, items: list[Item]) -> int:
+    rows = [(int(it.key), it.name, it.info.get("status"), it.info.get("taker_pct"), it.info.get("maker_pct"),
+             it.info.get("imf"), it.info.get("mmf"), it.info.get("open_interest"), it.info.get("daily_quote_volume"),
+             it.info.get("mark_price"), ts) for it in items if it.name]
+    conn.executemany("INSERT OR REPLACE INTO lighter_markets(market_id, symbol, status, taker_pct, maker_pct, "
+                     "initial_margin_fraction, maintenance_margin_fraction, open_interest, daily_quote_volume, "
+                     "mark_price, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
+    return len(rows)
+
+
+def write_lighter_funding(conn: sqlite3.Connection, ts: str, items: list[Item]) -> int:
+    rows = [(ts, int(it.key), it.name, it.info.get("rate_8h")) for it in items if it.info.get("rate_8h") is not None]
+    conn.executemany("INSERT OR REPLACE INTO lighter_funding_snaps(ts, market_id, symbol, rate_8h) VALUES (?,?,?,?)",
+                     rows)
+    return len(rows)
+
+
+def write_token_prices(conn: sqlite3.Connection, ts: str, coins: dict[str, Any], keep_days: int = 30) -> int:
+    """DefiLlama の chart の応答（{"<チェーン>:<住所>": {symbol, confidence, prices: [{timestamp, price}]}}）を書く。"""
+    n = 0
+    for coin, c in coins.items():
+        if not isinstance(c, dict):
+            continue
+        pts = [(coin, int(p["timestamp"]), float(p["price"])) for p in c.get("prices") or []
+               if isinstance(p, dict) and p.get("timestamp") and p.get("price")]
+        conn.executemany("INSERT OR REPLACE INTO token_prices(coin, ts, price) VALUES (?,?,?)", pts)
+        chain, _, addr = coin.partition(":")
+        conn.execute("INSERT OR REPLACE INTO token_meta(coin, symbol, chain_id, address, confidence, updated_at) "
+                     "VALUES (?,?,(SELECT chain_id FROM token_meta WHERE coin=?),?,?,?)",
+                     (coin, c.get("symbol"), coin, addr.lower(), c.get("confidence"), ts))
+        n += len(pts)
+    cutoff = int(datetime.fromisoformat(ts).timestamp()) - keep_days * 86400
+    conn.execute("DELETE FROM token_prices WHERE ts < ?", (cutoff,))
+    return n
 
 
 def dir_bytes(path: Path) -> int:

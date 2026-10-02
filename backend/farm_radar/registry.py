@@ -154,3 +154,16 @@ def chain_by_evm_id(chain_ids: tuple[str, ...], root: Path = REPO_ROOT) -> dict[
         if isinstance(c.get("chain_id"), int):
             out[c["chain_id"]] = cid
     return out
+
+
+def coin_chains(chain_ids: tuple[str, ...], root: Path = REPO_ROOT) -> dict[int, str]:
+    """EVM のチェーン番号 → DefiLlama の値段の名前（N2b。コインの値動きを読むため）。書いていないチェーンは入れない。"""
+    out = {}
+    for cid in chain_ids:
+        try:
+            c = load_chain(cid, root)
+        except ConfigError:
+            continue
+        if isinstance(c.get("chain_id"), int) and c.get("defillama_coins_key"):
+            out[c["chain_id"]] = str(c["defillama_coins_key"])
+    return out

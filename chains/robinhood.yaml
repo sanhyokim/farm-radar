@@ -23,4 +23,5 @@ tokens_file: tokens-robinhood.yaml
 # 外の一覧での名前（Merkl・送金サービスはチェーン番号 chain_id で書かれている）
 geckoterminal_network: robinhood   # https://api.geckoterminal.com/api/v2/networks で確認（2026-09-29、2026-10-02 再確認）
 defillama_name: Robinhood Chain    # https://api.llama.fi/v2/chains の name（chainId 4663。2026-10-02 確認）
+defillama_coins_key: robinhood    # https://coins.llama.fi の値段の名前（"robinhood:<住所>"。2026-10-02 に USDe で確認）
 lists_checked_at: "2026-10-02"     # Merkl・Across・Relay・LI.FI の一覧に chain_id 4663 があることを確認

@@ -33,6 +33,32 @@ funding:
     - url: https://docs.lighter.xyz/trading/funding
       checked_at: '2026-09-28'
 
+  # N2b（機会の一覧）で使う今の資金調達率の一覧（2026-10-02 確認）
+  snapshot_api: /api/v1/funding-rates
+  snapshot_units: >-
+    exchange が "lighter" の行の rate は「8時間あたりの割合」（ほかの取引所の行も入っているので使わない）。
+    プラス = 買いが払う・売りが受け取る。保険（売り）の1日の費用 = −rate × 3。受け取りは収入に数えない（安全側）。
+  snapshot_sources:
+    - url: https://mainnet.zklighter.elliot.ai/api/v1/funding-rates
+      checked_at: '2026-10-02'
+      quote: 同じ銘柄の /api/v1/fundings の direction（支払う側）と符号を照らして、プラス = 買いが払う、を確認
+
+margin:
+  # 保険の預け金の自動計算（2026-10-02 オーナー決定「自動で計算」。backend/farm_radar/opportunities.py の margin_need）
+  api: /api/v1/orderBookDetails の default_initial_margin_fraction（最初に要る割合）と maintenance_margin_fraction（維持の割合）
+  units: 応答の値 ÷ 10000 が割合（例 500 は 5%）
+  rule: >-
+    担保が「建玉の額 × 維持の割合」を下回ると、一部を強制的に閉じられる。
+    値段が u 上がっても耐える預け金 = 売りの額 × max(最初に要る割合, u ＋ (1 ＋ u) × 維持の割合)。u は config.yaml の
+    opportunities.hedge_withstand_rise_pct（今は 50%。仮）。
+  sources:
+    - url: https://docs.lighter.xyz/trading/contract-specifications
+      checked_at: '2026-10-02'
+      quote: 表の CRV は IMR 10% / MMR 6%。API の CRV は default_initial_margin_fraction 1000 / maintenance_margin_fraction 600
+    - url: https://docs.lighter.xyz/trading/liquidations-and-llp-insurance-fund
+      checked_at: '2026-10-02'
+      quote: Maintenance Margin Requirement を下回ると一部の強制決済が始まる
+
 account:
   # 担保の残高と建玉の読み取り（SPEC 5.2.1章。読み取りのみ。backend/farm_radar/hedges/lighter.py）
   api: /api/v1/account?by=l1_address&value=<アドレス>
