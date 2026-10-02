@@ -368,11 +368,11 @@ function useAction(d: Detail) {
   const [err, setErr] = useState<string | null>(null);
   const s = d.score;
   const practicing = data?.open.find((p) => p.pool_id === s.pool_id) ?? null;
-  const go = async () => {
+  const go = async (purpose?: "reference") => {
     setBusy(true);
     setErr(null);
     try {
-      const r = await postApi<{ position_id: number }>("/api/paper/positions", { pool_id: s.pool_id });
+      const r = await postApi<{ position_id: number }>("/api/paper/positions", { pool_id: s.pool_id, purpose });
       nav(`/practice/${r.position_id}`);
     } catch (e) {
       setErr(String((e as Error).message));
@@ -387,12 +387,17 @@ function useAction(d: Detail) {
   else if (practicing) {
     text = "このプールはすでに練習中です";
     button = <Link to={`/practice/${practicing.id}`} className="btn">建玉を見る</Link>;
-  } else if (data.evaluation_block) text = data.evaluation_block.message;
-  else if (!data.enabled) text = `今は見るだけのモードです。${data.how_to_enable}`;
+  } else if (!data.enabled) text = `今は見るだけのモードです。${data.how_to_enable}`;
   else if (data.stopped) text = "練習は停止中です。練習の画面で再開できます。";
-  else {
+  else if (data.evaluation_block) {
+    // 評価の間は、合否に使わない「参考の練習」だけ始められる（2026-10-01 案B）
+    if (data.reference?.can_open) {
+      text = "評価中は参考の練習だけ";
+      button = <button type="button" className="btn shrink-0" disabled={busy} onClick={() => go("reference")}>{busy ? "作っています…" : `参考で ${usd(data.capital, 0)} を試す`}</button>;
+    } else text = data.reference ? `${data.evaluation_block.message} 参考の練習は同時に${data.reference.max}つまでです。` : data.evaluation_block.message;
+  } else {
     text = s.signal === "red" ? "練習用です（判定は危険）。お金は動きません" : "お金は動きません。本物のデータで記録します";
-    button = <button type="button" className="btn" disabled={busy} onClick={go}>{busy ? "作っています…" : `${usd(data.capital, 0)} を試す`}</button>;
+    button = <button type="button" className="btn" disabled={busy} onClick={() => go()}>{busy ? "作っています…" : `${usd(data.capital, 0)} を試す`}</button>;
   }
   return { text, button, err };
 }

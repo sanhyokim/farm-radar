@@ -19,7 +19,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from . import discovery as discovery_mod
 from . import home_view
@@ -43,7 +43,14 @@ from .scoring import volatility as vol
 from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
 from .tokens import load_tokens
 
-app = FastAPI(title="Farm Radar")
+
+class Utf8JSONResponse(JSONResponse):
+    """返事に「文字は UTF-8」の印をつける（2026-10-01 オーナー報告: Windows の PowerShell 5.1 は、印がないと
+    日本語を別の文字コードとして読み、「（日本時間）」が文字化けした。中身は同じで、表示だけの直し）。"""
+    media_type = "application/json; charset=utf-8"
+
+
+app = FastAPI(title="Farm Radar", default_response_class=Utf8JSONResponse)
 # スマホで読むときに軽くする（プールの一覧は日本語の文が多い。2026-09-30 画面の見直し）
 app.add_middleware(GZipMiddleware, minimum_size=2000)
 
@@ -216,14 +223,17 @@ def _venue_extra(conn, config, v: dict) -> dict:
             "sparkline": views.hourly_downsample(prices),
         },
         "tvl": [{"ts": r["ts"], "v": r["tvl"]} for r in tvl_rows if r["n"]],
-        "conditions": _conditions(v, latest, config),
+        "conditions": _conditions(v, latest, config, views.series_change(prices, now_s, 24 * 7 - 1)),
     }
 
 
-def _conditions(v: dict, latest: list[dict], config) -> list[dict]:
-    """SPEC 2章の4条件のランプ（ok / warn / bad / unknown）と一言の説明。会場全体の目安。"""
-    warns = [json.loads(r.get("warnings_json") or "[]") for r in latest]
-    flat = [w for ws in warns for w in ws]
+def _conditions(v: dict, latest: list[dict], config, reward_change_7d: float | None = None) -> list[dict]:
+    """SPEC 2章の4条件のランプ（ok / warn / bad / unknown）と一言の説明。会場全体の目安。
+
+    C2（報酬トークンの値下がり）は、同じ画面に出す「7日の変化」と同じ値で決める（2026-10-01 オーナー指摘:
+    ランプが🟢なのに同じ画面で LUTE 7日 −31% と出た。ランプはスコア計算の時の値、数字は画面を開いた時の値で、
+    線の近くでずれていた）。値段のデータがないときは🟢ではなく灰色（unknown）にする。
+    """
     scored = [r for r in latest if r["net_daily_pct"] is not None]
     cap = config.scoring.total_capital_usd
     if not scored:
@@ -232,9 +242,15 @@ def _conditions(v: dict, latest: list[dict], config) -> list[dict]:
     rich = [r for r in scored if (r["income"] or 0) / cap * 100 >= config.scoring.green_min_pct]
     c1 = {"code": "C1", "state": "ok" if rich else "warn",
           "text": f"ボーナスが十分なプール {len(rich)} / {len(scored)} 件（収入が総資産の1日 {config.scoring.green_min_pct}% 以上）"}
-    major = next((w for w in flat if w.get("code") == "C2" and w.get("level") == "major"), None)
-    c2 = {"code": "C2", "state": "bad" if major else "ok",
-          "text": major["message_ja"] if major else "報酬トークンの大きな値下がりはありません"}
+    line = config.scoring.reward_token_7d_major_pct
+    if reward_change_7d is None:
+        c2 = {"code": "C2", "state": "unknown", "text": "報酬トークンの値段の記録が足りないので、7日の変化が分かりません"}
+    elif reward_change_7d * 100 <= line:
+        c2 = {"code": "C2", "state": "bad",
+              "text": f"報酬トークンが7日で {reward_change_7d * 100:.0f}%（基準 {line:.0f}%）"}
+    else:
+        c2 = {"code": "C2", "state": "ok",
+              "text": f"報酬トークンの大きな値下がりはありません（7日で {reward_change_7d * 100:+.0f}%、基準 {line:.0f}%）"}
     hedge = [r for r in scored if r["has_perp"]]
     c3 = {"code": "C3", "state": "ok" if hedge else "warn",
           "text": f"ヘッジできるプール {len(hedge)} / {len(scored)} 件"}
@@ -558,6 +574,7 @@ def reports(days: int = 30) -> dict:
 
 class OpenRequest(BaseModel):
     pool_id: str
+    purpose: str | None = None     # 'reference' = 参考の練習（合否に使わない。2026-10-01 案B）
 
 
 def _paper_tokens(config, pool_venue: str):
@@ -566,8 +583,11 @@ def _paper_tokens(config, pool_venue: str):
 
 def _paper_status(config, conn) -> dict:
     lim = config.limits
-    open_rows = conn.execute("SELECT venue_id, capital FROM positions WHERE is_paper=1 AND status='open'").fetchall()
+    open_rows = conn.execute("SELECT venue_id, capital, purpose FROM positions WHERE is_paper=1 AND status='open'"
+                             ).fetchall()
     st = risk_job.paper_state(conn)
+    ev = config.evaluation
+    ref_open = sum(1 for r in open_rows if (r["purpose"] or "") == "reference")
     eval_end = running_evaluation_end(conn, _now()) if config.evaluation.block_new_practice else None
     venue_cap = (float(lim["total_usd"]) * float(lim["per_venue_share"])
                  if "total_usd" in lim and "per_venue_share" in lim else None)
@@ -576,7 +596,14 @@ def _paper_status(config, conn) -> dict:
         "stopped_reason": st["reason"], "stopped_since": st["since"],
         "capital": config.scoring.total_capital_usd,
         "limits": {k: lim.get(k) for k in ("position_usd", "total_usd", "per_venue_share", "trades_per_day")},
-        "venue_cap_usd": venue_cap, "open_total_usd": sum(r["capital"] for r in open_rows),
+        "venue_cap_usd": venue_cap,
+        "open_total_usd": sum(r["capital"] for r in open_rows
+                              if not (ev.reference_outside_limits and (r["purpose"] or "") == "reference")),
+        # 参考の練習（2026-10-01 案B）: 評価の間も始められ、合否に使わない
+        "reference": {"open": ref_open, "max": ev.reference_max_open, "outside_limits": ev.reference_outside_limits,
+                      "can_open": ref_open < ev.reference_max_open,
+                      "note": ("参考の練習は、評価の合否に使いません。種類の違うプールで見込みが当たるかを確かめるためのものです。"
+                               + ("合計と会場ごとの上限の計算にも入れません。" if ev.reference_outside_limits else ""))},
         # 評価の間は新しい練習を始めない（2026-09-30 オーナー決定①）。画面はボタンの代わりにこの文を出す
         "evaluation_block": ({"until": eval_end.isoformat(timespec="seconds"),
                               "message": evaluation_block_message(eval_end)} if eval_end else None),
@@ -759,7 +786,7 @@ def paper_open(req: OpenRequest) -> dict:
             raise HTTPException(404, "このプールは見つかりません")
         ex = PaperExecutor(conn, config, _paper_tokens(config, pool_row["venue_id"]), now=_now())
         try:
-            ref = ex.open_position(req.pool_id, config.scoring.total_capital_usd)
+            ref = ex.open_position(req.pool_id, config.scoring.total_capital_usd, purpose=req.purpose)
         except PaperError as exc:
             raise HTTPException(400, str(exc)) from None
         return {"position_id": ref.position_id}

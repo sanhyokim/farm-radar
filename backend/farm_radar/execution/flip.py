@@ -13,6 +13,8 @@ import json
 import sqlite3
 from typing import Any
 
+from ..scoring.model import sell_now_drop
+
 # 1日の見込みの内訳（スコアの行のキー）。income だけプラス、ほかは引く
 COST_KEYS = ("gamma", "rebalance", "hedge", "haircut", "direction_risk")
 
@@ -68,6 +70,40 @@ def live_per_day(conn: sqlite3.Connection, pool_id: str, at: str, r_pct: float, 
     details, inp = score_inputs(score)
     rr = nearest_range(details, r_pct)
     out = per_day_for_mode(rr, mode, inp.get("reward_token_trend_daily")) if rr else None
+    if cache is not None:
+        cache[key] = out
+    return out
+
+
+def _with_sell(out: dict[str, float] | None, mode: str | None, inp: dict[str, Any]) -> dict[str, float] | None:
+    """「すぐ売る前提」の1日の見込みも足す（ステークしないときは報酬トークンを持たないので同じ）。"""
+    if out is None:
+        return None
+    drop = 0.0 if mode == "unstaked" else sell_now_drop(inp.get("reward_token_trend_daily"),
+                                                        float(inp.get("reward_sell_hours") or 1.0))
+    return {**out, "net_sell": out["net"] + out["haircut"] - out["income"] * drop}
+
+
+def week_per_day(conn: sqlite3.Connection, pool_id: str, flip_at: str, settle_at: str, r_pct: float,
+                 mode: str | None, cache: dict[tuple, Any] | None = None) -> dict[str, Any] | None:
+    """切り替えのあとの「その週の見込み」（2026-10-01 オーナー提案【2】3）。
+
+    切り替え（flip_at）のあと、ボーナスの値が落ち着いた時刻（settle_at。切り替えの rewards.epoch_fresh_minutes 後）以降の
+    最初のスコアを、この建玉の形（幅 r_pct と mode）で読む。まだそのスコアがなければ None（呼ぶ側は前の週の見込みを使う）。
+    """
+    row = conn.execute("SELECT ts FROM scores WHERE pool_id=? AND ts>=? ORDER BY ts LIMIT 1",
+                       (pool_id, settle_at)).fetchone()
+    if row is None:
+        return None
+    key = ("week", pool_id, row["ts"], round(r_pct, 6), mode)
+    if cache is not None and key in cache:
+        return cache[key]
+    score = conn.execute("SELECT details_json FROM scores WHERE pool_id=? AND ts=?", (pool_id, row["ts"])).fetchone()
+    details, inp = score_inputs(score)
+    rr = nearest_range(details, r_pct)
+    out = _with_sell(per_day_for_mode(rr, mode, inp.get("reward_token_trend_daily")) if rr else None, mode, inp)
+    if out is not None:
+        out = {**out, "score_ts": row["ts"], "flip_at": flip_at}
     if cache is not None:
         cache[key] = out
     return out

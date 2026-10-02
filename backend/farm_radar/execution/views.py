@@ -76,6 +76,8 @@ def card(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, risk: RiskSe
     today_usd = sum(float(r[c] or 0.0) for r in rows if views.jst_day(r["ts"]) == today for c in CATS)
     return {
         "id": pos["id"], "pool_id": pos["pool_id"], "pair": pair, "venue_id": pos["venue_id"],
+        # 参考の練習（合否に使わない。2026-10-01 案B）
+        "reference": (pos["purpose"] if "purpose" in pos.keys() else None) == "reference",
         "status": pos["status"], "opened_at": pos["opened_at"], "closed_at": pos["closed_at"],
         "close_reason": pos["close_reason"], "close_reason_ja": close_reason_ja(pos["close_reason"]),
         "last_ts": last,

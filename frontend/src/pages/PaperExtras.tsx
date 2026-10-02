@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { postApi, useApi, type EvalLight, type EvalVerdict, type Evaluation, type Hedges, type HedgeStatus, type Outlook, type PaperCalendar, type TimelineItem } from "../api";
+import { postApi, useApi, type EvalLight, type EvalVerdict, type Evaluation, type Hedges, type HedgeStatus, type Outlook, type PaperCalendar, type RefTrack, type TimelineItem } from "../api";
 import { jst, pct, signedUsd, tone, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Line, Loading, Note, PageHead, Pill, Segmented, Term } from "../ui";
@@ -214,7 +214,9 @@ export function EvaluationCard() {
             <span className="label">参考: その時間の見込みと比べると</span>
             <span><span className="bold num">{ref.ok_days}日</span> が近かった（合否には使いません）</span>
             {ref.differs_days.length > 0 && (
-              <span className="cap">始めたときの見込みでは外れて、こちらでは近かった日: {ref.differs_days.map((d) => `${d}日目`).join("・")}（外れた理由が切り替えだった可能性が高い日）</span>
+              <span className="cap">{data.criteria?.prediction === "weekly"
+                ? `合否の見込みでは外れて、こちらでは近かった日: ${ref.differs_days.map((d) => `${d}日目`).join("・")}（その日のうちの見込みの変化で外れた可能性が高い日）`
+                : `始めたときの見込みでは外れて、こちらでは近かった日: ${ref.differs_days.map((d) => `${d}日目`).join("・")}（外れた理由が切り替えだった可能性が高い日）`}</span>
             )}
             {ref.flip_days.length > 0 && <span className="cap">切り替えのあった日: {ref.flip_days.map((d) => `${d}日目`).join("・")}</span>}
           </div>
@@ -250,8 +252,10 @@ export function EvaluationCard() {
               </>
             )}
           </Fold>
-          {data.criteria && <Fold title="合格の基準"><Criteria c={data.criteria} /></Fold>}
-          {data.days && data.days.length > 0 && <Fold title="1日ごとの記録"><DayTable days={data.days} /></Fold>}
+          {data.criteria && <Fold title="合格の基準"><Criteria c={data.criteria} weekly={data.weekly} /></Fold>}
+          {data.days && data.days.length > 0 && (
+            <Fold title="1日ごとの記録"><DayTable days={data.days} weekly={data.criteria?.prediction === "weekly"} /></Fold>
+          )}
           <Fold title="記録できた時間とデータの集まり具合">
             <Line k="始めた" v={jst(data.started_at ?? null)} />
             <Line k={running ? "残り" : "終わり"} v={running ? hoursJa(data.left_hours ?? 0) : jst(data.ends_at ?? null)} />
@@ -268,6 +272,11 @@ export function EvaluationCard() {
           </Fold>
         </>
       )}
+      {data.reference_tracks && data.reference_tracks.tracks.length > 0 && (
+        <Fold title={`参考の練習（合否に使いません）· ${data.reference_tracks.tracks.length}件`}>
+          <RefTracks tracks={data.reference_tracks.tracks} note={data.reference_tracks.note} />
+        </Fold>
+      )}
       {data.mode === "paper" && (
         <div className="flex flex-col gap-2 border-t border-white/[0.06] p-6">
           {!ask && (running ? (
@@ -279,7 +288,7 @@ export function EvaluationCard() {
           {ask && (
             <div className="inset flex flex-col gap-4 p-4">
               <p>{ask === "start"
-                ? `今から${days}日間の評価を始めます。パソコンが止まっている時間は「推定」になり、比べる対象から外れます。評価の間は新しい練習を始められません。建玉が全部閉じたら、評価は「中断」になります。よろしいですか？`
+                ? `今から${days}日間の評価を始めます。いま持っている練習（参考の練習を除く）で合否を出します。パソコンが止まっている時間は「推定」になり、比べる対象から外れます。評価の間は、合否に使う新しい練習は始められません（参考の練習は始められます）。合否に使う建玉が全部閉じたら、評価は「中断」になります。よろしいですか？`
                 : "評価をやめます（ここまでの記録は残ります）。よろしいですか？"}</p>
               <div className="flex gap-2">
                 <button disabled={busy} onClick={() => run(ask)} className="btn">はい</button>
@@ -301,7 +310,7 @@ const RESULT: Record<EvalVerdict["result"], [string, "n" | "g" | "y" | "r"]> = {
 };
 
 /** 合格の基準（2026-09-29 オーナー決定）と、持ち続ける前提・すぐ売る前提それぞれの判定 */
-function Criteria({ c }: { c: NonNullable<Evaluation["criteria"]> }) {
+function Criteria({ c, weekly }: { c: NonNullable<Evaluation["criteria"]>; weekly?: Evaluation["weekly"] }) {
   const col = (title: string, v: EvalVerdict) => (
     <div className="inset flex flex-col items-start gap-2 p-4">
       <div className="cap">{title}</div>
@@ -314,6 +323,21 @@ function Criteria({ c }: { c: NonNullable<Evaluation["criteria"]> }) {
     <>
       <div className="cap">{c.done_days}/{c.days}日が終わりました</div>
       <div className="grid grid-cols-2 gap-2">{col("報酬を持ち続ける前提", c.hold)}{col("報酬をすぐ売る前提", c.sell)}</div>
+      {c.prediction === "weekly" && (
+        <div className="inset flex flex-col gap-1 p-4">
+          <span className="label">比べる見込み: 週ごと</span>
+          <span className="cap">{weekly?.note ?? "木曜の切り替えのあとは、その週の見込みと比べます。"}</span>
+          {(weekly?.used ?? []).map((u) => (
+            <span key={u.flip_at} className="cap">切り替え {jst(u.flip_at)} → その週の見込みは {jst(u.score_ts)} のスコアから</span>
+          ))}
+          {c.start_only && (
+            <span className="cap">
+              参考: 始めたときの見込みだけで比べると、持ち続ける前提 {c.start_only.hold.ok_days}/{c.start_only.hold.need_days}日、
+              すぐ売る前提 {c.start_only.sell.ok_days}/{c.start_only.sell.need_days}日（合否には使いません）
+            </span>
+          )}
+        </div>
+      )}
       <Line k="データの集まり具合" v={`${c.coverage_pct === null ? "—" : `${c.coverage_pct.toFixed(1)}%`}${c.coverage_ok ? "" : "（足りません）"}`}
         note={`${c.min_coverage_pct}%以上が必要`} />
       <Note>
@@ -324,28 +348,74 @@ function Criteria({ c }: { c: NonNullable<Evaluation["criteria"]> }) {
   );
 }
 
-function DayTable({ days }: { days: NonNullable<Evaluation["days"]> }) {
+function DayTable({ days, weekly }: { days: NonNullable<Evaluation["days"]>; weekly: boolean }) {
   const mark = (ok: boolean | null | undefined, v: number | null | undefined, done: boolean) =>
     v == null ? <span className="text-cap">—</span> : <span>{signedUsd(v)}{done && ok != null ? (ok ? " ○" : " ×") : ""}</span>;
   return (
     <>
       <div className="scroll-x">
-        <table className="tbl min-w-[420px]">
-          <thead><tr><th>日</th><th className="r">予測</th><th className="r">持ち続け</th><th className="r">すぐ売り</th><th className="r">参考</th></tr></thead>
+        <table className={`tbl ${weekly ? "min-w-[520px]" : "min-w-[420px]"}`}>
+          <thead><tr><th>日</th><th className="r">予測</th><th className="r">持ち続け</th><th className="r">すぐ売り</th>
+            {weekly && <th className="r">始めの見込み</th>}<th className="r">参考</th></tr></thead>
           <tbody>
             {days.map((d) => (
               <tr key={d.day}>
                 <td className="sec">{d.day}日目{d.done ? "" : "（途中）"}{d.flip ? " · 切り替え" : ""}</td>
-                <td className="num r">{d.predicted === null ? "—" : signedUsd(d.predicted)}</td>
+                <td className="num r">{d.predicted === null ? "—" : signedUsd(d.predicted)}{weekly && (d.week_hours ?? 0) > 0 ? " 週" : ""}</td>
                 <td className="num r">{mark(d.hold_ok, d.hold, d.done)}</td>
                 <td className="num r">{mark(d.sell_ok, d.sell, d.done)}</td>
+                {weekly && <td className="num r sec">{d.predicted_start == null ? "—" : signedUsd(d.predicted_start)}
+                  {d.done && d.predicted_start != null ? (d.start_ok ? " ○" : " ×") : ""}</td>}
                 <td className="num r sec">{mark(d.reference_ok, d.reference, d.done)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <Note>○ は予測に近かった日、× は外れた日。「参考」は、その時間の最新の見込みと比べたものです（合否には使いません）。</Note>
+      <Note>
+        ○ は予測に近かった日、× は外れた日。{weekly ? "「週」の印は、その日の予測に切り替えのあとの週の見込みを使ったこと。「始めの見込み」は、始めたときの見込みだけで比べた場合（持ち続ける前提。合否には使いません）。" : ""}
+        「参考」は、その時間の最新の見込みと比べたものです（合否には使いません）。
+      </Note>
+    </>
+  );
+}
+
+/** 参考の練習（2026-10-01 案B）: 建玉ごとの「見込みと実際」。合否に使わない */
+function RefTracks({ tracks, note }: { tracks: RefTrack[]; note: string }) {
+  return (
+    <>
+      {tracks.map((t) => (
+        <div key={t.id} className="inset flex flex-col gap-2 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="bold">{t.pair}</span>
+            <Pill tone={t.status === "open" ? "n" : "y"}>{t.status === "open" ? "練習中" : "終了"}</Pill>
+          </div>
+          <Line k="満たした日" v={`${t.ok_days} / ${t.done_days}日`} note={`評価と同じ線なら ${t.need_days}日で合格`} />
+          <Line k="見込み（1日あたり）" v={signedUsd(t.predicted_net_day)} />
+          <Line k="実際（1日あたり）" v={signedUsd(t.actual_net_day)} />
+          <Line k="始めた" v={jst(t.opened_at)} />
+          {t.closed_at
+            ? <Line k="終わった" v={`${jst(t.closed_at)}${t.close_reason_ja ? `（${t.close_reason_ja}）` : ""}`} />
+            : <Line k="14日目の終わり" v={jst(t.ends_at)} />}
+          {t.days.length > 0 && (
+            <div className="scroll-x">
+              <table className="tbl">
+                <thead><tr><th>日</th><th className="r">見込み</th><th className="r">実際</th></tr></thead>
+                <tbody>
+                  {t.days.map((d) => (
+                    <tr key={d.day}>
+                      <td className="sec">{d.day}日目{d.done ? "" : "（途中）"}</td>
+                      <td className="num r">{d.predicted == null ? "—" : signedUsd(d.predicted)}</td>
+                      <td className="num r">{d.hold == null ? "—" : signedUsd(d.hold)}{d.done && d.hold != null ? (d.ok ? " ○" : " ×") : ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+      <Note>{note}</Note>
     </>
   );
 }
