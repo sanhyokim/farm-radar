@@ -18,19 +18,23 @@ export const apr = (v: number | null | undefined) => (v == null ? "—" : `${v >
 export const days = (v: number | null | undefined) =>
   v == null ? "—" : v < 1 ? `${Math.max(1, Math.round(v * 24))}時間` : `${v.toFixed(v < 10 ? 1 : 0)}日`;
 
-const SAFETY_TONE = { high: "g", mid: "y", low: "r" } as const;
+const SAFETY_TONE = { low: "g", mid: "y", high: "r", very_high: "r" } as const;
 
-/** 安全度（仮の3段階）。色は印だけ（数字は白。オーナー依頼 14） */
+/** 危なさ（N4a。点が多いほど危ない。仮）。色は印だけ（数字は白。オーナー依頼 14） */
 export function SafetyPill({ s, short = false }: { s: Safety | null | undefined; short?: boolean }) {
-  if (!s) return <Pill>安全度 —</Pill>;
-  return <Pill tone={SAFETY_TONE[s.level]} icon="shield">{short ? s.label : `安全度 ${s.label}`}{s.provisional ? "（仮）" : ""}</Pill>;
+  if (!s) return <Pill>危なさ —</Pill>;
+  return (
+    <Pill tone={SAFETY_TONE[s.level]} icon="shield">
+      {short ? s.label : `危なさ ${s.label}`} {Math.round(s.score)}点{s.provisional ? "（仮）" : ""}
+    </Pill>
+  );
 }
 
 /** 値段の記録がないボーナスのコインの印（オーナー依頼 2026-10-02: 一覧の行と詳しい画面に目立つ印） */
 export const isGuess = (o: Opportunity) => o.flags.some((f) => f.code === "RWD_GUESS");
 export const GuessPill = () => <Pill tone="y" icon="alert">値下がり未計算（仮の値で計算）</Pill>;
 
-/** 会場の情報が名前だけで結びついている印（オーナー依頼 2026-10-02 17:07 JST。N4 で契約の住所で見分ける） */
+/** 会場を契約の住所で見分けられていない印（オーナー依頼 2026-10-02 17:07 JST。N4a で住所の見分けを始めた） */
 export const isUncertainVenue = (o: Opportunity) => !!o.safety?.uncertain_match;
 export const VenueMatchPill = () => <Pill tone="y" icon="alert">仮・会場の見分けが不確か</Pill>;
 /** おすすめ（狙い以上で会場の見分けが確か）。見分けが不確かな行はおすすめに入れない（オーナー 2026-10-02 23:15 JST） */

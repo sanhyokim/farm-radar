@@ -34,8 +34,9 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import safety
+from . import safety, venue_match
 from .feeds import pools as feed_pools
+from .feeds import venues as feed_venues
 from .config import Config, ConfigError, OpportunitySettings, load_venue, mechanic_value
 from .registry import coin_chains, load_chain, receipt_chains, stable_addresses
 from .scoring import model as m
@@ -118,7 +119,8 @@ class Opportunity:
     reason: str | None = None        # 計算できない理由
     new_pool: bool = False
     campaigns: list[dict[str, Any]] = field(default_factory=list)
-    venue_safety: dict[str, Any] | None = None   # 会場の安全度（仮の3段階。safety.py）
+    venue_safety: dict[str, Any] | None = None   # 会場の危なさ（N4a。safety.py・riskscore.py）
+    limits: dict[str, Any] | None = None         # 推奨金額に使う上限（config.yaml の limits。変えるのはオーナーだけ）
 
     @property
     def excluded(self) -> bool:
@@ -155,7 +157,7 @@ class Opportunity:
             out["recommended"] = self.recommended(amount, target_apr_pct) if target_apr_pct is not None else None
             out["over_cap"] = bool(self.cap_usd is not None and amount > self.cap_usd)
         out["venue_safety"] = self.venue_safety
-        out["safety"] = safety.opportunity(out, self.venue_safety)
+        out["safety"] = safety.opportunity(out, self.venue_safety, self.limits, self.cap_usd)
         return out
 
 
@@ -187,6 +189,15 @@ class FeedData:
         self.perps: dict[str, dict[str, Any]] = {}
         self.receipts: dict[tuple[int, str], dict[str, Any]] = {}
         self.pools: dict[tuple[int, str], dict[str, Any]] = {}
+        # N4a: 会場の登録（住所で見分ける）・工場の確かめ・DefiLlama の会場と事件の一覧
+        try:
+            self.known = venue_match.load_known(config.root)
+        except ConfigError:
+            self.known = {}
+        self.known_by_protocol = venue_match.by_protocol(self.known)
+        self.venue_checks: dict[tuple[int, str], dict[str, dict[str, Any]]] = {}
+        self._llama: dict[str, dict[str, Any] | None] = {}
+        self.hacks: list[dict[str, Any]] | None = None
         try:
             self.stables = {cid: stable_addresses(c, config.root)
                             for cid, c in receipt_chains(config.chains, config.root).items()}
@@ -195,6 +206,10 @@ class FeedData:
         if conn is None:
             return
         self.pools = feed_pools.latest(conn, self.s.pool_state_max_age_hours, now)
+        self.venue_checks = feed_venues.latest(conn)
+        hacks = [json.loads(r[0] or "{}") for r in conn.execute(
+            "SELECT info_json FROM feed_items WHERE source='llama_hacks'")]
+        self.hacks = hacks or None             # 一覧がまだ読めていなければ「分からない」
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='receipt_checks'").fetchone():
             for r in conn.execute("SELECT * FROM receipt_checks WHERE is_vault=1"):
                 self.receipts[(int(r["chain_id"]), str(r["address"]).lower())] = {k: r[k] for k in r.keys()}
@@ -215,6 +230,36 @@ class FeedData:
             self.perps[str(r["symbol"]).upper()] = {
                 "market_id": r["market_id"], "symbol": r["symbol"], "funding_daily": cost, "taker_pct": r["taker_pct"],
                 "imf": imf / 10000 if imf is not None else None, "mmf": mmf / 10000 if mmf is not None else None}
+
+    def llama_row(self, slug: str) -> dict[str, Any] | None:
+        if slug not in self._llama:
+            r = self.conn.execute("SELECT info_json FROM feed_items WHERE source='llama_protocols' AND key=?",
+                                  (slug,)).fetchone() if self.conn is not None else None
+            self._llama[slug] = json.loads(r[0] or "{}") if r else None
+        return self._llama[slug]
+
+    def venue_facts(self, slugs: list[str], extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        """会場の情報（危なさの点数の材料）: DefiLlama の会場（登録に書いた slug）と、その番号で結びつけた事件。"""
+        rows = [r for r in (self.llama_row(str(x)) for x in slugs or []) if r]
+        f: dict[str, Any] = {}
+        if rows:
+            big = max(rows, key=lambda r: r.get("tvl") or 0)
+            listed = [r["listed_at"] for r in rows if r.get("listed_at")]
+            f = {"listed_at": min(listed) if listed else None, "age_source": "DefiLlama に載った日",
+                 "tvl": sum(r.get("tvl") or 0 for r in rows),
+                 "audits": max((r.get("audits") or 0) for r in rows) if any(r.get("audits") is not None for r in rows)
+                 else None, "audit_links": sum(r.get("audit_links") or 0 for r in rows),
+                 "change_1d": big.get("change_1d"), "change_7d": big.get("change_7d"),
+                 "slugs": [str(x) for x in slugs]}
+            if self.hacks is not None:
+                ids = {r.get("id") for r in rows if r.get("id")}
+                parents = {r.get("parent") for r in rows if r.get("parent")}
+                f["hacks"] = [h for h in self.hacks if (h.get("defillama_id") and h["defillama_id"] in ids)
+                              or (h.get("parent_id") and h["parent_id"] in parents)]
+        for k in ("admin", "bug_bounty"):
+            if (extra or {}).get(k):
+                f[k] = extra[k]
+        return f
 
     def coin(self, chain_id: int | None, address: str | None) -> str | None:
         key = self.coin_keys.get(chain_id) if chain_id is not None else None
@@ -527,18 +572,40 @@ def _kind(info: dict[str, Any]) -> str:
     return "other"
 
 
+def _pool_state(campaigns: list[dict[str, Any]], base: StandardOpportunity, data: FeedData) -> dict[str, Any] | None:
+    """幅に配るキャンペーンのプールの、チェーンの記録（N3）。会場の見分け（Uniswap の公式の住所か）に使う。"""
+    if base.evm_chain_id is None:
+        return None
+    for c in campaigns:
+        pid = _settings(c).get("poolId")
+        if pid:
+            st = data.pools.get((int(base.evm_chain_id), str(pid).lower()))
+            if st is not None:
+                return st
+    return None
+
+
 def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: list[dict[str, Any]], data: FeedData,
                    config: Config) -> Opportunity:
     s = config.opportunities
     op = Opportunity(base=base, kind=_kind(info), campaigns=[_campaign_view(c) for c in campaigns],
-                     venue_safety=safety.venue_from_merkl(info.get("trust"), data.now))
+                     limits=dict(config.limits))
+    # N4a: どの会場かを契約の住所で見分ける。見分けた会場だけ、その会場の情報（DefiLlama・登録）を危なさの点数に使う
+    identity = venue_match.identify(info.get("protocol"), base.chain, base.evm_chain_id, info.get("explorer_address"),
+                                    data.known_by_protocol, data.venue_checks, _pool_state(campaigns, base, data),
+                                    kind=info.get("type"))
+    known = data.known.get(identity.get("venue_id") or "")
+    facts = data.venue_facts(((known or {}).get("defillama") or {}).get("slugs") or [], known) \
+        if identity["status"] == "verified" and known else None
+    op.venue_safety = safety.venue_from_merkl(identity, facts, info.get("trust"), data.now)
     now_s = int(data.now.timestamp())
     live = [c for c in campaigns if (c.get("start_ts") or 0) <= now_s and (c.get("end_ts") is None or c["end_ts"] > now_s)]
     tvl = base.tvl_usd or 0.0
     _flags(op, info, live, base, s, now_s)
-    note = safety.match_note(info.get("trust"))
-    if note:
-        op.flags.append(Flag("VENUE_MATCH", LEVEL_INFO, note))
+    if identity["status"] != "verified":
+        note = safety.match_note(info.get("trust"))
+        op.flags.append(Flag("VENUE_MATCH", LEVEL_INFO, f"{safety.UNCERTAIN_MATCH}: {identity['reason']}"
+                             + (f"。{note.split(': ', 1)[1]}" if note else "")))
     if op.kind == "other":
         op.computable, op.reason = False, "借りる型などは計算しない（預けて受け取る型だけ）"
         return op
@@ -783,7 +850,7 @@ def _flags(op: Opportunity, info: dict[str, Any], live: list[dict[str, Any]], ba
 def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Config, data: FeedData) -> Opportunity:
     """今の版の計算（scoring/model.py）を、金額と分け方だけ変えて使い直す。"""
     s = config.opportunities
-    op = Opportunity(base=base, kind="pool_range")
+    op = Opportunity(base=base, kind="pool_range", limits=dict(config.limits))
     row = conn.execute("""SELECT s.details_json, p.token0_symbol, p.token1_symbol, p.token0_decimals, p.token1_decimals,
                                  (SELECT unstaked_fee FROM pool_snapshots WHERE pool_id=p.id ORDER BY ts DESC LIMIT 1) uf
                           FROM scores s JOIN pools p ON p.id=s.pool_id WHERE s.pool_id=? ORDER BY s.ts DESC LIMIT 1""",
@@ -793,7 +860,8 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
         venue = load_venue(base.venue, config.root)
     except (OSError, ConfigError):
         venue = {}
-    op.venue_safety = safety.venue_from_registry(venue) if venue else None
+    llama = data.venue_facts(list((venue.get("listings") or {}).get("defillama") or [])) if venue else None
+    op.venue_safety = safety.venue_from_registry(venue, llama, data.now) if venue else None
     if not inp or inp.get("sigma_pair") is None:
         op.computable, op.reason = False, "スコアの計算に必要な数字がそろっていない"
         return op

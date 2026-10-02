@@ -204,6 +204,21 @@ def write_receipts(conn: sqlite3.Connection, ts: str, rows: dict[str, Any]) -> i
     return n
 
 
+def write_venue_checks(conn: sqlite3.Connection, ts: str, rows: dict[str, Any]) -> int:
+    """会場の工場の確かめ（feeds/venues.py の結果）を書く。読み取り口の失敗（failed）は書かない（次の回に読み直す）。"""
+    n = 0
+    for key, r in rows.items():
+        if not isinstance(r, dict) or r.get("failed"):
+            continue
+        cid, addr, fac = key.split(":", 2)
+        conn.execute("""INSERT OR REPLACE INTO venue_checks(chain_id, address, factory, venue_id, function, checked_at,
+                        verified, error) VALUES (?,?,?,?,?,?,?,?)""",
+                     (int(cid), addr.lower(), fac.lower(), r.get("venue_id"), r.get("function"), ts, r.get("verified"),
+                      r.get("error")))
+        n += 1
+    return n
+
+
 def write_pool_states(conn: sqlite3.Connection, ts: str, rows: dict[str, Any], keep_days: int = 60) -> int:
     """幅に配るプールの状態（feeds/pools.py の結果）を書く。読み取り口の失敗（failed）は書かない。"""
     n = 0

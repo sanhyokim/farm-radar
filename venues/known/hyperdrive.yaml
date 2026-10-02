@@ -1,0 +1,29 @@
+# 会場の登録（N4a）: Hyperdrive（Ambit Labs。hyperdrive.fi / hyperdrive.finance。X @hyperdrivedefi）
+# Base の「Hyperdrive USDC Ecosystem」は、Morpho Vault V2 の仕組みで作った金庫（Morpho の VaultV2Factory で true。
+#   チェーンの記録 2026-10-02）。Hyperdrive の公式の資料に、この金庫の住所と運営（owner・curator・sentinel・allocator）が
+#   載っていて、チェーンの記録と4つとも一致した（確認日 2026-10-02）。
+# 注意: Merkl が結びつけている DefiLlama の「hyperdrive」は、別の会社（DELV）の終わったプロジェクト。使わない。
+#   正しいのは hyperdrive-hl-lending・hyperdrive-hl-earn（同じ運営。ただし DefiLlama は Base の金庫を数えていない。
+#   預かり額は Hyperliquid の分。事件 2025-09-27 $782K は同じ運営の Hyperliquid の貸し借り）。
+# 運営の鍵（チェーンの記録 2026-10-02）: 金庫の待ち時間はすべて0秒、運営の待ち時間の契約も0秒。運営の1人の財布も
+#   提案できる。だから、預けた人に前もって知らせずに、運用先をすぐ変えられる → 「1人の鍵」と同じ扱いにする。
+# バグ報奨金: 見つからなかった（Immunefi・公式の資料）。
+# 読み取りだけ。お金を動かすコードはない。
+id: hyperdrive
+name: Hyperdrive
+merkl_protocols: [Hyperdrive]
+defillama:
+  slugs: [hyperdrive-hl-lending, hyperdrive-hl-earn]
+  source_url: https://api.llama.fi/protocols
+  checked_at: "2026-10-02"
+admin:
+  type: single
+  note_ja: 待ち時間が0秒。運営の1人の財布も提案でき、預けた人に知らせずに運用先をすぐ変えられる
+  source_url: https://docs.hyperdrive.finance/developers/contracts/
+  checked_at: "2026-10-02"
+match:
+  base:
+    - method: addresses
+      addresses: ["0x58a0f600d555eb25b792Ec2c6824D0bff5127B1F"]   # Hyperdrive USDC Ecosystem（Morpho Vault V2）
+      source_url: https://docs.hyperdrive.finance/developers/contracts/
+      checked_at: "2026-10-02"

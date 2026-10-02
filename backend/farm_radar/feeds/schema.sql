@@ -177,3 +177,16 @@ CREATE TABLE IF NOT EXISTS pool_state_snaps (
   PRIMARY KEY (chain_id, pool_id, checked_at)
 );
 CREATE INDEX IF NOT EXISTS pool_state_snaps_latest ON pool_state_snaps(chain_id, pool_id, checked_at);
+
+-- N4a: 入れる先の契約が、会場の公式の工場で作られたものか（feeds/venues.py。1日1回。答えが出たら30日は読み直さない）
+CREATE TABLE IF NOT EXISTS venue_checks (
+  chain_id INTEGER NOT NULL,
+  address TEXT NOT NULL,               -- 入れる先の契約の住所（小文字）
+  factory TEXT NOT NULL,               -- 会場の公式の工場の住所（小文字。venues/known/<id>.yaml）
+  venue_id TEXT NOT NULL,
+  function TEXT NOT NULL,              -- 聞き方（例: isMetaMorpho(address)）
+  checked_at TEXT NOT NULL,
+  verified INTEGER,                    -- 1 = 工場が作った。0 = 作っていない（または工場が答えない）
+  error TEXT,
+  PRIMARY KEY (chain_id, address, factory)
+);

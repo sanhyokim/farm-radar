@@ -6,7 +6,7 @@ import { Card, Fold, Folds, Line, Loading, Note, PageHead, Pill, Segmented, Term
 import { Breakdown, GuessPill, KIND, SafetyPill, Side, VenueMatchPill, apr, days, isGuess, isRecommended, isUncertainVenue } from "./opp";
 
 /**
- * 入れる先の詳しい画面（N2c）: 計算の内訳、保険あり・なし、印、この会場の安全度、「$1,000 を試す」。
+ * 入れる先の詳しい画面（N2c。N4a で危なさの点数）: 計算の内訳、保険あり・なし、印、危なさと推奨金額、「$1,000 を試す」。
  * 読み取りと計算だけ。「試す」は練習（お金は動かない）。
  */
 export default function ExploreDetail() {
@@ -68,12 +68,13 @@ export default function ExploreDetail() {
 
       <TryCard data={data} />
 
-      <Card title={<span className="flex items-center gap-2"><Icon name="shield" size={16} />安全度（仮）</span>}>
+      <Card title={<span className="flex items-center gap-2"><Icon name="shield" size={16} />危なさ（仮）</span>}>
+        <RecommendLine s={o.safety} />
         <SafetyBlock title="この入れる先" s={o.safety} />
         <SafetyBlock title={`この会場（${o.venue_name ?? o.venue}）`} s={o.venue_safety} />
         <Note>
-          仮の3段階です。N4 で「危なさの点数」ができたら置きかえます。会場の情報は Merkl が載せているもの（もとは DefiLlama）で、
-          名前の似た別の会場のものが混ざることがあります。
+          点が多いほど危ないです（0〜19 低い・20〜39 中くらい・40〜59 高い・60〜 とても高い）。分からない材料は危ない側に数えます。
+          会場の情報（監査・事件・預かり額など）は、契約の住所で会場を見分けられたときだけ使います。点の重みと区切りは仮で、N5 の試しで決め直します。
         </Note>
         <Link to="/guard" className="cap flex items-center gap-2 text-sec"><Icon name="right" size={16} />守る（置いている額と上限）を見る</Link>
       </Card>
@@ -138,11 +139,38 @@ export default function ExploreDetail() {
   );
 }
 
+const ID_TONE = { verified: "g", hooked: "y", unchecked: "y" } as const;
+
+/** 推奨金額: 本番で1か所に置いてよい額の目安（資金の割合と上限から。練習の額ではない） */
+function RecommendLine({ s }: { s: Safety | null }) {
+  const r = s?.recommend;
+  if (!r) return null;
+  return (
+    <div className="inset flex flex-col gap-1 p-4">
+      <span className="cap"><Term k="推奨金額">推奨金額</Term>（本番で、ここに置いてよい額の目安）</span>
+      <span className="t20 num">{r.usd == null ? "—" : usd(r.usd, 0)}</span>
+      <span className="cap">{r.note}</span>
+    </div>
+  );
+}
+
 function SafetyBlock({ title, s }: { title: string; s: Safety | null }) {
+  const id = s?.identity;
   return (
     <div className="inset flex flex-col gap-2 p-4">
       <div className="flex items-center justify-between gap-2"><span className="sec">{title}</span><SafetyPill s={s} short /></div>
-      {s ? s.reasons.map((r) => <span key={r} className="cap">・{r}</span>) : <span className="cap">分かりません。</span>}
+      {id && (
+        <span className="flex flex-wrap items-center gap-2">
+          <Pill tone={ID_TONE[id.status as keyof typeof ID_TONE] ?? "r"} icon={id.status === "verified" ? "check" : "alert"}>
+            {id.status === "verified" ? "住所で見分け済み" : "住所で見分けられていない"}
+          </Pill>
+          <span className="cap" style={{ overflowWrap: "anywhere" }}>{id.reason}</span>
+        </span>
+      )}
+      {s ? s.reasons.map((r) => <span key={r} className="cap" style={{ overflowWrap: "anywhere" }}>・{r}</span>) : <span className="cap">分かりません。</span>}
+      {s && s.parts.some((p) => p.points === 0) && (
+        <span className="cap text-sec">点が足されなかった材料: {s.parts.filter((p) => p.points === 0).map((p) => `${p.label}（${p.note}）`).join("、")}</span>
+      )}
     </div>
   );
 }

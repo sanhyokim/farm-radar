@@ -1,0 +1,36 @@
+# 会場の登録（N4a。会場を契約の住所で見分けるためのもの）: Uniswap
+# 見分け方: Merkl が「Uniswap」と書いた幅に配るプールのうち、Uniswap の公式の住所（chains/<id>.yaml の uniswap）で
+# 読めたもの（N3 の pool_states で official=1）を「見分け済み」にする。フック付きのプールは、フックを作った会場が
+# 分からないので「見分けられない」にする。公式の住所の出典は chains/robinhood.yaml・chains/base.yaml に書いた。
+# 読み取りだけ。お金を動かすコードはない。
+id: uniswap
+name: Uniswap
+merkl_protocols: [Uniswap]
+defillama:
+  # DefiLlama の会場（v3・v4。同じ親 parent#uniswap）。事件の一覧はこの番号と親の番号で結びつける
+  slugs: [uniswap-v3, uniswap-v4]
+  source_url: https://api.llama.fi/protocols
+  checked_at: "2026-10-02"
+# 運営の鍵（チェーンの記録 2026-10-02・公開ソース）: v4 の PoolManager は作り替えられない。管理者ができるのは手数料の設定だけ
+#   （上限 0.1%）。v3 の factory も、手数料を入れることと手数料の段階を足すことだけ。管理者は Base でも Robinhood でも
+#   Uniswap の投票（Ethereum の Timelock 0x1a9C8182C09F50C8318d769245beA52c32BE35BC、2日待ち）。
+admin:
+  type: timelock
+  note_ja: 管理者は Uniswap の投票（2日待ち）。できるのは手数料の設定だけで、預けたお金やプールの仕組みは変えられない
+  source_url: https://github.com/Uniswap/docs/blob/main/content/ecosystem/governance/technical-reference.mdx
+  checked_at: "2026-10-02"
+# バグ報奨金: https://uniswap.org/bug-bounty → Cantina（v4 の中心は最大 $15.5M、v3 は最大 $2.25M）
+bug_bounty:
+  url: https://cantina.xyz/bounties/f9df94db-c7b1-434b-bb06-d1360abdd1be
+  max_usd: 15500000
+  source_url: https://uniswap.org/bug-bounty
+  checked_at: "2026-10-02"
+match:
+  robinhood:
+    - method: uniswap
+      source_url: https://developers.uniswap.org/deployments.json
+      checked_at: "2026-10-02"
+  base:
+    - method: uniswap
+      source_url: https://developers.uniswap.org/deployments.json
+      checked_at: "2026-10-02"
