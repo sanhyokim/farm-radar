@@ -499,7 +499,9 @@ def margin_need(perp: dict[str, Any], withstand_rise: float) -> float:
     （公式の説明 https://docs.lighter.xyz/trading/liquidations-and-llp-insurance-fund の Maintenance Margin Req）。
     そこまで耐えられる額を預ける（2026-10-02 オーナー決定「自動で計算」）。
     """
-    return max(perp.get("imf") or 0.0, withstand_rise + (1 + withstand_rise) * (perp.get("mmf") or 0.0))
+    from .execution.hedge_guard import margin_need as need      # 練習（paper）と同じ式（2026-10-03）
+
+    return need(perp.get("imf"), perp.get("mmf"), withstand_rise)
 
 
 def reserve_usd(s: OpportunitySettings, chain: str | None) -> float:

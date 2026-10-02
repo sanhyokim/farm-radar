@@ -93,6 +93,8 @@ def test_better_place_stays_when_the_gain_is_small(world, calm):  # noqa: F811
 def test_bonus_drop_exit_closes_when_leaving_is_best(world, monkeypatch):  # noqa: F811
     path, conn = world
     cfg = _config(path)
+    assert cfg.risk.bonus_drop_action == "exit"                # config.yaml（2026-10-03 オーナー決定①A）
+    assert cfg.risk.emergency_pool_funds_drop_1h_pct == 30 and cfg.risk.exit_reward_token_24h_pct == -15
     cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, bonus_drop_action="exit"))
     ex, ref = _open(conn, path)
     r = {"state": "drop", "epoch_start": NOW.isoformat(), "prev_rate": "100", "cur_rate": "0", "ratio": 0.0,

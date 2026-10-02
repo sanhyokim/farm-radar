@@ -23,7 +23,7 @@ from .logging_setup import setup_logging
 from .execution.jobs import run_paper
 from .notify.events import detect_signal_changes
 from .notify.service import Notifier
-from .scoring.run import ScoreContext, score_venue
+from .scoring.run import MarginBasis, ScoreContext, score_venue
 from .tokens import load_tokens
 
 log = logging.getLogger(__name__)
@@ -42,6 +42,13 @@ def in_fast_window(now: datetime, window: tuple[str, str], trading_days_only: bo
     if not inside or not trading_days_only:
         return inside
     return market_calendar.is_trading_day(now.astimezone(market_calendar.NY).date())
+
+
+def _reserve(config, chain: str | None) -> float:
+    """予備のドル（チェーンのガス代の分。2026-10-02 13:44 JST オーナー決定）。"""
+    from .opportunities import reserve_usd
+
+    return reserve_usd(config.opportunities, chain)
 
 
 def main() -> None:
@@ -134,6 +141,10 @@ def main() -> None:
             venue=v.venue, tokens=load_tokens(v.venue["chain"]["id"], config.root), settings=config.scoring,
             stale_after_minutes=config.stale_after_minutes, rpc=v.rpc, hedges=hedges,
             gt=gts.get(v.venue["chain"].get("geckoterminal_network") or ""),
+            # 保険に預けるお金は「探す」と同じ自動の計算（2026-10-03）。予備はそのチェーンのガス代の分
+            margin=MarginBasis(withstand_rise=config.opportunities.hedge_withstand_rise_pct / 100,
+                               reserve_usd=_reserve(config, v.venue["chain"]["id"]),
+                               mmf_fallback=config.guard.hedge_mmf_fallback, lighter_db=config.feeds.database_path),
         )
         for v in venues
     ]

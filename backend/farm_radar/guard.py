@@ -135,7 +135,8 @@ def stage_table(config: Config) -> list[dict[str, Any]]:
         {"stage": 3, "label": STAGE_JA[3], "auto": bonus_auto, "waits_for_gas": True,
          "rules": [f"木曜の切り替えでボーナスが前の週の{r.bonus_drop_ratio * 100:g}%以下になり、抜けるのがいちばん損が少ない"
                    + ("" if bonus_auto else "（今は記録と知らせだけ。config.yaml の risk.bonus_drop_action が record）"),
-                   "キャンペーンの終わりが近く移る費用を取り返せない（終わりの時刻がある Merkl の場所。練習は N6）"]},
+                   # 2026-10-03 オーナー決定②A: 「終わりが近い」= 終わりまでに稼げる見込みが、移る費用より小さくなったとき
+                   "キャンペーンの終わりまでに稼げる見込みが、移る費用より小さくなった（終わりの時刻がある Merkl の場所。練習は N6）"]},
         {"stage": 4, "label": STAGE_JA[4], "auto": True, "waits_for_gas": True,
          "rules": [f"（利回りの差 × 次の切り替えまでの日数）が、移る費用の{g.better_cost_multiple:g}倍より大きい"
                    "（比べる先は練習ができる会場のほかのプールで、🔴でなく狙い利回り以上。移った先の練習は自分で始める）"]},

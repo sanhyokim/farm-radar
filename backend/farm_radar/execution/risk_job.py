@@ -291,9 +291,12 @@ def better_place(conn: sqlite3.Connection, config: Config, ex: PaperExecutor, po
         if flip is None:
             continue
         days = max(0.0, (flip - now).total_seconds() / 86400)
-        inp = (json.loads(alt["details_json"] or "{}").get("inputs") or {})
+        alt_details = json.loads(alt["details_json"] or "{}")
+        inp = alt_details.get("inputs") or {}
         fee, slip, gas = float(inp.get("fee") or 0.0), float(inp.get("slippage") or 0.0), float(inp.get("gas_usd_per_tx") or 0.0)
-        open_cost = capital * s.allocation_lp * s.swap_ratio * (fee + slip) + 2 * gas
+        # 移った先でプールに置く割合（スコアの分け方。古い記録で無ければ前の決め打ち）
+        lp_share = float((alt_details.get("split") or {}).get("lp") or s.allocation_lp)
+        open_cost = capital * lp_share * s.swap_ratio * (fee + slip) + 2 * gas
         move_cost = close_cost + open_cost
         gain = diff_day * days
         mult = config.guard.better_cost_multiple

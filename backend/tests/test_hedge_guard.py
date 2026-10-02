@@ -31,10 +31,14 @@ def test_margin_is_counted_and_buffer_shrinks_as_price_rises(world):  # noqa: F8
     ex, ref = _open(conn, path)
     pos = _pos(conn, ref.position_id)
     cfg = _config(path)
-    assert json.loads(pos["state_json"])["hedge_margin"] == pytest.approx(400.0)   # $1,000 の 40%
+    # 売る量（WETH のドル）× 0.575（値段が50%上がっても強制決済されない額。維持の割合は仮の5%）
+    notional = sum(h["size"] * h["entry"] for h in json.loads(pos["hedges_json"]))
+    assert json.loads(pos["state_json"])["hedge_margin"] == pytest.approx(notional * 0.575, rel=1e-6)
     ms0 = hedge_guard.margin_status(conn, cfg, pos, mmf_table={})
     assert ms0["state"] == "ok" and ms0["buffer_frac"] == pytest.approx(1.0, abs=0.02)
     assert ms0["mmf_from_lighter"] is False                       # Lighter の値がなければ仮の値（5%）
+    # 預け金は「50% 上がっても強制決済されない」額なので、強制決済の線までの上がり幅は約 50%
+    assert ms0["to_liquidation_pct"] == pytest.approx(50.0, abs=1.0)
     assert ms0["maintenance_usd"] == pytest.approx(ms0["notional_usd"] * 0.05)
     assert hedge_guard.mmf_for(cfg, 1, {1: 0.03}) == (0.03, True)
     # 強制決済の線までの上がり幅ちょうどで、余裕がほぼ0になる
@@ -122,7 +126,8 @@ def test_guard_screen_counts_lighter_and_shows_lines_and_stages(world):  # noqa:
     g = guard.summary(conn, _config(path), NOW)
     up = next(v for v in g["venues"] if v["venue_id"] == "up-robinhood")
     lighter = next(v for v in g["venues"] if v["venue_id"] == "lighter")
-    assert up["placed_usd"] == pytest.approx(600.0) and lighter["placed_usd"] == pytest.approx(400.0)
+    margin = json.loads(_pos(conn, 1)["state_json"])["hedge_margin"]
+    assert up["placed_usd"] == pytest.approx(1000.0 - margin) and lighter["placed_usd"] == pytest.approx(margin)
     assert lighter["cap_usd"] == g["limits"]["venue_cap_usd"]
     assert g["placed_usd"] == pytest.approx(1000.0)
     assert [p["period"] for p in g["loss_lines"]["periods"]] == ["day", "week", "since_start"]

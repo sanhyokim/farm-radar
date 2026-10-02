@@ -39,6 +39,7 @@ from .hedges import status as hedge_status
 from .execution import review as paper_review
 from .execution import hedge_guard, risk_job
 from . import market_calendar
+from .riskscore import LEVELS
 from .notify.telegram import settings_from_env
 from .scoring import volatility as vol
 from .scoring.run import EXTERNAL_SOURCE, merge_series, own_series
@@ -253,7 +254,8 @@ def opportunities_api(amount: float = 1000.0, chain: str | None = None, kind: st
             "listed": sum(1 for o in sel if o.computable and not o.excluded), "above_target": above,
             "recommended": recommended, "uncertain_venue": sum(1 for o in ranked if not o.excluded and o.uncertain_venue),
             # 危なさの区分ごとの数と、会場を住所で見分けられた数（N4a。一覧に出すものだけ）
-            "danger": dict(Counter(d["safety"]["level"] for d in listed)),
+            # 0件の区分も 0 で出す（2026-10-03 オーナー: 空欄ではなく「0」）
+            "danger": {k: 0 for k in LEVELS} | dict(Counter(d["safety"]["level"] for d in listed)),
             "venue_verified": sum(1 for d in listed if not d["safety"].get("uncertain_match")),
             "excluded": sum(1 for o in sel if o.computable and o.excluded),
             "not_computable": sum(1 for o in sel if not o.computable)},
@@ -641,7 +643,9 @@ def pool(pool_id: str) -> dict:
         all_hist = views.pool_history(conn, pool_id, datetime.fromisoformat(first)) if first else []
     b = views.row_breakdown(d)
     capital = s.total_capital_usd
-    c_lp = capital * s.allocation_lp
+    # プール・保険・予備の分け方はスコアが決めたもの（2026-10-03。古い記録で無ければ前の決め打ち）
+    sp = _split_shares(d, s)
+    c_lp = capital * sp["lp"]
     for h in history:
         h["us_open"] = vol.us_market_open(int(datetime.fromisoformat(h["ts"]).timestamp()))
     venue = _venue_or_none(d["venue_id"], config)
@@ -654,8 +658,8 @@ def pool(pool_id: str) -> dict:
                                     or "この会場は観察だけです。練習と2週間の評価には入れていません。"),
                   "reward_estimate_note": (venue or {}).get("reward_estimate_note_ja")},
         "price": dict(snap) if snap else None,
-        "capital": {"total": capital, "lp": c_lp, "margin": capital * s.allocation_hedge_margin,
-                    "reserve": capital * s.allocation_reserve},
+        "capital": {"total": capital, "lp": c_lp, "margin": capital * sp["hedge_margin"],
+                    "reserve": capital * sp["reserve"], "split": (d["details"] or {}).get("split")},
         "daily": {
             "breakdown": b, "labels": views.CATEGORY_JA,
             "net_daily_pct": d["net_daily_pct"], "net_daily_pct_lp": d["net_daily_pct_lp"],
@@ -670,10 +674,17 @@ def pool(pool_id: str) -> dict:
         "today": views.today_breakdown(history, now),
         "since_start": views.daily_average_since_start(all_hist),
         "hourly": views.hourly_bars(history, now),
-        "assets": views.total_assets(capital, s.allocation_lp, s.allocation_hedge_margin, s.allocation_reserve,
-                                     history, now),
+        "assets": views.total_assets(capital, sp["lp"], sp["hedge_margin"], sp["reserve"], history, now),
         "history": history,
     }
+
+
+def _split_shares(d: dict, s) -> dict[str, float]:
+    sp = (d.get("details") or {}).get("split") or {}
+    if sp.get("lp") is not None:
+        return {"lp": float(sp["lp"]), "hedge_margin": float(sp.get("hedge_margin") or 0.0),
+                "reserve": float(sp.get("reserve") or 0.0)}
+    return {"lp": s.allocation_lp, "hedge_margin": s.allocation_hedge_margin, "reserve": s.allocation_reserve}
 
 
 def _venue_or_none(venue_id: str, config) -> dict | None:
@@ -686,7 +697,7 @@ def _venue_or_none(venue_id: str, config) -> dict | None:
 def _swap(d: dict, config) -> dict | None:
     """$550 を両替したときのずれと、始めた費用・置き直し1回の費用に含まれる額（2026-09-29 オーナー追加）。"""
     s = config.scoring
-    c_lp = s.total_capital_usd * s.allocation_lp
+    c_lp = s.total_capital_usd * _split_shares(d, s)["lp"]
     trade = s.slippage_trade_usd if s.slippage_trade_usd is not None else c_lp
     hedged = [ch for ch in (d["hedge_info"].get("tokens") or {}).values() if ch]
     taker = max((float((c or {}).get("taker_pct") or 0.0)

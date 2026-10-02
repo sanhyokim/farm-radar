@@ -1,6 +1,9 @@
 """保険（Lighter の perp の仮想の売り）の守り（N4b。SPEC 13.1 の練習に入れること1・追加の決定 4 と 11）。
 
-1. 保険に預けるお金（担保）: 練習の建玉では「総額 × allocation.hedge_margin」（今の版の 55% / 40% / 5% の 40%）。
+1. 保険に預けるお金（担保）: 2026-10-03 直し（オーナー「預けすぎになっていれば直して」）。前は総額の 40% 決め打ち
+   （今の版の 55% / 40% / 5%）で、ドルのコインが半分入るプールでは2倍以上預けていた。今は「探す」と同じ自動の計算:
+   売る量（中身の値動きするコインのドル）× margin_need（値段が hedge_withstand_rise_pct（仮 50%）上がっても強制決済されない
+   割合 = max(最初に要る割合, u ＋ (1 ＋ u) × 維持の割合)）。予備はチェーンのガス代の分だけ（$20 など）。残りをプールに置く。
    保険のない建玉は0。守るの画面では、このお金を「置いている場所（Lighter）」として数え、上限に入れる。
 2. 強制決済までの余裕（Lighter の決まり。venues/lighter.yaml の margin）:
    - 担保の今の価値 = 預けたお金 ＋ 保険の損益（資金調達料を引いたもの）
@@ -57,6 +60,58 @@ def mmf_for(config: Config, market_id: int | None, table: dict[int, float] | Non
     if market_id is not None and int(market_id) in table:
         return table[int(market_id)], True
     return config.guard.hedge_mmf_fallback, False
+
+
+def lighter_margin_table(path: Path) -> dict[int, tuple[float | None, float | None]]:
+    """Lighter の銘柄ごとの (最初に要る割合, 維持の割合)。feeds の lighter_markets（API の値 ÷ 10000）。"""
+    if not path.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            rows = conn.execute("SELECT market_id, initial_margin_fraction, maintenance_margin_fraction "
+                                "FROM lighter_markets").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+    return {int(m): (None if i is None else float(i) / 10000, None if v is None else float(v) / 10000)
+            for m, i, v in rows if m is not None}
+
+
+def margin_need(imf: float | None, mmf: float | None, withstand_rise: float) -> float:
+    """売り（保険）1ドルあたりに預けるお金: max(最初に要る割合, u ＋ (1 ＋ u) × 維持の割合)（「探す」と同じ。2026-10-02 オーナー決定）。
+
+    値段が u 上がると売りは u だけ損をし、残りの担保が「(1 ＋ u) × 維持の割合」を下回ると強制決済になる。
+    例: u = 50%、維持の割合 5% → 0.5 ＋ 1.5 × 0.05 = 0.575（売る $300 に $172.5）。
+    """
+    return max(imf or 0.0, withstand_rise + (1 + withstand_rise) * (mmf or 0.0))
+
+
+def need_for(config: Config, hedge_id: str | None, market_id: int | None,
+             table: dict[int, tuple[float | None, float | None]] | None = None) -> dict[str, Any]:
+    """この保険の売り1ドルあたりに預けるお金と、その元の数字。Lighter の値が読めなければ維持の割合は仮の値。"""
+    table = lighter_margin_table(config.feeds.database_path) if table is None else table
+    imf = mmf = None
+    if (hedge_id or "lighter") == "lighter" and market_id is not None and int(market_id) in table:
+        imf, mmf = table[int(market_id)]
+    from_lighter = mmf is not None
+    mmf = mmf if mmf is not None else config.guard.hedge_mmf_fallback
+    w = config.opportunities.hedge_withstand_rise_pct / 100
+    return {"need": margin_need(imf, mmf, w), "imf": imf, "mmf": mmf, "from_lighter": from_lighter,
+            "withstand_rise_pct": w * 100}
+
+
+def split(capital: float, reserve_usd: float, hedged_shares: list[tuple[float, float]]) -> dict[str, float]:
+    """総額を、プールに置く分・保険に預ける分・予備に分ける（ドル）。
+
+    hedged_shares = 保険を掛けるコインごとの (プールの中身のうちそのコインの割合, 売り1ドルあたりに預けるお金)。
+    プール P、保険 = P × Σ(割合 × 預ける割合)、予備 = reserve_usd。P ＋ 保険 ＋ 予備 = 総額 になるように P を決める。
+    """
+    reserve = min(max(reserve_usd, 0.0), capital)
+    per_pool = sum(sh * need for sh, need in hedged_shares)
+    pool = (capital - reserve) / (1 + per_pool)
+    return {"pool": pool, "hedge_margin": pool * per_pool, "reserve": reserve, "margin_per_pool": per_pool}
 
 
 def _prices(conn: sqlite3.Connection, pos: sqlite3.Row) -> dict[str, float]:

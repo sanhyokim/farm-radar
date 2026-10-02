@@ -1,9 +1,11 @@
 """ヘッジ先の担保の状態（SPEC 5.2.1章。2026-09-29 オーナー追加）。読み取った記録から画面用にまとめるだけ。
 
 - 担保なし: アドレスが未設定、見つからない、または残高が0
-- 担保不足: 残高が、ヘッジに使う予定の証拠金（総資産 × scoring.allocation.hedge_margin。初期設定 $400）より少ない
+- 担保不足: 残高が、ヘッジに使う予定の証拠金より少ない
 - ヘッジ可能: 残高がそれ以上
-練習モードでは、仮の担保額（総資産の40%）で扱う（本物の残高は参考に並べる）。
+ヘッジに使う予定の証拠金 = 開いている練習の建玉が保険に預けたお金の合計（2026-10-03 直し。前は総資産の40%決め打ち。
+今は建玉ごとに「売る量 × 値段が50%上がっても強制決済されない割合」で決める。execution/hedge_guard.py）。
+練習モードでは、この額を預けたものとして扱う（本物の残高は参考に並べる）。
 """
 
 from __future__ import annotations
@@ -27,9 +29,16 @@ def _judge(collateral: float | None, need: float) -> str:
     return "ok" if collateral >= need else "short"
 
 
+def planned_margin(conn: sqlite3.Connection, config: Config) -> float:
+    """ヘッジに使う予定の証拠金: 開いている建玉が保険に預けたお金の合計。"""
+    from ..execution.hedge_guard import margin_of
+
+    return sum(margin_of(p, config) for p in conn.execute(
+        "SELECT capital, state_json, hedges_json FROM positions WHERE status='open'"))
+
+
 def summary(conn: sqlite3.Connection, config: Config) -> dict[str, Any]:
-    s = config.scoring
-    need = s.total_capital_usd * s.allocation_hedge_margin
+    need = planned_margin(conn, config)
     out = []
     for hv in config.hedge_venues:
         cls = REGISTRY.get(hv.hedge_id)
@@ -48,7 +57,8 @@ def summary(conn: sqlite3.Connection, config: Config) -> dict[str, Any]:
                         "read_at": row["ts"]}
         if config.mode == "paper":
             eff = {"state": "ok", "state_ja": STATE_JA["ok"], "collateral_usd": need, "paper": True,
-                   "note": f"練習なので、仮の担保 ${need:,.0f}（総資産の{s.allocation_hedge_margin * 100:.0f}%）で扱っています。"}
+                   "note": (f"練習なので、開いている練習の保険に預けたお金の合計 ${need:,.0f} を預けたものとして扱っています。"
+                            if need > 0 else "練習なので、本物の担保は使いません。今は保険のある練習の建玉はありません。")}
         elif real is not None and real["state"] != "waiting":
             eff = {**real, "paper": False}
         else:
