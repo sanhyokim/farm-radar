@@ -161,6 +161,37 @@ def feeds_status_api() -> dict:
     return out
 
 
+@app.get("/api/registry")
+def registry_api() -> dict:
+    """登録の一覧（N1）: 系統 ＞ チェーン ＞ 会場。問題があれば problems に出す。"""
+    from .adapters.registry import READERS
+    from .registry import MECHANISMS, overview
+
+    config = load_config()
+    out = overview(config.chains, config.venues, config.root, set(READERS))
+    out["mechanisms"] = MECHANISMS
+    out["chain_reads"] = chain_reads_enabled()
+    return out
+
+
+@app.get("/api/standard")
+def standard_api(source: str | None = None, chain: str | None = None, all_chains: bool = False,
+                 limit: int = 200) -> dict:
+    """決まった形の数字（N1）: 自分で読んだ会場と Merkl の機会を、同じ形に並べたもの。計算はまだしない（N2b から）。"""
+    from . import standard
+
+    with _open() as (config, conn):
+        rows = standard.collect(conn, config, _now(), registered_only=not all_chains)
+    if source:
+        rows = [r for r in rows if r.source == source]
+    if chain:
+        rows = [r for r in rows if r.chain == chain]
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[f"{r.source}:{r.chain or '-'}"] = counts.get(f"{r.source}:{r.chain or '-'}", 0) + 1
+    return {"total": len(rows), "counts": counts, "items": [r.to_dict() for r in rows[:max(0, min(limit, 2000))]]}
+
+
 @app.get("/api/venues")
 def venues() -> dict:
     """会場ごとの確認状況と警告（C4 など）、4条件のランプ、報酬トークン価格と TVL の推移（SPEC 7.2章）。"""

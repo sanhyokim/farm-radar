@@ -412,6 +412,8 @@ class Config:
     discovery: DiscoverySettings = field(default_factory=DiscoverySettings)
     observe_venues: ObserveVenueSettings = field(default_factory=ObserveVenueSettings)
     feeds: FeedSettings = field(default_factory=FeedSettings)
+    # 詳しく計算するチェーン（chains/<id>.yaml。N1）。チェーンを足すときは、ファイルを置いてここに1行足すだけ
+    chains: tuple[str, ...] = ("robinhood",)
     root: Path = REPO_ROOT
 
 
@@ -465,6 +467,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         discovery=_discovery(raw),
         observe_venues=_observe_venues(raw),
         feeds=_feeds(raw, root),
+        chains=_chains(raw),
         root=root,
     )
 
@@ -479,12 +482,24 @@ def chain_reads_enabled(env: dict[str, str] | None = None) -> bool:
     return (env.get("FARM_RADAR_CHAIN_READS") or "on").strip().lower() not in ("off", "0", "false", "no")
 
 
+def _chains(raw: dict[str, Any]) -> tuple[str, ...]:
+    chains = raw.get("chains")
+    if chains is None:
+        return ("robinhood",)
+    if not isinstance(chains, list) or not all(isinstance(c, str) and c for c in chains):
+        raise ConfigError("chains はチェーンの id（chains/<id>.yaml の名前）の並びにしてください。")
+    return tuple(chains)
+
+
 def load_venue(venue_id: str, root: Path = REPO_ROOT) -> dict[str, Any]:
+    """venues/<id>.yaml を読む。`chain: <id>` は chains/<id>.yaml の中身に置きかえて返す（N1）。"""
+    from .registry import resolve_venue_chain
+
     path = root / "venues" / f"{venue_id}.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if data.get("id") != venue_id:
         raise ConfigError(f"{path} の id が {venue_id} と一致しません。")
-    return data
+    return resolve_venue_chain(data, root)
 
 
 def mechanic_value(venue: dict[str, Any], name: str, default: Any = None) -> Any:

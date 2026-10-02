@@ -10,6 +10,7 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./venues:/app/venues:ro
+      - ./chains:/app/chains:ro      # チェーンの登録（N1）
       - ./data:/app/data
     restart: unless-stopped
 
@@ -35,6 +36,7 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./venues:/app/venues:ro
+      - ./chains:/app/chains:ro      # チェーンの登録（N1）
       - ./docs:/app/docs:ro          # 「学ぶ」タブのよくある質問（docs/faq.md）と予定とメモ・見送り中の会場（docs/plans.yaml）
       - ./data:/app/data
     ports:

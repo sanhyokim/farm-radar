@@ -1,0 +1,26 @@
+# チェーンの登録: Robinhood Chain（N1。SPEC 13.4）
+# ルール: 推測で埋めない。出典（source_url）と確認日（checked_at）を書く。確かめられないものは unverified: true。
+# 会場のファイル（venues/*.yaml）は `chain: robinhood` でここを指す。チェーンを足すときは、同じ形のファイルを
+# このフォルダーに置いて、config.yaml の chains に1行足すだけ。
+
+id: robinhood
+name: Robinhood Chain
+family: evm                 # 系統: ETH系
+chain_id: 4663
+native_token: ETH
+public_rpc: https://rpc.mainnet.chain.robinhood.com
+# Alchemy のURL。{API_KEY} は .env の ALCHEMY_API_KEY で置き換えます。
+alchemy_rpc: https://robinhood-mainnet.g.alchemy.com/v2/{API_KEY}
+explorer: https://robinhoodchain.blockscout.com
+unverified: false
+source_url: https://docs.robinhood.com/chain/connecting
+checked_at: "2026-09-27"
+note: "公開RPCは回数制限あり。公式は本番用途に Alchemy などを推奨。"
+
+# コインの一覧（安定コイン・株のトークン・ヘッジ先）。venues/ の中のファイル名
+tokens_file: tokens-robinhood.yaml
+
+# 外の一覧での名前（Merkl・送金サービスはチェーン番号 chain_id で書かれている）
+geckoterminal_network: robinhood   # https://api.geckoterminal.com/api/v2/networks で確認（2026-09-29、2026-10-02 再確認）
+defillama_name: Robinhood Chain    # https://api.llama.fi/v2/chains の name（chainId 4663。2026-10-02 確認）
+lists_checked_at: "2026-10-02"     # Merkl・Across・Relay・LI.FI の一覧に chain_id 4663 があることを確認

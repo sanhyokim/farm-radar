@@ -7,6 +7,12 @@
 id: alandale-robinhood
 name: "Alandale"
 type: ve33            # ve(3,3)型（LUTE をロックした人がボーナスの配り先を投票で決める）
+# 仕組みの型（N1。backend/farm_radar/registry.py の MECHANISMS）。根拠は下の mechanics:
+#  range       = 週の量をレンジ内の流動性 × 時間で分ける（reward_split_offchain。計算は運営のサーバー）
+#  vote_weekly = 今週の投票で来週のプールごとの量が決まる（epoch）
+mechanisms: [range, vote_weekly]
+# 読み方の名前（N1。backend/farm_radar/adapters/registry.py の READERS）。Algebra の集中流動性と、週の量を配る GaugeRewarder を読む
+reader: algebra_weekly_rewarder
 website: https://alandale.xyz/
 audited: null         # 未確認（公式文書 reference/security.md に監査報告へのリンクは見つかっていない。2026-09-30）
 launch_date: "2026-08-04"  # AlgebraFactory の作成日（ブロック 27,916,187 = 2026-08-04 20:36 UTC）。最初のプールはブロック 30,318,351
@@ -32,19 +38,8 @@ listings:
   geckoterminal: [alandale-cl, alandale]     # https://api.geckoterminal.com/api/v2/networks/robinhood/dexes の id（CL / 従来型）
   checked_at: "2026-09-30"
 
-chain:
-  id: robinhood
-  chain_id: 4663
-  native_token: ETH
-  public_rpc: https://rpc.mainnet.chain.robinhood.com
-  # Alchemy のURL。{API_KEY} は .env の ALCHEMY_API_KEY で置き換えます。
-  alchemy_rpc: https://robinhood-mainnet.g.alchemy.com/v2/{API_KEY}
-  explorer: https://robinhoodchain.blockscout.com
-  geckoterminal_network: robinhood
-  unverified: false
-  source_url: https://docs.robinhood.com/chain/connecting
-  checked_at: "2026-09-27"
-  note: "up. と同じチェーン。公開RPCは回数制限あり（up. の収集を優先する。config.yaml の observe_venues）。"
+# チェーン（N1）: chains/robinhood.yaml を指す。接続先・出典・確認日はそちらに書く
+chain: robinhood
 
 # ---------------------------------------------------------------------------
 # 確認方法（2026-09-29〜30）

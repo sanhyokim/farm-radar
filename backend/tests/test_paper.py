@@ -109,6 +109,7 @@ def test_observe_only_venue_refuses_practice(world, tmp_path):
     text = src.read_text(encoding="utf-8") + "\npractice: false\n"
     (root / "venues" / "up-robinhood.yaml").write_text(text, encoding="utf-8")
     shutil.copy(load_config().root / "venues" / "tokens-robinhood.yaml", root / "venues")
+    shutil.copytree(load_config().root / "chains", root / "chains")   # N1: 会場はチェーンの登録を指す
     ex = PaperExecutor(conn, dataclasses.replace(_config(path), root=root), TOKENS, fx=FakeFx(), now=NOW)
     with pytest.raises(PaperError, match="観察だけ"):
         ex.open_position(WETH_POOL, 1000.0)
@@ -351,3 +352,32 @@ def test_rewards_count_only_from_opening_time(world):
     # 実績の日利 = (純損益 + 開く時の費用) ÷ 日数 ÷ 入れた額
     run = c["change_usd"] + c["open_cost_usd"]
     assert c["actual_daily_pct"] == pytest.approx(run / c["days"] / 1000 * 100)
+
+
+def test_reward_price_uses_the_positions_own_venue(world):
+    """2026-10-01 の早めの手じまいで見つけた問題（N1 で直した）: 同じ回に別の会場（Alandale）を後から読むと、
+    その会場の報酬トークンを UP とまちがえ、UP の値段が古いまま使われていた。"""
+    path, conn = world
+    ex, ref = _open(conn, path)
+    t = _extend(conn, 2, price_mult=1.2)
+    # 同じ時刻のすぐあとに、別の会場の記録（報酬トークンがちがう）を足す
+    other = "0x" + "55" * 20
+    conn.execute("INSERT INTO venues(id, name, chain) VALUES ('alandale-robinhood', 'Alandale', 'robinhood')")
+    conn.execute("""INSERT INTO pools(id, venue_id, address, token0, token1, discovered_at, token0_symbol, token1_symbol,
+                     token0_decimals, token1_decimals) VALUES ('alandale-robinhood:a1','alandale-robinhood','a1',?,?,?,
+                     'WETH','USDG',18,6)""", (POOLS[0][1], POOLS[0][2], t.isoformat()))
+    ts = (t + timedelta(minutes=1)).isoformat(timespec="seconds")
+    run_id = db.start_run(conn, "alandale-robinhood", t, t)
+    db.insert_snapshot(conn, {"pool_id": "alandale-robinhood:a1", "ts": ts, "block_number": 9000, "run_id": run_id,
+                              "price": 2500.0, "reward_token": other, "source": "test"})
+    conn.commit()
+    assert ex._reward_token("alandale-robinhood") == other
+    assert ex._reward_token("up-robinhood") == UP.lower()
+    pos = ex._open_pos(ref.position_id)
+    ex.update(pos)
+    last = conn.execute("SELECT detail_json FROM position_pnl WHERE position_id=? ORDER BY ts DESC LIMIT 1",
+                        (ref.position_id,)).fetchone()
+    snap = ex.market.latest(WETH_POOL)
+    fresh = ex.market.prices(snap["run_id"])[UP.lower()]
+    import json
+    assert json.loads(last[0])["reward_usd"] == pytest.approx(fresh)

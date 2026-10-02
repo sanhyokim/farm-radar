@@ -1,7 +1,7 @@
 # PROGRESS.md — 作業の現在地
 
 > 新しいセッションは、作業を始める前にこのファイルを読むこと（CLAUDE.md のルール）。作業のたびに更新する。
-> 最終更新: 2026-10-02 09時台 JST（PR #14・PR #15 をオーナーがマージ。N2a を PR #15 で出し、パソコンで並べて動かす手順を送った。自動離脱をオーナーのパソコンの記録でも確認し、閉じるときの UP の値段が15分古い問題を見つけた）
+> 最終更新: 2026-10-02 昼 JST（11:31 JST オーナー「N1を始めてください」。N1 土台の組み替えを作業場所で作り、PR を出した。オーナーの確認待ち）
 
 ## いまの位置
 - **M1・M2 完了・main に取り込み済み**（PR #1、PR #2。2026-09-29 オーナーがマージ）。
@@ -40,6 +40,7 @@
   パソコンで並べて動かす手順: /mnt/project-files/farm-radar/n2a-v2-pc-install.md（フォルダー farm-radar-v2・ポート 18001・チェーンを読まない。今の版 18000 には触らない）。
   **2026-10-02 09:38 JST: 手順1で、今の版のフォルダーと farm-radar-1001-old・0930-old が 9:15 JST にごみ箱へ移されていたと分かった（あなたのパソコンで確かめた値: ごみ箱の削除日時）。今の版の API は 500。** ごみ箱から戻して `docker compose restart` する4手順を送った（0930-old と 9/29 の古い同名フォルダーは戻さない）。9:15 から戻すまでは収集の欠損。戻ったら新しい版の手順を手順1から。
   **2026-10-02 09:42 JST: ごみ箱から戻して restart、今の版は正常（eval interrupted / open 0、stale False）。09:47 JST: 新しい版（18001）が動き、10の一覧すべて ok（あなたのパソコンで確かめた値: Merkl 830件、DefiLlama の利回り 17,034件）。今の版も stale False（最後 00:45 UTC）。N2a 完了。N1 を始めてよいかをオーナーに確認中。**
+- **N1（土台の組み替え）: 2026-10-02 11:31 JST オーナー「N1を始めてください」。作業場所で作って PR を出した（下の「N1 土台の組み替えの実装メモ」）。オーナーの確認待ち。** パソコンの更新は、オーナーが PR を見てから（新しい版 18001 だけ。今の版 18000 には触らない）。
 - ~~評価中の1回の更新（10/2〜10/3）~~ **→ 見送り（2026-10-01 21:49 JST オーナー）。PR #14 はパソコンに入れない。** 元の内容: 参考の練習（案B。合否に使わない。上限の外・$1,000・同時に3つまで）、週ごとの見込みでの合否、文字化け（charset=utf-8）、C2 のランプ、PR #14 の文。
   参考の3プール: aUSD/USDG `up-robinhood:0x29e3f3d9891cacf213361bcbcb7728970d53baa8`、USDG/AAPL `up-robinhood:0x19d55aba3e5d2c389b7011c634725136dfdcae33`、
   USDG/GLD `up-robinhood:0xc9dc17b3fa4d12022e980b1e8ed118d29c58f2a8`。作業場所の値（10/1 19:45 JST のスコア）では3つとも🔴で、ステークしない形（手数料だけ）が選ばれる
@@ -98,6 +99,28 @@
 - オーナーのパソコンの4つのファイル: /mnt/project-files/farm-radar/research/exit-check-2026-10-01/pc/。
 - 試験例として残した: docs/cases/early-exit-up-2026-10-01.md。元の計算: /mnt/project-files/farm-radar/research/exit-check-2026-10-01/。
 - 公開の読み取り口は過去のブロックの状態を返さない（2時間前でも「historical state is not available」）。過去の値段は、プールの記録（Swap・Mint・Burn）から組み立てた（最新のブロックで全90プール一致を確認）。
+
+## N1 土台の組み替えの実装メモ（2026-10-02 JST。SPEC 13.4 の N1）
+- **できたこと**（作業場所だけ。お金を動かすコードは無し）:
+  - **系統 ＞ チェーン ＞ 会場 ＞ プール** の登録。`backend/farm_radar/registry.py`。系統は evm（ETH系。読める）と solana（将来。読み方はまだ無い）。
+  - チェーンの登録 `chains/<id>.yaml`: `robinhood`（chain_id 4663。中身は会場のファイルにあったものを移した。出典 docs.robinhood.com/chain/connecting、確認日 2026-09-27）と
+    `base`（chain_id 8453、公開の読み取り口 https://mainnet.base.org 、エクスプローラー https://basescan.org 。出典 https://docs.base.org/base-chain/quickstart/connecting-to-base 、確認日 2026-10-02）。
+    Base の会場はまだ無い（会場の読み方は N3）。Alchemy の Base の読み取り口は確かめていないので null。
+  - `config.yaml` の `chains:`（詳しく計算するチェーン）。チェーンを足すのは「ファイルを置いて1行足す」だけ（テストで確かめた）。間違った書き方は起動時に止める。
+  - 会場のファイルは `chain: robinhood` でチェーンを指す（`load_venue` が中身に置きかえるので、ほかのコードは前と同じ）。Alandale の会場のファイルにあったチェーンの説明（表示だけ）は、チェーンの登録の説明にまとめた。
+  - 会場に **仕組みの型** `mechanisms` と **読み方の名前** `reader` を書く。up.: `[range, vote_weekly]` / `ve33_cl_gauge`、Alandale: `[range, vote_weekly]` / `algebra_weekly_rewarder`。
+    型は7つ: range（幅に配る）・full（全体に配る）・vote_weekly・vote_continuous（投票で決める）・later（あとから配る。Merkl）・points（ポイント。利回り0）・volume（取引量で配る）。
+  - 読み方の対応表 `adapters/registry.py` は会場 id ではなく `reader` の名前で選ぶ。系統が合わないと止める。同じ型の会場はファイルを足すだけで読める（新しい型のときだけコードを足す）。
+  - **決まった形の数字** `backend/farm_radar/standard.py`（`StandardOpportunity`）: 自分で読んだ会場の最新のスコアと、Merkl の最新の回を、同じ形（チェーン・会場・型・預かり額・1日のボーナス・表示の年利・終わり・残りの日数・注意）に並べる。
+    計算（本当に残る利回り・危なさ）はまだしない（N2b から）。Merkl はチェーン番号で登録のチェーンに結びつける（登録していないチェーンは `all_chains` のときだけ）。
+  - API: `/api/registry`（系統 ＞ チェーン ＞ 会場と問題の一覧）、`/api/standard`（決まった形の数字。source・chain・all_chains・limit）。画面はまだ変えていない（N2b の機会の一覧で使う）。
+  - docker-compose: collector と api に `./chains` を読み取りだけでつなぐ。
+  - **閉じるときの UP の値段が古い問題を直した**（`execution/paper.py` の `_reward_token`。建玉の会場のプールの記録だけから報酬トークンを決める。docs/cases/early-exit-up-2026-10-01.md）。新しい版だけ。今の版（18000）には入れない。
+- **確認方法（作業場所の試験用の値）**: テスト 266 件通過（新しく11件: チェーンの登録・チェーンを設定だけで足す・問題の一覧・読み方の選び方・決まった形の数字（自分の読み取り・Merkl）・API・報酬トークンの取り違え）。
+  組み替えの前と後で、up. の会場の中身・トークンの表・スコアの計算結果（試験用の記録で3プール）が同じことを確かめた（違いは mechanisms と reader が増えたことだけ）。
+  作業場所の Merkl の保存（10/2 の回）で `/api/standard` が 174 件（robinhood 44・base 130）、`all_chains` で 828 件。
+- **パソコンの更新で必要なこと**（新しい版 18001 だけ）: 新しい ZIP に `chains` フォルダーがあること、`docker compose up -d --build`。`.env` はそのまま。
+- **次にやること**: オーナーの確認のあと N2b（機会の一覧: 決まった形の数字から、狙い利回りとくらべて並べる）。
 
 ## N2a 一覧の保存の実装メモ（2026-10-02 JST。PR #15）
 - **できたこと**: `backend/farm_radar/feeds/`（sources・run・store・status・scheduler・schema.sql）。読み取りだけで、チェーンの読み取り口（RPC）は使わない。

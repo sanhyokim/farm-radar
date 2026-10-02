@@ -339,7 +339,7 @@ class PaperExecutor:
             "in_range_ratio": pred.get("in_range_ratio"), "c_total": s.total_capital_usd,
         }
         mode = pred.get("mode") or score["mode"] or "staked"
-        up_price = self._reward_price(prices)
+        up_price = self._reward_price(prices, pool["venue_id"])
         state = _new_state(snap, costs, up_price, gas)
         # 始めた費用の内訳（2026-09-29 オーナー追加: 両替のずれがいくら含まれるかを画面に出す）
         state["open_breakdown"] = {
@@ -378,13 +378,20 @@ class PaperExecutor:
                                                           "mode": mode, "started_red": bool(started_red)}})
         return PositionRef(pid)
 
-    def _reward_price(self, prices: dict[str, float]) -> float | None:
-        rt = self._reward_token()
+    def _reward_price(self, prices: dict[str, float], venue_id: str | None) -> float | None:
+        rt = self._reward_token(venue_id)
         return prices.get(rt) if rt else None
 
-    def _reward_token(self) -> str | None:
-        row = self.conn.execute("SELECT reward_token FROM pool_snapshots WHERE reward_token IS NOT NULL "
-                                "ORDER BY ts DESC LIMIT 1").fetchone()
+    def _reward_token(self, venue_id: str | None) -> str | None:
+        """建玉の会場の報酬トークン（その会場のプールの最新の記録から）。
+
+        2026-10-02 直し（N1）: 前は会場を区別せずに最新の記録を見ていたので、同じ回に up. のあとで Alandale を読むと
+        Alandale の報酬トークンになり、UP の値段が前の回のまま使われていた（docs/cases/early-exit-up-2026-10-01.md）。
+        """
+        row = self.conn.execute(
+            "SELECT s.reward_token FROM pool_snapshots s JOIN pools p ON p.id = s.pool_id "
+            "WHERE s.reward_token IS NOT NULL AND (? IS NULL OR p.venue_id = ?) ORDER BY s.ts DESC LIMIT 1",
+            (venue_id, venue_id)).fetchone()
         return row[0].lower() if row and row[0] else None
 
     # --- 毎回の計算（15分ごとの記録1つごと） --------------------------------------------------
@@ -403,7 +410,7 @@ class PaperExecutor:
         s = self.config.scoring
         gap_s = self.config.snapshot_minutes * 60 * 1.5
         sell_s = s.reward_sell_hours * 3600
-        rt = self._reward_token()
+        rt = self._reward_token(pos["venue_id"] or pool["venue_id"])
         n = 0
         for snap in snaps:
             prev = st["prev"]

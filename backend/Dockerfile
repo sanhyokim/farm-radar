@@ -14,4 +14,4 @@ COPY backend/pyproject.toml ./
 COPY backend/farm_radar ./farm_radar
 RUN pip install --no-cache-dir .
 COPY --from=ui /ui/dist /app/frontend/dist
-# 設定と会場定義は docker-compose でマウントする（/app/config.yaml, /app/venues）
+# 設定と会場定義・チェーンの登録は docker-compose でマウントする（/app/config.yaml, /app/venues, /app/chains）
