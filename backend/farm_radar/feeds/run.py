@@ -1,6 +1,6 @@
 """一覧を読んで保存する（N2a。作り直し（渡り鳥）SPEC 13.4）。
 
-- 読み取りだけ。チェーンの読み取り口（RPC）は使わない。お金を動かすコードはない。
+- 読み取りだけ。お金を動かすコードはない。チェーンの読み取り口（RPC）は、預かり証の中身（N2c）を1日1回読むときだけ使う。
 - 同じサイトへの呼び出しは1秒に1回まで（ratelimit.wait_turn）。
 - 429（回数制限）が返ったら、その回は「rate_limited」（画面では「不明」）と記録して、次の回に回す（13.1 の10）。
 """
@@ -11,11 +11,12 @@ import json
 import logging
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..config import FeedSettings
 from ..external.http import ExternalError, JsonGetter
-from . import store
+from . import receipts, store
 from .sources import SOURCES, Item, Source
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,28 @@ def _read_token_prices(conn: sqlite3.Connection, source: Source, fetcher: Fetche
     return merged, json.dumps(merged).encode("utf-8"), pages
 
 
+@dataclass
+class ReceiptContext:
+    """預かり証の中身を読むのに使うもの（チェーンの登録・値動きしないコイン・読み取り口の作り方）。"""
+    chains: dict[int, dict[str, Any]] = field(default_factory=dict)
+    stables: dict[int, dict[str, str]] = field(default_factory=dict)
+    rpc_factory: Callable[[dict[str, Any]], Any] | None = None
+    sleep: Callable[[float], None] | None = None
+
+
+def _read_receipts(conn: sqlite3.Connection, fetcher: Fetcher, coin_chains: dict[int, str],
+                   ctx: ReceiptContext | None, now: datetime | None) -> tuple[Any, bytes, int]:
+    if ctx is None or not ctx.chains:
+        return {}, b"{}", 0
+    kw: dict[str, Any] = {}
+    if ctx.rpc_factory:
+        kw["rpc_factory"] = ctx.rpc_factory
+    if ctx.sleep:
+        kw["sleep"] = ctx.sleep
+    data = receipts.read(conn, ctx.chains, coin_chains, ctx.stables, fetcher.text, now or datetime.now(UTC), **kw)
+    return data, json.dumps(data, ensure_ascii=False).encode("utf-8"), len(data)
+
+
 def _read(source: Source, fetcher: Fetcher) -> tuple[Any, bytes, int]:
     """(読んだ中身, 残す元の応答, ページ数)。ページに分かれている一覧は、少なくなるまで続けて読む。"""
     if not source.page_size:
@@ -94,13 +117,16 @@ def _read(source: Source, fetcher: Fetcher) -> tuple[Any, bytes, int]:
 
 
 def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, settings: FeedSettings,
-               now: datetime | None = None, coin_chains: dict[int, str] | None = None) -> dict[str, Any]:
+               now: datetime | None = None, coin_chains: dict[int, str] | None = None,
+               receipt_ctx: ReceiptContext | None = None) -> dict[str, Any]:
     """1つの一覧を読んで保存する。結果（status・件数）を返す。"""
     now = now or datetime.now(UTC)
     run_id = store.start_run(conn, source.id, now)
     try:
         if source.id == "token_prices":
             data, raw, pages = _read_token_prices(conn, source, fetcher, coin_chains or {})
+        elif source.id == "receipts":
+            data, raw, pages = _read_receipts(conn, fetcher, coin_chains or {}, receipt_ctx, now)
         else:
             data, raw, pages = _read(source, fetcher)
         items: list[Item] = source.parse(data)
@@ -135,6 +161,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = store.write_lighter_funding(conn, seen_at, items)
     elif source.id == "token_prices":
         extra = store.write_token_prices(conn, seen_at, data)
+    elif source.id == "receipts":
+        extra = store.write_receipts(conn, seen_at, data)
     store.finish_run(conn, run_id, datetime.now(UTC), "ok", items=len(items), new_items=new if prev else 0,
                      gone_items=gone, pages=pages, bytes=len(raw), raw_path=raw_path)
     log.info("feed saved", extra={"data": {"source": source.id, "items": len(items), "new": new if prev else 0,
@@ -159,8 +187,10 @@ class FeedRunner:
     """読む順番と時刻を決める（scheduler から呼ぶ）。"""
 
     def __init__(self, settings: FeedSettings, fetcher: Fetcher | None = None,
-                 connect: Callable[[], sqlite3.Connection] | None = None, coin_chains: dict[int, str] | None = None):
+                 connect: Callable[[], sqlite3.Connection] | None = None, coin_chains: dict[int, str] | None = None,
+                 receipt_ctx: ReceiptContext | None = None):
         self.settings = settings
+        self.receipt_ctx = receipt_ctx                # N2c: 預かり証の中身を読むチェーン（無ければ読まない）
         self.coin_chains = coin_chains or {}          # N2b: コインの値動きを読むチェーン（チェーン番号 → DefiLlama の名前）
         self.fetcher = fetcher or Fetcher(settings)
         self._connect = connect or (lambda: store.connect(settings.database_path))
@@ -174,7 +204,7 @@ class FeedRunner:
                     continue
                 if cadence == "daily" and not daily_due(conn, s, self.settings, now or datetime.now(UTC)):
                     continue
-                out.append(run_source(conn, s, self.fetcher, self.settings, now, self.coin_chains))
+                out.append(run_source(conn, s, self.fetcher, self.settings, now, self.coin_chains, self.receipt_ctx))
             return out
         finally:
             conn.close()

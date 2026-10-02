@@ -19,6 +19,9 @@ note: "公開RPCは回数制限あり。公式は本番用途に Alchemy など�
 
 # コインの一覧（安定コイン・株のトークン・ヘッジ先）。venues/ の中のファイル名
 tokens_file: tokens-robinhood.yaml
+# 契約の中身が公開・確認済みかを調べる Blockscout（公式の explorer と同じ。https://chains.blockscout.com/api/chains の
+# chainId 4663 でも確認。2026-10-02）
+blockscout: https://robinhoodchain.blockscout.com
 
 # 外の一覧での名前（Merkl・送金サービスはチェーン番号 chain_id で書かれている）
 geckoterminal_network: robinhood   # https://api.geckoterminal.com/api/v2/networks で確認（2026-09-29、2026-10-02 再確認）

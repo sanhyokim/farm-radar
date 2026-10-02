@@ -52,6 +52,11 @@ opportunities:
   reserve_usd: {robinhood: 20, base: 10}
   # 値段の記録がないボーナスのコインは、控えめの見込みで「月にこの%下がる」とみなします（2026-10-02 オーナー決定。仮）
   unknown_reward_drop_monthly_pct: 30
+  # 中身がステーブル（USDC など）とチェーンの記録で確かめた預かり証は、控えめの見込みで「月にこの%下がる」とみなします
+  # （2026-10-02 14:00 JST オーナー決定）。見分けられないものは上の 30% のまま
+  receipt_stable_drop_monthly_pct: 3
+  # 預かり証の値段が中身から、この%以上外れたら知らせます（仮）
+  receipt_price_alert_pct: 2
 
 # 有効にする会場（venues/<id>.yaml）。上から順に集めます。練習と評価に使う会場（up.）を先に書きます。
 # alandale-robinhood は「観察だけ」の会場です（練習と評価には入れません。2026-09-30 オーナー決定。M6）。

@@ -56,6 +56,15 @@ def _int(v: Any) -> int | None:
 
 # --- Merkl ------------------------------------------------------------------------------------
 
+def _trust(t: Any) -> dict[str, Any] | None:
+    if not isinstance(t, dict):
+        return None
+    hacks = t.get("hacks")
+    return {"audits": _int(t.get("audits")), "hacks": len(hacks) if isinstance(hacks, list) else None,
+            "listed_at": _int(t.get("listedAt")), "tvl": _num(t.get("tvl")), "category": t.get("category"),
+            "slug": t.get("slug")}
+
+
 def merkl_opportunities(data: Any) -> list[Item]:
     out = []
     for o in data if isinstance(data, list) else []:
@@ -76,6 +85,8 @@ def merkl_opportunities(data: Any) -> list[Item]:
                 # N2b: コインの住所（値動きの計算に使う）と、同じキャンペーンの続きを見分ける名前
                 "token_addrs": [t.get("address") for t in o.get("tokens") or [] if isinstance(t, dict)][:6],
                 "identifier": o.get("identifier"),
+                # N2c: 会場の安全度（仮）に使う、Merkl が載せている会場の情報（監査の数・事件・載った日・預かり額）
+                "trust": _trust(proto.get("trustData")),
             }))
     return out
 
@@ -237,6 +248,14 @@ def token_prices(data: Any) -> list[Item]:
             for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
 
 
+def receipts(data: Any) -> list[Item]:
+    """run が feeds/receipts.py で確かめた {"<チェーン番号>:<住所>": {...}} を一覧の形にする。"""
+    return [Item(k, v.get("symbol"), k.partition(":")[0], {"is_vault": v.get("is_vault"), "asset": v.get("asset"),
+                                                            "asset_symbol": v.get("asset_symbol"),
+                                                            "verified": v.get("verified")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
 # --- Aero の公式のお知らせ ------------------------------------------------------------------------
 
 _AERO_ENTRY = re.compile(r"^#{2,3} \[(?P<title>[^\]]+)\]\((?P<path>/articles/[^)\s]+)\)\s*$", re.M)
@@ -284,6 +303,9 @@ SOURCES: tuple[Source, ...] = (
     # 読むコインは run.wanted_coins が決める（住所はコインごとに違うので、決まった URL ではない）
     Source("token_prices", "コインの値段（7日分。値動きの計算）", "https://coins.llama.fi/chart", "daily",
            token_prices, params={"span": "169", "period": "1h"}),
+    # N2c: 値段の記録がないボーナスのコインが、中身のある預かり証か（チェーンの公開の読み取り口で読む。SPEC 13.1 の5）。
+    # コインの値段のあとに読む（記録がないものだけ確かめるため、この順番のまま）
+    Source("receipts", "預かり証の中身（チェーンの記録）", "eth_call", "daily", receipts),
 )
 
 BY_ID = {s.id: s for s in SOURCES}

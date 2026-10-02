@@ -187,6 +187,22 @@ def write_token_prices(conn: sqlite3.Connection, ts: str, coins: dict[str, Any],
     return n
 
 
+def write_receipts(conn: sqlite3.Connection, ts: str, rows: dict[str, Any]) -> int:
+    """預かり証の中身（feeds/receipts.py の結果）を書く。読み取り口の失敗（failed）は前の結果を残す。"""
+    n = 0
+    for key, r in rows.items():
+        if not isinstance(r, dict) or r.get("failed"):
+            continue
+        cid, _, addr = key.partition(":")
+        conn.execute("""INSERT OR REPLACE INTO receipt_checks(chain_id, address, checked_at, is_vault, name, symbol, asset,
+                        asset_symbol, assets_per_share, verified, verified_by, error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (int(cid), addr.lower(), ts, int(bool(r.get("is_vault"))), r.get("name"), r.get("symbol"),
+                      r.get("asset"), r.get("asset_symbol"), r.get("assets_per_share"), r.get("verified"),
+                      r.get("verified_by"), r.get("error")))
+        n += 1
+    return n
+
+
 def dir_bytes(path: Path) -> int:
     if not path.exists():
         return 0

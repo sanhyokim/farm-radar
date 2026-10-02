@@ -139,3 +139,21 @@ CREATE TABLE IF NOT EXISTS token_meta (
   confidence REAL,
   updated_at TEXT NOT NULL
 );
+
+-- 預かり証の中身（N2c。SPEC 13.1 の5）: 値段の記録がないボーナスのコインが、決まった形の金庫（ERC-4626）の預かり証か。
+-- チェーンの公開の読み取り口で asset()・convertToAssets() を読む（読み取りだけ）。1日1回
+CREATE TABLE IF NOT EXISTS receipt_checks (
+  chain_id INTEGER NOT NULL,
+  address TEXT NOT NULL,               -- 小文字
+  checked_at TEXT NOT NULL,
+  is_vault INTEGER NOT NULL,           -- 1 = asset() と convertToAssets() に答えた
+  name TEXT,
+  symbol TEXT,
+  asset TEXT,                          -- 中身のコインの住所（小文字）
+  asset_symbol TEXT,
+  assets_per_share REAL,               -- 預かり証1枚あたりの中身の量（中身のコインの単位）
+  verified INTEGER,                    -- 契約の中身が公開・確認済み（Blockscout か Sourcify）。分からなければ NULL
+  verified_by TEXT,                    -- "blockscout" / "sourcify"
+  error TEXT,
+  PRIMARY KEY (chain_id, address)
+);

@@ -35,7 +35,11 @@ def main() -> None:
     coins = coin_chains(config.chains, config.root)
     if not coins:                                      # chains フォルダーが見えないと、コインの値段を読めない
         log.warning("coin prices off: no chain with defillama_coins_key", extra={"data": {"chains": config.chains}})
-    runner = FeedRunner(fs, coin_chains=coins)
+    from ..registry import receipt_chains, stable_addresses
+    from .run import ReceiptContext
+    rchains = receipt_chains(config.chains, config.root)
+    ctx = ReceiptContext(chains=rchains, stables={cid: stable_addresses(c, config.root) for cid, c in rchains.items()})
+    runner = FeedRunner(fs, coin_chains=coins, receipt_ctx=ctx)
     lock = threading.Lock()                            # 同時に2つ読まない（回数制限とパソコンの負荷のため）
 
     def job(cadence: str) -> None:

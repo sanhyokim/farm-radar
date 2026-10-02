@@ -167,3 +167,33 @@ def coin_chains(chain_ids: tuple[str, ...], root: Path = REPO_ROOT) -> dict[int,
         if isinstance(c.get("chain_id"), int) and c.get("defillama_coins_key"):
             out[c["chain_id"]] = str(c["defillama_coins_key"])
     return out
+
+
+def stable_addresses(chain: dict[str, Any], root: Path = REPO_ROOT) -> dict[str, str]:
+    """チェーンの値動きしないコイン（小文字の住所 → 記号）。チェーンの登録の stablecoins と、コインの分類のファイルの両方。
+
+    どちらも公式の資料で確かめたものだけ（出典はそれぞれのファイル）。預かり証の中身の見分けに使う（SPEC 13.1 の5）。
+    """
+    out = {str(v["address"]).lower(): str(sym) for sym, v in (chain.get("stablecoins") or {}).items()
+           if isinstance(v, dict) and v.get("address")}
+    tf = chain.get("tokens_file")
+    if tf:
+        path = root / "venues" / str(tf)
+        if path.exists():
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            out.update({str(v["address"]).lower(): str(sym) for sym, v in (raw.get("stablecoins") or {}).items()
+                        if isinstance(v, dict) and v.get("address")})
+    return out
+
+
+def receipt_chains(chain_ids: tuple[str, ...], root: Path = REPO_ROOT) -> dict[int, dict[str, Any]]:
+    """預かり証の中身を読むチェーン（EVM のチェーン番号 → 登録の中身）。公開の読み取り口があるものだけ。"""
+    out = {}
+    for cid in chain_ids:
+        try:
+            c = load_chain(cid, root)
+        except ConfigError:
+            continue
+        if c.get("family") == "evm" and isinstance(c.get("chain_id"), int) and c.get("public_rpc"):
+            out[c["chain_id"]] = c
+    return out
