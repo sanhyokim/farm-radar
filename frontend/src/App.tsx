@@ -78,9 +78,13 @@ function SideNav() {
       <div className="inset mt-auto flex flex-col gap-2 p-4">
         {pulse == null ? <span className="cap">読み込み中…</span> : (
           <>
-            <span className="cap flex items-center gap-2" style={{ color: pulse.stale ? "var(--y)" : "var(--sec)" }}>
-              <Icon name={pulse.stale ? "alert" : "check"} size={16} />{pulse.stale ? "収集が止まっています" : "収集は正常"}
-            </span>
+            {pulse.chain_reads === false ? (
+              <span className="cap flex items-center gap-2"><Icon name="download" size={16} />一覧の保存だけ（チェーンは読まない版）</span>
+            ) : (
+              <span className="cap flex items-center gap-2" style={{ color: pulse.stale ? "var(--y)" : "var(--sec)" }}>
+                <Icon name={pulse.stale ? "alert" : "check"} size={16} />{pulse.stale ? "収集が止まっています" : "収集は正常"}
+              </span>
+            )}
             <span className="cap">{pulse.snapshot_minutes}分ごと · {hm(pulse.scored_at)} に計算</span>
             <span className="cap">{pulse.mode === "paper" ? "練習モード" : "観察モード"}</span>
           </>

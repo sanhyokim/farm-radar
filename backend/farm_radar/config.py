@@ -351,6 +351,48 @@ def _observe_venues(raw: dict[str, Any]) -> ObserveVenueSettings:
 
 
 @dataclass(frozen=True)
+class FeedSettings:
+    """一覧の保存（N2a。作り直し（渡り鳥）SPEC 13.4）。config.yaml の feeds から読む。
+
+    読み取りだけ（Merkl・DefiLlama・送金サービス・Aero の公開ページ）。チェーンの読み取り口（RPC）は使わない。
+    時刻は今の版の仕事（毎時 0・5・15・30・45 分）を避ける（SPEC 13.4 の並べて動かす決まり）。
+    """
+    database_path: Path = Path("data/feeds.sqlite3")
+    raw_dir: Path = Path("data/feeds")
+    merkl_minutes: tuple[int, ...] = (7, 22, 37, 52)   # Merkl の機会を保存する分（毎時。UTC）
+    hourly_minute: int = 47                              # 1時間に1回のもの（Aero のお知らせ）
+    daily_hour_jst: int = 4                              # 1日1回の一覧は、日本時間のこの時より後の最初の回に読む
+    daily_minute: int = 23                               # 1日1回の一覧を確かめる分（毎時。読めていなければ次の時にもう一度）
+    min_interval_seconds: float = 1.0                    # 同じサイトへの呼び出しの間隔（1秒に1回まで）
+    timeout_seconds: float = 90.0
+
+
+def _feeds(raw: dict[str, Any], root: Path) -> FeedSettings:
+    f = raw.get("feeds") or {}
+    d = FeedSettings()
+
+    def path(key: str, default: Path) -> Path:
+        p = Path(f.get(key) or default)
+        return p if p.is_absolute() else root / p
+
+    minutes = tuple(int(m) for m in f.get("merkl_minutes", d.merkl_minutes))
+    out = FeedSettings(
+        database_path=path("database", d.database_path), raw_dir=path("raw_dir", d.raw_dir),
+        merkl_minutes=minutes, hourly_minute=int(f.get("hourly_minute", d.hourly_minute)),
+        daily_hour_jst=int(f.get("daily_hour_jst", d.daily_hour_jst)),
+        daily_minute=int(f.get("daily_minute", d.daily_minute)),
+        min_interval_seconds=float(f.get("min_interval_seconds", d.min_interval_seconds)),
+        timeout_seconds=float(f.get("timeout_seconds", d.timeout_seconds)),
+    )
+    if not minutes or any(not 0 <= m < 60 for m in (*minutes, out.hourly_minute, out.daily_minute)) \
+            or not 0 <= out.daily_hour_jst < 24:
+        raise ConfigError("feeds の分（0〜59）と daily_hour_jst（0〜23）を確かめてください。")
+    if out.min_interval_seconds < 1.0:
+        raise ConfigError("feeds.min_interval_seconds は1以上にしてください（回数制限を守るため）。")
+    return out
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -369,6 +411,7 @@ class Config:
     hedge_venues: tuple[HedgeVenueSettings, ...] = (HedgeVenueSettings("lighter"),)
     discovery: DiscoverySettings = field(default_factory=DiscoverySettings)
     observe_venues: ObserveVenueSettings = field(default_factory=ObserveVenueSettings)
+    feeds: FeedSettings = field(default_factory=FeedSettings)
     root: Path = REPO_ROOT
 
 
@@ -421,8 +464,19 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         hedge_venues=_hedge_venues(raw),
         discovery=_discovery(raw),
         observe_venues=_observe_venues(raw),
+        feeds=_feeds(raw, root),
         root=root,
     )
+
+
+def chain_reads_enabled(env: dict[str, str] | None = None) -> bool:
+    """チェーンの読み取り（15分ごとの収集）を動かすか。.env に FARM_RADAR_CHAIN_READS=off と書くと止める。
+
+    新しい版を今のパソコンで並べて動かすとき（SPEC 13.4）に使う。並べた版は一覧の保存（N2a）だけを動かし、
+    今の版（ポート 18000）と同じチェーンの読み取り口を使わない。
+    """
+    env = os.environ if env is None else env
+    return (env.get("FARM_RADAR_CHAIN_READS") or "on").strip().lower() not in ("off", "0", "false", "no")
 
 
 def load_venue(venue_id: str, root: Path = REPO_ROOT) -> dict[str, Any]:

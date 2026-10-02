@@ -66,7 +66,29 @@ export interface Pulse { mode: string; stale: boolean; last_ok_at: string | null
   /** 練習中のプール */
   practicing: string[];
   /** 次の木曜の切り替え */
-  next_flip: string | null }
+  next_flip: string | null;
+  /** false = 並べて動かす新しい版で、チェーンを読んでいない（一覧の保存だけ。SPEC 13.4） */
+  chain_reads?: boolean }
+
+/** 一覧の保存（N2a。SPEC 13.4） */
+export interface FeedSource {
+  id: string; label: string; cadence: string; cadence_ja: string;
+  status: "ok" | "error" | "rate_limited" | "running" | "stuck" | "none"; status_ja: string; late: boolean;
+  last_run_at: string | null; last_ok_at: string | null; items: number | null; new_today: number;
+  gone_last: number | null; error: string | null;
+}
+export interface FeedNew {
+  source: string; label: string; key: string; name: string | null; chain: string | null; first_seen: string;
+  info: { protocol?: string; apr?: number | null; tvl?: number | null; daily_rewards?: number | null; status?: string;
+    type?: string; action?: string; start?: number | null; end?: number | null; date?: string | null; url?: string;
+    category?: string; chains?: string[] };
+}
+export interface FeedsStatus {
+  enabled: boolean; text: string; started_at?: string | null; problem?: boolean; chain_reads?: boolean;
+  sources: FeedSource[]; new: FeedNew[]; rate_limited_24h?: number; disk_bytes?: number;
+  aero: { start: { jst: string; utc: string; source: string };
+    articles: { slug: string; title: string; date: string | null; url: string; new: boolean; first_seen: string }[] };
+}
 
 export interface EmissionEnd { at: string; days_left: number; soon: boolean; ended: boolean; source?: string | null }
 
@@ -116,10 +138,14 @@ export interface Home {
     reward_tokens: { venue_id: string; symbol: string; price_usd: number | null; change_24h: number | null }[];
   };
   collection: { venue_id: string; name?: string; observe?: boolean; last_ok_at: string | null; stale: boolean;
+    /** この版ではチェーンを読まない（並べて動かす新しい版。SPEC 13.4） */
+    off?: boolean;
     gaps_7d: { start_slot: string; end_slot: string }[] }[];
   /** 期限が7日以内の予定（2026-09-30 オーナー追加） */
   plans_soon?: PlanItem[];
   todo: Todo[]; paper: HomePaper; evaluation: EvalLight | null; snapshot_minutes: number;
+  /** false = 並べて動かす新しい版で、チェーンを読んでいない */
+  chain_reads?: boolean;
 }
 
 export interface Point { ts: string; v: number | null }

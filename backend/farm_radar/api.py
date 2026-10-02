@@ -28,7 +28,8 @@ from . import views
 from .collectors.completeness import check
 from . import ratelimit
 from .collectors import priority
-from .config import REPO_ROOT, ConfigError, contract_address, load_config, load_venue, practice_allowed
+from .config import REPO_ROOT, ConfigError, chain_reads_enabled, contract_address, load_config, load_venue, practice_allowed
+from .feeds import status as feeds_status
 from .db import database as db
 from .execution import views as paper_views
 from .execution.paper import PaperError, PaperExecutor, evaluation_block_message, running_evaluation_end
@@ -141,10 +142,23 @@ def pulse() -> dict:
                     stale = True
         scored = conn.execute("SELECT MAX(ts) FROM scores").fetchone()[0]
         practicing = [r[0] for r in conn.execute("SELECT pool_id FROM positions WHERE is_paper=1 AND status='open'")]
-        return {"mode": config.mode, "stale": stale, "last_ok_at": last, "scored_at": scored, "practicing": practicing,
+        chain = chain_reads_enabled()
+        return {"mode": config.mode, "stale": stale and chain, "last_ok_at": last, "scored_at": scored,
+                "practicing": practicing,
+                # False = 並べて動かす新しい版で、チェーンを読んでいない（一覧の保存だけ。SPEC 13.4）
+                "chain_reads": chain,
                 # 次の木曜の切り替え（会場ファイルの周期から。練習の画面の知らせに使う）
                 "next_flip": min(flips) if flips else None,
                 "snapshot_minutes": config.snapshot_minutes, "now": now.isoformat(timespec="seconds")}
+
+
+@app.get("/api/feeds/status")
+def feeds_status_api() -> dict:
+    """一覧の保存（N2a。SPEC 13.4）: 一覧ごとの最後の保存、新しく出てきたもの、Aero のお知らせ、保存の量。"""
+    config = load_config()
+    out = feeds_status.status(config.feeds, _now())
+    out["chain_reads"] = chain_reads_enabled()
+    return out
 
 
 @app.get("/api/venues")
@@ -401,6 +415,8 @@ def home() -> dict:
         gas = next((d["details"].get("inputs", {}).get("gas_usd_per_tx") for d in rows if d["details"]), None)
         rewards = []
         health_rows = []
+        # 並べて動かす新しい版（チェーンを読まない）では、収集が止まっているとは言わない（SPEC 13.4）
+        chain = chain_reads_enabled()
         for venue_id in config.venues:
             v = load_venue(venue_id, config.root)
             prices = _reward_token_prices(conn, config, v, days=2)
@@ -416,7 +432,8 @@ def home() -> dict:
                                 # 観察だけの会場（Alandale）は、up. を優先して読み取りを休むことがある（M6）
                                 "observe": not practice_allowed(v),
                                 "last_ok_at": last_ok[0] if last_ok else None,
-                                "stale": age is None or age > config.stale_after_minutes, "gaps_7d": gaps})
+                                "stale": chain and (age is None or age > config.stale_after_minutes),
+                                "off": not chain, "gaps_7d": gaps})
         plans_soon = [p for p in plans_mod.plan_items(config.root, conn, now) if p["state"] == "soon"]
         # 今日やること・練習のまとめ・評価の進み具合（2026-09-30 オーナー依頼 17・18・32。表示だけ）
         open_rows = conn.execute("SELECT * FROM positions WHERE is_paper=1 AND status='open' ORDER BY opened_at"
@@ -446,7 +463,7 @@ def home() -> dict:
             # 期限が7日以内の予定（docs/plans.yaml。2026-09-30 オーナー追加）。ホームの上で目立たせる
             "plans_soon": plans_soon,
             "todo": todo, "paper": paper_sum, "evaluation": ev,
-            "snapshot_minutes": config.snapshot_minutes,
+            "snapshot_minutes": config.snapshot_minutes, "chain_reads": chain,
         }
 
 

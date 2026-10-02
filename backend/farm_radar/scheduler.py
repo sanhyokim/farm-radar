@@ -13,6 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from . import discovery as discovery_mod
 from . import market_calendar, ratelimit, runtime
 from .collectors import priority
+from .config import chain_reads_enabled
 from .collectors.snapshot import collect_venue, record_failed_run, slot_for
 from .db import database as db
 from .execution.review import make_review
@@ -45,6 +46,11 @@ def in_fast_window(now: datetime, window: tuple[str, str], trading_days_only: bo
 
 def main() -> None:
     setup_logging()
+    if not chain_reads_enabled():
+        # 並べて動かす新しい版（SPEC 13.4）: チェーンは読まない。止まって再起動をくり返さないよう、待つだけにする
+        log.warning("chain reads are off (FARM_RADAR_CHAIN_READS=off); collector is idle")
+        threading.Event().wait()
+        return
     config, venues = runtime.build()
     ratelimit.set_sink(config.database_path)   # 429 を受けたら記録する（SPEC 5.3章。M6）
     # 練習と評価に使う会場（up.）を先に、観察だけの会場（Alandale）を後に（SPEC 5.1章。2026-09-30 オーナー条件）
