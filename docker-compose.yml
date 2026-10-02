@@ -14,7 +14,7 @@ services:
       - ./data:/app/data
     restart: unless-stopped
 
-  feeds:                # 一覧の保存（Merkl・DefiLlama・送金サービス・Aero のお知らせ。読み取りだけ。チェーンは読まない。SPEC 13.4）
+  feeds:                # 一覧の保存（Merkl・DefiLlama・送金サービス・Aero のお知らせ。読み取りだけ。チェーンは読むだけ: 預かり証は1日1回、幅に配るプールは1時間に1回。SPEC 13.4）
     build: { context: ., dockerfile: backend/Dockerfile }
     command: python -m farm_radar.feeds.scheduler
     env_file:
