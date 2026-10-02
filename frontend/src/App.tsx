@@ -1,4 +1,4 @@
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import { useEffect } from "react";
 import { PulseProvider, TermProvider, usePulse } from "./ui";
 import { Icon, type IconName } from "./icons";
@@ -11,21 +11,27 @@ import Practice from "./pages/Practice";
 import PracticeDetail from "./pages/PracticeDetail";
 import { TimelinePage } from "./pages/PaperExtras";
 import Learn from "./pages/Learn";
-import Opportunities from "./pages/Opportunities";
+import Explore from "./pages/Explore";
+import ExploreDetail from "./pages/ExploreDetail";
+import Guard from "./pages/Guard";
 
-const TABS: { to: string; label: string; icon: IconName }[] = [
+// メニューは「やること」の順に5つ（N2c。2026-10-02 オーナー決定）。会場とプールはメニューから外し、
+// 詳しい画面と「守る」からたどる（画面そのものは残す）
+const TABS: { to: string; label: string; icon: IconName; also?: RegExp }[] = [
   { to: "/", label: "ホーム", icon: "home" },
-  { to: "/opportunities", label: "機会", icon: "flag" },
-  { to: "/venues", label: "会場", icon: "venue" },
-  { to: "/pools", label: "プール", icon: "pools" },
+  { to: "/explore", label: "探す", icon: "search", also: /^\/(explore|pools)/ },
   { to: "/practice", label: "練習", icon: "flask" },
+  { to: "/guard", label: "守る", icon: "shield", also: /^\/(guard|venues)/ },
   { to: "/learn", label: "学ぶ", icon: "learn" },
 ];
+
+/** プールの画面は「探す」、会場の画面は「守る」の中として光らせる */
+const active = (isActive: boolean, t: (typeof TABS)[number], pathname: string) => isActive || !!t.also?.test(pathname);
 
 export default function App() {
   const { pathname } = useLocation();
   // プールの詳しい画面（スマホ）は、下のタブの代わりにボタンを浮かべる
-  const detail = /^\/pools\/.+/.test(pathname);
+  const detail = /^\/(pools|explore)\/.+/.test(pathname);
   useEffect(() => { if (!window.location.hash) window.scrollTo(0, 0); }, [pathname]);
   return (
     <PulseProvider>
@@ -34,7 +40,10 @@ export default function App() {
         <main className={`mx-auto flex max-w-xl flex-col gap-4 px-4 pt-6 lg:ml-64 lg:max-w-none lg:px-8 lg:pt-8 lg:pb-8 ${detail ? "pb-32" : "pb-tab"}`}>
           <Routes>
             <Route path="/" element={<Home />} />
-            <Route path="/opportunities" element={<Opportunities />} />
+            <Route path="/explore" element={<Explore />} />
+            <Route path="/explore/:key" element={<ExploreDetail />} />
+            <Route path="/guard" element={<Guard />} />
+            <Route path="/opportunities" element={<Navigate to="/explore" replace />} />
             <Route path="/venues" element={<Venues />} />
             <Route path="/pools" element={<Pools />} />
             <Route path="/pools/:id" element={<PoolDetail />} />
@@ -51,13 +60,14 @@ export default function App() {
   );
 }
 
-/** スマホ: 下に浮かぶタブ（パソコンでは左のメニューに変わる。オーナー依頼 33）。N2b で「機会」を足して6つ */
+/** スマホ: 下に浮かぶタブ（パソコンでは左のメニューに変わる。オーナー依頼 33）。N2c で5つ */
 function TabBar() {
+  const { pathname } = useLocation();
   return (
-    <nav aria-label="メニュー" className="glass tabbar fixed inset-x-4 z-40 mx-auto grid h-16 max-w-lg grid-cols-6 rounded-[32px] p-2 lg:hidden">
+    <nav aria-label="メニュー" className="glass tabbar fixed inset-x-4 z-40 mx-auto grid h-16 max-w-lg grid-cols-5 rounded-[32px] p-2 lg:hidden">
       {TABS.map((t) => (
         <NavLink key={t.to} to={t.to} end={t.to === "/"}
-          className={({ isActive }) => `flex flex-col items-center justify-center rounded-3xl ${isActive ? "bg-white/10 text-ink" : "text-cap"}`}>
+          className={({ isActive }) => `flex flex-col items-center justify-center rounded-3xl ${active(isActive, t, pathname) ? "bg-white/10 text-ink" : "text-cap"}`}>
           <Icon name={t.icon} />
           <span className="text-[12px] leading-4">{t.label}</span>
         </NavLink>
@@ -69,12 +79,13 @@ function TabBar() {
 /** パソコン: 左のメニュー。下に収集の状態と計算の時刻 */
 function SideNav() {
   const pulse = usePulse();
+  const { pathname } = useLocation();
   return (
     <nav aria-label="メニュー" className="card fixed top-4 bottom-4 left-4 z-40 hidden w-56 flex-col gap-2 px-4 py-6 lg:flex">
       <div className="t20 px-4 pb-4">Farm Radar</div>
       {TABS.map((t) => (
         <NavLink key={t.to} to={t.to} end={t.to === "/"}
-          className={({ isActive }) => `flex min-h-12 items-center gap-4 rounded-full px-4 ${isActive ? "bg-white/10 font-semibold text-ink" : "text-cap hover:text-sec"}`}>
+          className={({ isActive }) => `flex min-h-12 items-center gap-4 rounded-full px-4 ${active(isActive, t, pathname) ? "bg-white/10 font-semibold text-ink" : "text-cap hover:text-sec"}`}>
           <Icon name={t.icon} /><span>{t.label}</span>
         </NavLink>
       ))}

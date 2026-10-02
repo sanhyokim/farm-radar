@@ -61,6 +61,7 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
             continue
         chains[cid] = {"chain": cid, "name": ch.get("name", cid), "placed_usd": 0.0, "venues": 0}
     for row in venues.values():
+        row["chain_name"] = (chains.get(row["chain"] or "") or {}).get("name") or row["chain"]
         ch = chains.get(row["chain"] or "")
         if ch is not None:
             ch["placed_usd"] += row["placed_usd"]

@@ -1,48 +1,44 @@
 import { Link } from "react-router-dom";
-import { useApi, type Home as HomeData } from "../api";
+import { useApi, type Guard, type Home as HomeData, type OpportunitiesResp } from "../api";
 import { HourStrip } from "../charts";
 import { jst, pct, signedUsd, usd } from "../format";
 import { Icon } from "../icons";
 import { Fold, Folds, Line, Loading, PageHead, Pill, Spark, Term, usePulse, useWide } from "../ui";
-import { CountsInline, EvalProgress, PoolLine, TodoCard, fromSignalCounts } from "./parts";
+import { EvalProgress, TodoCard } from "./parts";
 import { FeedsCard } from "./Feeds";
 
-// ホーム（SPEC 7.1章。2026-09-30 オーナー依頼 17〜21・32）
-// スマホ: 今日やること → 練習 → 評価と判定の数 → 参考のプール → 1時間ごとのグラフ
-// パソコン: 左に「今日やること」と練習、右に1時間ごとのグラフと評価の進み具合
+// ホーム（SPEC 7.1章・13.1 の追加の決定 2。N2c で形を変えた）
+// スマホ: 全体の損益と損失ライン → 持っている建玉 → 知らせ → 探す（狙い以上の数）→ 一覧の保存 → 1時間ごとのグラフ
+// パソコン: 左に損益・建玉・知らせ、右に探す・一覧の保存・グラフ
 export default function Home() {
   const wide = useWide();
   const { data, error } = useApi<HomeData>("/api/home");
+  const { data: guard } = useApi<Guard>("/api/guard");
   const pulse = usePulse();
   const mode = data?.mode ?? pulse?.mode;
   const modePill = mode ? <Pill icon="flask">{mode === "paper" ? "練習モード" : "観察モード"}</Pill> : null;
   if (!data) return <><PageHead title="ホーム" right={modePill} /><Loading error={error} /></>;
-  const counts = fromSignalCounts(data.counts);
-  const total = counts.good + counts.watch + counts.danger;
 
-  const pools = <PoolsTile data={data} />;
+  const money = <MoneyTile g={guard} />;
   const practice = <PracticeTile data={data} wide={wide} />;
+  const notices = <TodoCard items={data.todo} title="知らせ" />;
+  const explore = <ExploreTile />;
   const hourly = data.paper.positions.length > 0 && data.paper.hourly ? <HourlyTile data={data} height={wide ? 120 : 80} /> : null;
+  const evalTile = data.evaluation && data.evaluation.state === "running" ? (
+    <Link to="/practice" className="card flex flex-col gap-4 p-6">
+      <div className="label flex items-center gap-2"><Icon name="flag" size={16} /><span>評価（2週間）の進み具合</span></div>
+      <EvalProgress e={data.evaluation} ring={96} />
+    </Link>
+  ) : null;
   const extra = <MarketFolds data={data} />;
 
   if (wide) {
     return (
       <>
-        <PageHead title="ホーム" at={data.scored_at}
-          right={<div className="flex items-center gap-6"><CountsInline c={counts} /><span className="cap">（{total}プール）</span>{modePill}</div>} />
+        <PageHead title="ホーム" at={data.scored_at} right={modePill} />
         <div className="grid grid-cols-12 items-start gap-6">
-          <div className="col-span-7 flex flex-col gap-6"><TodoCard items={data.todo} />{practice}{pools}</div>
-          <div className="col-span-5 flex flex-col gap-6">
-            <FeedsCard />
-            {hourly}
-            {data.evaluation && (
-              <Link to="/practice" className="card flex flex-col gap-4 p-6">
-                <div className="label flex items-center gap-2"><Icon name="flag" size={16} /><span>評価（2週間）の進み具合</span></div>
-                <EvalProgress e={data.evaluation} ring={96} />
-              </Link>
-            )}
-            {extra}
-          </div>
+          <div className="col-span-7 flex flex-col gap-6">{money}{practice}{notices}</div>
+          <div className="col-span-5 flex flex-col gap-6">{explore}<FeedsCard />{hourly}{evalTile}{extra}</div>
         </div>
       </>
     );
@@ -50,51 +46,79 @@ export default function Home() {
   return (
     <>
       <PageHead title="ホーム" right={modePill} at={data.scored_at} />
-      <TodoCard items={data.todo} />
-      <FeedsCard />
+      {money}
       {practice}
-      <div className="grid grid-cols-2 gap-4">
-        {data.evaluation ? (
-          <Link to="/practice" className="card flex flex-col gap-4 px-4 py-6">
-            <span className="label">評価の進み具合</span>
-            <div className="flex items-center gap-4">
-              <MiniRing day={data.evaluation.day} days={data.evaluation.days} />
-              <div>
-                <div className="bold num">{data.evaluation.coverage_pct == null ? "—" : `${data.evaluation.coverage_pct.toFixed(1)}%`}</div>
-                <div className="cap">集まり具合</div>
-              </div>
-            </div>
-          </Link>
-        ) : (
-          <Link to="/practice" className="card flex flex-col gap-4 px-4 py-6">
-            <span className="label">評価</span><span className="cap">まだ始めていません</span>
-          </Link>
-        )}
-        <Link to="/pools" className="card flex flex-col gap-4 px-4 py-6">
-          <span className="label">判定（{total}プール）</span>
-          <CountsInline c={counts} />
-        </Link>
-      </div>
-      {pools}
+      {notices}
+      {explore}
+      <FeedsCard />
       {hourly}
+      {evalTile}
       {extra}
     </>
   );
 }
 
-function MiniRing({ day, days }: { day: number; days: number }) {
-  const size = 64, stroke = 8, r = (size - stroke) / 2, c = 2 * Math.PI * r, m = size / 2;
+/** 全体の損益と損失ライン（「守る」の数字の要約） */
+function MoneyTile({ g }: { g: Guard | null }) {
+  const l = g?.loss_line;
+  const pill = !l ? null : l.state === "hit" ? <Pill tone="r" icon="alert">損失ラインに達した</Pill>
+    : l.state === "near" ? <Pill tone="y" icon="alert">損失ラインに近い</Pill>
+    : l.state === "ok" ? <Pill tone="g" icon="check">損失ラインまで余裕あり</Pill> : null;
   return (
-    <div className="relative shrink-0" style={{ width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
-        <circle cx={m} cy={m} r={r} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth={stroke} />
-        <circle cx={m} cy={m} r={r} fill="none" stroke="var(--text)" strokeWidth={stroke} strokeLinecap="round"
-          strokeDasharray={`${(c * day / days).toFixed(1)} ${c.toFixed(1)}`} transform={`rotate(-90 ${m} ${m})`} />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center"><span className="bold">{day}</span><span className="cap">/{days}日</span></div>
-    </div>
+    <Link to="/guard" className="card flex flex-col gap-4 p-6">
+      <div className="flex items-center justify-between gap-4">
+        <span className="label flex items-center gap-2"><Icon name="shield" size={16} /><span>全体の損益</span></span>
+        <span className="flex text-sec"><Icon name="right" /></span>
+      </div>
+      {!g ? <span className="cap">読み込み中…</span> : (
+        <>
+          <div className="flex items-end justify-between gap-4">
+            <div className="flex flex-col">
+              <span className="cap">持っている建玉の損益</span>
+              <span className="hero num">{signedUsd(g.pnl.open_change_usd)}</span>
+            </div>
+            <div className="flex flex-col items-end">
+              <span className="cap">今日</span>
+              <span className="bold num">{signedUsd(g.pnl.today_usd)}</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {pill}
+            <span className="cap">
+              置いている {usd(g.placed_usd, 0)}
+              {l?.line_usd != null ? ` · 今日の損失ライン ${usd(l.line_usd)}（${l.pct}%）` : ` · 損失ラインは今日の損が置いている額の ${l?.pct ?? 5}%`}
+            </span>
+          </div>
+        </>
+      )}
+    </Link>
   );
 }
+
+/** 探す（狙い利回り以上の入れる先の数。$1,000・控えめ） */
+function ExploreTile() {
+  const { data } = useApi<OpportunitiesResp>("/api/opportunities?amount=1000&limit=3", 5 * 60_000);
+  return (
+    <section className="card flex flex-col gap-2 px-2 pt-6 pb-2">
+      <div className="flex items-center justify-between gap-2 px-4 pb-2">
+        <span className="label flex items-center gap-2"><Icon name="search" size={16} />探す</span>
+        {data && <span className="cap">狙い（年{+data.target_apr_pct.toFixed(2)}%）以上 {data.counts.above_target}件</span>}
+      </div>
+      {!data ? <p className="cap px-4 pb-4">読み込み中…</p> : data.items.length === 0 ? <p className="cap px-4 pb-4">一覧に出せる入れる先はまだありません。</p>
+        : data.items.map((o) => (
+          <Link key={o.key} to={`/explore/${encodeURIComponent(o.key)}`} className="flex items-center gap-4 rounded-2xl px-4 py-2 hover:bg-white/[0.02]">
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate">{o.name ?? o.key}</span>
+              <span className="cap truncate">{[o.chain_name, o.venue_name ?? o.venue].filter(Boolean).join(" · ")}</span>
+            </span>
+            <span className="bold num shrink-0">{o.best ? `${o.best.apr_pct.toFixed(1)}%` : "—"}</span>
+          </Link>
+        ))}
+      <Link to="/explore" className="more" style={{ borderTop: "1px solid var(--line-soft)" }}><span>入れる先をすべて見る</span><Icon name="right" /></Link>
+    </section>
+  );
+}
+
 
 /** 練習のまとめ（評価額・今日の損益・状態。オーナー依頼 18） */
 function PracticeTile({ data, wide }: { data: HomeData; wide: boolean }) {
@@ -138,21 +162,6 @@ function PracticeTile({ data, wide }: { data: HomeData; wide: boolean }) {
   );
 }
 
-/** 参考のプール（🟢 があればそれ、なければ純日利が高い順に3つ）。様子見の数字は白のまま（オーナー依頼 20） */
-function PoolsTile({ data }: { data: HomeData }) {
-  const rows = data.greens.length > 0 ? data.greens : data.near;
-  return (
-    <section className="card flex flex-col gap-2 px-2 pt-6 pb-2">
-      <div className="flex items-center justify-between gap-2 px-4 pb-2">
-        <span className="label">{data.greens.length > 0 ? "良いプール" : "参考: 純日利が高い順"}</span>
-        {data.greens.length === 0 && rows.length > 0 && <Pill tone={rows.every((r) => r.signal === "red") ? "r" : "y"}>{rows.every((r) => r.signal === "red") ? "どれも危険" : "良いはありません"}</Pill>}
-      </div>
-      {rows.length === 0 && <p className="cap px-4 pb-4">判定できたプールがまだありません。</p>}
-      {rows.map((p) => <PoolLine key={p.pool_id} p={p} compact />)}
-      <Link to="/pools" className="more" style={{ borderTop: "1px solid var(--line-soft)" }}><span>プールをすべて見る</span><Icon name="right" /></Link>
-    </section>
-  );
-}
 
 function HourlyTile({ data, height }: { data: HomeData; height: number }) {
   const bars = data.paper.hourly!.bars;

@@ -12,12 +12,12 @@ const TODO_ICON: Record<Todo["level"], { icon: IconName; color: string }> = {
   info: { icon: "info", color: "var(--sec)" },
 };
 
-export function TodoCard({ items }: { items: Todo[] }) {
+export function TodoCard({ items, title = "今日やること" }: { items: Todo[]; title?: string }) {
   const need = items.filter((t) => t.level !== "info").length;
   const danger = items.some((t) => t.level === "danger");
   return (
     <section className="card flex flex-col gap-4 p-6">
-      <div className="label flex items-center gap-2"><Icon name="checkc" size={16} /><span>今日やること</span></div>
+      <div className="label flex items-center gap-2"><Icon name="checkc" size={16} /><span>{title}</span></div>
       <p className="t20">{need === 0 ? "今日やることはありません" : danger ? `すぐに確かめることが${need}つあります` : `確かめることが${need}つあります`}</p>
       {items.length > 0 && (
         <div className="flex flex-col gap-2">

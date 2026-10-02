@@ -166,7 +166,7 @@ function CloseButton({ id, onDone }: { id: number; onDone: () => void }) {
   };
   return (
     <div className="flex flex-col items-end gap-2">
-      <button type="button" onClick={close} disabled={busy} className="ghost"><Icon name="xc" size={16} />{busy ? "閉じています…" : "この練習を閉じる"}</button>
+      <button type="button" onClick={close} disabled={busy} className="ghost"><Icon name="xc" size={16} />{busy ? "出ています…" : "出る（この練習を閉じる）"}</button>
       {err && <p className="sec">{err}</p>}
       <p className="cap">押すと確認が出ます。</p>
     </div>

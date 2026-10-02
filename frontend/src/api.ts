@@ -108,6 +108,32 @@ export interface Opportunity {
   flags: OppFlag[]; excluded: boolean; unprotected: string[]; cap_usd: number | null; new_pool: boolean;
   calc: Record<string, { normal: OppCase; cautious: OppCase }>;
   best: OppVariant | null; above_target: boolean | null; over_cap: boolean;
+  safety: Safety; venue_safety: Safety | null;
+}
+/** 安全度（仮の3段階。N2c。N4 で危なさの点数に置きかえる） */
+export interface Safety { level: "high" | "mid" | "low"; label: string; provisional: boolean; reasons: string[] }
+export interface OppCampaign {
+  campaign_id: string; distribution_type: string | null; distribution_method: string | null; reward_symbol: string | null;
+  reward_type: string | null; daily_rewards: number | null; apr: number | null; start_ts: number | null; end_ts: number | null;
+  restricted: number | null; distribution_chain_id: number | null;
+}
+export interface OppDetailResp {
+  computed_at: string; target_apr_pct: number; amount: number; amounts: number[]; item: Opportunity;
+  campaigns: OppCampaign[]; practice: { available: boolean; pool_id: string | null; note: string | null };
+}
+/** 守る（N2c）: 置いている額と上限・損失ライン */
+export interface GuardVenue {
+  venue_id: string; name: string; chain: string | null; chain_name: string | null; practice: boolean; safety: Safety | null;
+  placed_usd: number; positions: number; cap_usd: number | null; left_usd: number | null; used_frac: number | null;
+}
+export interface Guard {
+  limits: { position_usd: number | null; total_usd: number | null; per_venue_share: number | null; venue_cap_usd: number | null; trades_per_day: number | null };
+  placed_usd: number; total_left_usd: number | null; positions: number;
+  venues: GuardVenue[];
+  chains: { chain: string; name: string; placed_usd: number; venues: number; cap_usd: number | null; left_usd: number | null }[];
+  pnl: { open_change_usd: number; today_usd: number };
+  loss_line: { pct: number; line_usd: number | null; today_usd: number; state: "none" | "ok" | "near" | "hit"; near_frac: number; used_frac: number };
+  notes: string[];
 }
 export interface OpportunitiesResp {
   computed_at: string; target_apr_pct: number; amount: number; amounts: number[];
