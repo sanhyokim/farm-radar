@@ -164,7 +164,9 @@ class RiskSettings:
     # ボーナスが減ったときの比べ方（2026-09-30 オーナー決定③。SPEC 8.5章）
     bonus_drop_ratio: float = 0.5               # 切り替えのあとのボーナスが前の週のこの割合以下になったら比べる
     bonus_drop_wait_hours: float = 6.0          # ボーナスが0のままなら、切り替えからこの時間待ってから比べる（配られる前の0と区別）
-    bonus_drop_action: str = "record"           # record = 記録と通知だけ（評価の間はこれ。動かす部分はまだない）
+    # record = 記録と通知だけ（評価の間はこれ）。exit = いちばん損が少ないのが「抜ける」なら閉じる（N4b の段階3。
+    # 練習の止め方は4つの段階とも自動。2026-10-02 23:34 JST オーナー決定 9）。ステークをやめる切り替えはまだない
+    bonus_drop_action: str = "record"
 
 
 def _risk(raw: dict[str, Any]) -> RiskSettings:
@@ -190,12 +192,66 @@ def _risk(raw: dict[str, Any]) -> RiskSettings:
         hh, _, mm = hm.partition(":")
         if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
             raise ConfigError("risk.fast_window_ny は \"09:00-10:30\" のように書いてください。")
-    if out.bonus_drop_action != "record":
-        raise ConfigError("risk.bonus_drop_action は今は record（記録と通知だけ）しか使えません。")
+    if out.bonus_drop_action not in ("record", "exit"):
+        raise ConfigError("risk.bonus_drop_action は record（記録と通知だけ）か exit（抜けるのがいちばんよければ閉じる）にしてください。")
     if not 0 < out.bonus_drop_ratio < 1:
         raise ConfigError("risk.bonus_drop_ratio は 0 より大きく 1 より小さい数（0.5 など）にしてください。")
     if out.fast_minutes <= 0 or 60 % out.fast_minutes:
         raise ConfigError("risk.fast_minutes は60を割り切れる数（5 など）にしてください。")
+    return out
+
+
+LOSS_PERIODS = ("day", "week", "since_start")
+LOSS_LEVELS = ("caution", "no_new", "stop")
+
+
+@dataclass(frozen=True)
+class GuardSettings:
+    """守りの決まり（N4b。SPEC 13.1 の追加の決定 9〜11）。config.yaml の guard から読む。数字はすべて仮（N5 で決め直す）。
+
+    損の線は「%（マイナス）」で、期間（day = 今日・日本時間 / week = 7日 / since_start = 練習を始めてから）ごとに
+    注意（caution）・新しく入らない（no_new）・すべて止める（stop）の3段階。
+    """
+    loss_lines: dict[str, dict[str, float]] = field(default_factory=lambda: {
+        "day": {"caution": -3.0, "no_new": -4.0, "stop": -5.0},
+        "week": {"caution": -7.0, "no_new": -10.0, "stop": -12.0},
+        "since_start": {"caution": -10.0, "no_new": -15.0, "stop": -20.0}})
+    # 段階2: 残る利回りが狙い利回りを、この回数続けて下回ったら出る（15分ごとなら3回 = 45分）
+    below_target_times: int = 3
+    # 段階4: （利回りの差 × 残りの日数）が、移る費用のこの倍より大きければ、もっと良い場所へ移る
+    better_cost_multiple: float = 2.0
+    # 保険（幅から出たとき。追加の決定 11）: 境目から幅の この割合 外に出たまま wait 分続いたら直す。直したあと cooldown 分は直さない
+    hedge_edge_buffer_frac: float = 0.10
+    hedge_edge_wait_minutes: float = 30.0
+    hedge_cooldown_minutes: float = 60.0
+    # 保険の強制決済が近い知らせ: 余裕（担保 − 維持に要る額）が、はじめの余裕のこの割合を切ったら
+    hedge_alert_buffer_frac: float = 0.5
+    # Lighter の維持の割合が読めないときの仮の値（feeds の lighter_markets にあればそれを使う）
+    hedge_mmf_fallback: float = 0.05
+
+
+def _guard(raw: dict[str, Any]) -> GuardSettings:
+    g = dict(raw.get("guard") or {})
+    d = GuardSettings()
+    lines = {p: dict(d.loss_lines[p]) for p in LOSS_PERIODS}
+    for p, row in (g.get("loss_lines") or {}).items():
+        if p not in LOSS_PERIODS or not isinstance(row, dict):
+            raise ConfigError(f"guard.loss_lines の期間は {', '.join(LOSS_PERIODS)} のどれかにしてください。")
+        for k, v in row.items():
+            if k not in LOSS_LEVELS:
+                raise ConfigError(f"guard.loss_lines.{p} の段階は {', '.join(LOSS_LEVELS)} のどれかにしてください。")
+            lines[p][k] = float(v)
+    for p, row in lines.items():
+        vals = [row[k] for k in LOSS_LEVELS]
+        if any(v >= 0 for v in vals) or not vals[0] >= vals[1] >= vals[2]:
+            raise ConfigError(f"guard.loss_lines.{p} は、マイナスの%で 注意 ≥ 新しく入らない ≥ すべて止める の順にしてください。")
+    out = GuardSettings(loss_lines=lines, **{k: type(getattr(d, k))(g.get(k, getattr(d, k))) for k in (
+        "below_target_times", "better_cost_multiple", "hedge_edge_buffer_frac", "hedge_edge_wait_minutes",
+        "hedge_cooldown_minutes", "hedge_alert_buffer_frac", "hedge_mmf_fallback")})
+    if out.below_target_times < 1:
+        raise ConfigError("guard.below_target_times は1以上にしてください。")
+    if not 0 < out.hedge_alert_buffer_frac < 1:
+        raise ConfigError("guard.hedge_alert_buffer_frac は 0 より大きく 1 より小さい数にしてください。")
     return out
 
 
@@ -476,6 +532,7 @@ class Config:
     scoring: ScoringSettings = field(default_factory=ScoringSettings)
     notify: NotifySettings = field(default_factory=NotifySettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
+    guard: GuardSettings = field(default_factory=GuardSettings)
     review: ReviewSettings = field(default_factory=ReviewSettings)
     evaluation: EvaluationSettings = field(default_factory=EvaluationSettings)
     hedge_venues: tuple[HedgeVenueSettings, ...] = (HedgeVenueSettings("lighter"),)
@@ -532,6 +589,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         scoring=_scoring(raw),
         notify=_notify(raw),
         risk=_risk(raw),
+        guard=_guard(raw),
         review=_review(raw),
         evaluation=_evaluation(raw),
         hedge_venues=_hedge_venues(raw),

@@ -295,16 +295,23 @@ def test_active_liquidity_drop_keeps_the_position(world, calm):  # noqa: F811
 
 
 def test_venue_wide_emergency_still_closes_all_and_stops(world, calm, monkeypatch):  # noqa: F811
-    # 会場全体の危険（今日の損など）は、今までどおり全部閉じて新しく始めるのを止める
+    # 会場全体の危険（今日の損など）は、今までどおり全部閉じて新しく始めるのを止める。
+    # 今日の損は N4b から損の線（1日・すべて止める −5%）で見る。内訳も記録する
+    from farm_radar.execution import loss_lines
     path, conn = world
     _set_score(conn)
     ex, ref = _open(conn, path)
     _extend(conn, 2)
-    monkeypatch.setattr(risk_job, "today_net", lambda conn, now, reference=None: -60.0)
+    parts = {"income": 2.0, "pool": -50.0, "bonus": -8.0, "hedge": 1.0, "costs": -5.0, "net": -60.0}
+    monkeypatch.setattr(loss_lines, "breakdown", lambda conn, since: dict(parts))
     run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=3))
     assert _pos(conn, ref.position_id)["status"] == "closed"
-    assert risk_job.paper_state(conn)["stopped"] and "緊急離脱" in risk_job.paper_state(conn)["reason"]
-    assert _events(conn)[-1]["action"] == "closed_all"
+    assert risk_job.paper_state(conn)["stopped"] and "損の線" in risk_job.paper_state(conn)["reason"]
+    ev = _events(conn)[-1]
+    assert ev["action"] == "closed_all" and ev["kind"] == "loss_line_stop"
+    data = json.loads(ev["data_json"])
+    assert data["period"] == "day" and data["main_cause"] == "pool" and data["breakdown"]["bonus"] == -8.0
+    assert "プールの値動き −$50.00" in ev["message_ja"]
     with pytest.raises(PaperError, match="停止"):
         PaperExecutor(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=3)).open_position(
             WETH_POOL, 1000.0)

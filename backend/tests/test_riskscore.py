@@ -147,3 +147,22 @@ def test_recommended_amount(level, total, cap, usd, small):
         assert "練習だけ" in r["note"]
     if small:
         assert "警告" in r["note"]
+
+
+def test_every_service_that_reads_the_registry_mounts_venues():
+    """2026-10-03: feeds に ./venues が無く、会場の見分け（venue_checks）が「ok・0件」になっていた。"""
+    import yaml
+
+    from farm_radar.config import REPO_ROOT
+
+    compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    for name in ("collector", "feeds", "api"):
+        assert "./venues:/app/venues:ro" in compose["services"][name]["volumes"], name
+
+
+def test_venue_checks_fail_loudly_without_the_registry(tmp_path):
+    from farm_radar.feeds.run import ReceiptContext, _read_venues
+
+    ctx = ReceiptContext(chains={8453: {"id": "base"}}, stables={}, known={})
+    with pytest.raises(ValueError, match="venues/known"):
+        _read_venues(None, ctx, NOW)

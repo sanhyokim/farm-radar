@@ -199,6 +199,11 @@ CREATE TABLE IF NOT EXISTS paper_state (
   reason TEXT                         -- 止めた理由（M5b: オーナーの停止ボタン / 緊急離脱）
 );
 
+-- 守りの決まりの状態（N4b）。key ごとに JSON 1つ。例: loss_active = 今越えている損の線（同じ知らせを続けて出さないため）
+CREATE TABLE IF NOT EXISTS guard_state (
+  key TEXT PRIMARY KEY, value_json TEXT, updated_at TEXT
+);
+
 -- 練習の建玉の見張りの記録（M5b。SPEC 12.2章・付録A 3章）。画面の「見張りの記録」とタイムライン（M5c）に出す
 -- level: caution（注意）/ rebalance（置き直し）/ exit（離脱）/ emergency（緊急離脱）/ info（停止・再開・見送りなど）
 CREATE TABLE IF NOT EXISTS risk_events (

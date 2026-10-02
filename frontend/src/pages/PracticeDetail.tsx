@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { postApi, useApi, type PaperDetail } from "../api";
+import { postApi, useApi, type HedgeTest, type PaperDetail } from "../api";
 import { AssetsLine, HourlyBars } from "../charts";
 import { hoursJa, jst, pct, signedUsd, tone, usd } from "../format";
 import { Icon } from "../icons";
@@ -51,6 +51,7 @@ export default function PracticeDetail() {
               </>
             )}
           </Card>
+          {open && d.hedge_margin && <HedgeTestCard id={d.id} />}
           <DetailFolds d={d} />
           {open && <CloseButton id={d.id} onDone={reload} />}
         </div>
@@ -146,6 +147,46 @@ function DetailFolds({ d }: { d: PaperDetail }) {
 }
 
 const fmtAmt = (v: number) => (Math.abs(v) >= 1 ? v.toLocaleString("en-US", { maximumFractionDigits: 4 }) : v.toPrecision(4));
+
+/** 保険の試し（N4b）: 「値動きするコインが今から ○% 上がったら」強制決済までの余裕と、アプリがすることを計算する（建玉は変えない） */
+function HedgeTestCard({ id }: { id: number }) {
+  const [rise, setRise] = useState("30");
+  const [res, setRes] = useState<HedgeTest | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const run = async () => {
+    setErr(null);
+    try {
+      const r = await fetch(`/api/paper/positions/${id}/hedge-test?rise_pct=${encodeURIComponent(rise)}`);
+      if (!r.ok) throw new Error((await r.json().catch(() => null))?.detail ?? `エラー ${r.status}`);
+      setRes(await r.json());
+    } catch (e) {
+      setErr(String((e as Error).message));
+    }
+  };
+  const st = res?.status;
+  return (
+    <Card title="保険の試し（強制決済に近づいたら）" right={<Pill>試しの計算</Pill>}>
+      <div className="flex items-center gap-2">
+        <span className="cap">値段が</span>
+        <input type="number" inputMode="decimal" value={rise} onChange={(e) => setRise(e.target.value)} className="w-20 rounded-lg bg-white/10 px-2 py-1 num" />
+        <span className="cap">% 上がったら</span>
+        <button type="button" onClick={run} className="ghost">試す</button>
+      </div>
+      {err && <p className="sec">{err}</p>}
+      {st && res && (
+        <>
+          <Line k="アプリがすること" v={res.would_ja} />
+          <Line k="余裕（担保 − 維持に要る額）" v={usd(st.buffer_usd)} note={`はじめの ${st.buffer_frac == null ? "—" : (st.buffer_frac * 100).toFixed(0)}%`} />
+          <Line k="保険の損益（その値段で）" v={signedUsd(st.hedge_pnl_usd)} />
+          <Line k="お金を足すなら" v={usd(res.options.add.usd)} note="はじめの余裕に戻る額" />
+          <Line k="出るなら（閉じる費用の見込み）" v={usd(res.options.exit.close_cost_usd)} />
+          {res.message_ja && <Note>{res.message_ja}</Note>}
+          <Note>{res.note}{st.mmf_from_lighter ? "" : " 維持の割合は Lighter から読めていないので、仮の値（5%）です。"}</Note>
+        </>
+      )}
+    </Card>
+  );
+}
 
 function CloseButton({ id, onDone }: { id: number; onDone: () => void }) {
   const [busy, setBusy] = useState(false);

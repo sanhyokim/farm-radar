@@ -290,6 +290,13 @@ def venue_checks(data: Any) -> list[Item]:
             for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
 
 
+def vault_states(data: Any) -> list[Item]:
+    """run が feeds/vaults.py で読んだ {"<チェーン番号>:<金庫>": {...}} を一覧の形にする（N4b）。"""
+    return [Item(k, v.get("venue_id"), k.partition(":")[0], {"digest": v.get("digest"), "error": v.get("error")})
+            for k, v in (data or {}).items() if isinstance(v, dict) and not v.get("failed")] \
+        if isinstance(data, dict) else []
+
+
 def pool_states(data: Any) -> list[Item]:
     """run が feeds/pools.py で読んだ {"<チェーン番号>:<プール>": {...}} を一覧の形にする（N3）。"""
     return [Item(k, None, k.partition(":")[0], {"kind": v.get("kind"), "official": v.get("official"),
@@ -345,6 +352,10 @@ SOURCES: tuple[Source, ...] = (
     # 読むコインは run.wanted_coins が決める（住所はコインごとに違うので、決まった URL ではない）
     Source("token_prices", "コインの値段（7日分。値動きの計算）", "https://coins.llama.fi/chart", "daily",
            token_prices, params={"span": "169", "period": "1h"}),
+    # N4b: 同じコインの 4時間ごとの値段（30日分。181点）。値動きを「7日と30日の大きい方」で見るため（2026-10-03 オーナー:
+    # 7日だけだと静かな週に小さく出る）。同じ表に入れる（7日より前は4時間ごと、7日のうちは1時間ごとになる）
+    Source("token_prices_30d", "コインの値段（30日分・4時間ごと。値動きの計算）", "https://coins.llama.fi/chart", "daily",
+           token_prices, params={"span": "181", "period": "4h"}),
     # N2c: 値段の記録がないボーナスのコインが、中身のある預かり証か（チェーンの公開の読み取り口で読む。SPEC 13.1 の5）。
     # コインの値段のあとに読む（記録がないものだけ確かめるため、この順番のまま）
     Source("receipts", "預かり証の中身（チェーンの記録）", "eth_call", "daily", receipts),
@@ -354,6 +365,8 @@ SOURCES: tuple[Source, ...] = (
     # Merkl のあと（キャンペーンのプールを知るため）、1時間に1回。今の版（18000）の 0・15・30・45 分を避ける（Merkl の分と同じ）
     Source("pool_states", "幅に配るプールの値段と流動性（チェーンの記録）", "eth_call", "15min", pool_states,
            every_minutes=55),
+    # N4b: 金庫の運用先の見張り（チェーンの公開の読み取り口。会場の登録で watch を付けた金庫だけ。2026-10-03 オーナー）
+    Source("vault_states", "金庫の運用先（チェーンの記録）", "eth_call", "15min", vault_states, every_minutes=55),
 )
 
 BY_ID = {s.id: s for s in SOURCES}

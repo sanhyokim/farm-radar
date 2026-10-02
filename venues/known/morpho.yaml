@@ -27,6 +27,7 @@ match:
       factory: "0x4501125508079A99ebBebCE205DeC9593C2b5857"   # VaultV2Factory
       function: isVaultV2(address)
       merkl_types: [ERC20LOGPROCESSOR, MORPHOVAULT]
+      watch: morpho_vault_v2      # N4b: 運用先（adapter）の一覧などを1時間に1回読み、変わったら記録する（feeds/vaults.py）
       source_url: https://docs.morpho.org/developers/contracts/addresses/
       checked_at: "2026-10-02"
     - method: factory
@@ -46,5 +47,6 @@ match:
       factory: "0x0FBad98595b0186dA120E41f77C102beb49f803c"   # VaultV2Factory（Robinhood には V1 の工場はない）
       function: isVaultV2(address)
       merkl_types: [ERC20LOGPROCESSOR, MORPHOVAULT]
+      watch: morpho_vault_v2      # N4b: 運用先（adapter）の一覧などを1時間に1回読み、変わったら記録する（feeds/vaults.py）
       source_url: https://docs.morpho.org/developers/contracts/addresses/
       checked_at: "2026-10-02"

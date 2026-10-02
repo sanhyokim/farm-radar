@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from ..config import FeedSettings
 from ..external.http import ExternalError, JsonGetter
-from . import pools, receipts, store, venues
+from . import pools, receipts, store, vaults, venues
 from .sources import SOURCES, Item, Source
 
 log = logging.getLogger(__name__)
@@ -111,14 +111,27 @@ def _read_pools(conn: sqlite3.Connection, ctx: ReceiptContext | None, now: datet
 
 
 def _read_venues(conn: sqlite3.Connection, ctx: ReceiptContext | None, now: datetime | None) -> tuple[Any, bytes, int]:
-    if ctx is None or not ctx.chains or not ctx.known:
+    if ctx is None or not ctx.chains:
         return {}, b"{}", 0
+    if not ctx.known:
+        # 2026-10-03 オーナーのパソコン: 会場の登録のフォルダーがコンテナに無く「ok・0件」に見えた。読めていないことを失敗として出す
+        raise ValueError("会場の登録（venues/known）が読めていない。docker-compose.yml の feeds に ./venues があるか確かめる")
     kw: dict[str, Any] = {}
     if ctx.rpc_factory:
         kw["rpc_factory"] = ctx.rpc_factory
     if ctx.sleep:
         kw["sleep"] = ctx.sleep
     data = venues.read(conn, ctx.chains, ctx.known, now or datetime.now(UTC), **kw)
+    return data, json.dumps(data, ensure_ascii=False).encode("utf-8"), len(data)
+
+
+def _read_vaults(conn: sqlite3.Connection, ctx: ReceiptContext | None) -> tuple[Any, bytes, int]:
+    if ctx is None or not ctx.chains:
+        return {}, b"{}", 0
+    if not ctx.known:
+        raise ValueError("会場の登録（venues/known）が読めていない。docker-compose.yml の feeds に ./venues があるか確かめる")
+    kw: dict[str, Any] = {"rpc_factory": ctx.rpc_factory} if ctx.rpc_factory else {}
+    data = vaults.read(conn, ctx.chains, ctx.known, **kw)
     return data, json.dumps(data, ensure_ascii=False).encode("utf-8"), len(data)
 
 
@@ -149,7 +162,7 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
     now = now or datetime.now(UTC)
     run_id = store.start_run(conn, source.id, now)
     try:
-        if source.id == "token_prices":
+        if source.id in ("token_prices", "token_prices_30d"):
             data, raw, pages = _read_token_prices(conn, source, fetcher, coin_chains or {})
         elif source.id == "receipts":
             data, raw, pages = _read_receipts(conn, fetcher, coin_chains or {}, receipt_ctx, now)
@@ -157,6 +170,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
             data, raw, pages = _read_pools(conn, receipt_ctx, now)
         elif source.id == "venue_checks":
             data, raw, pages = _read_venues(conn, receipt_ctx, now)
+        elif source.id == "vault_states":
+            data, raw, pages = _read_vaults(conn, receipt_ctx)
         else:
             data, raw, pages = _read(source, fetcher)
         items: list[Item] = source.parse(data)
@@ -189,7 +204,7 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = store.write_lighter_markets(conn, seen_at, items)
     elif source.id == "lighter_funding":
         extra = store.write_lighter_funding(conn, seen_at, items)
-    elif source.id == "token_prices":
+    elif source.id in ("token_prices", "token_prices_30d"):
         extra = store.write_token_prices(conn, seen_at, data)
     elif source.id == "receipts":
         extra = store.write_receipts(conn, seen_at, data)
@@ -197,6 +212,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = store.write_pool_states(conn, seen_at, data)
     elif source.id == "venue_checks":
         extra = store.write_venue_checks(conn, seen_at, data)
+    elif source.id == "vault_states":
+        extra = store.write_vault_states(conn, seen_at, data)
     store.finish_run(conn, run_id, datetime.now(UTC), "ok", items=len(items), new_items=new if prev else 0,
                      gone_items=gone, pages=pages, bytes=len(raw), raw_path=raw_path)
     log.info("feed saved", extra={"data": {"source": source.id, "items": len(items), "new": new if prev else 0,

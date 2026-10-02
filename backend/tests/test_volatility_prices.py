@@ -94,3 +94,31 @@ def test_usd_prices_prefer_deeper_pool():
 def test_token_without_path_has_no_price():
     pools = [_pool("0xa", "0xb", 18, 18, 1.0, 10 ** 20)]
     assert usd_prices(pools, frozenset({USDG})) == {USDG: 1.0}
+
+
+# --- N4b: 市場が閉まっていたあとの飛び（2026-10-03 オーナーの質問1） ---------------------------------
+
+def test_jump_after_a_flat_stretch_is_found_and_split_from_smooth_moves():
+    h = 3600
+    grid = [(0, 100.0), (h, 101.0)] + [(h * k, 101.0) for k in range(2, 10)] + [(h * 10, 105.0), (h * 11, 105.5)]
+    jt = vol.jump_times(grid, 6 * h)
+    assert jt == {h * 10}                                  # 8時間止まっていたあと
+    smooth, gaps = vol.split_jumps(vol.hourly_returns(grid), jt)
+    assert gaps == [pytest.approx(math.log(105 / 101))]
+    assert len(smooth) == len(grid) - 2
+    assert vol.jump_times(grid, 12 * h) == set()          # 止まっていた時間が短ければ飛びではない
+
+
+def test_daily_sigma_for_four_hour_steps():
+    assert vol.daily_sigma([0.01] * 30, per_day=6) == pytest.approx(0.01 * math.sqrt(6))
+
+
+def test_jump_loss_follows_gamma_inside_the_range_and_grows_linearly_outside():
+    from farm_radar.scoring import model as m
+
+    c, r = 1000.0, 0.01
+    assert m.jump_loss(c, 0.005, r) == pytest.approx(c * 0.005 ** 2 / (4 * r))
+    at_edge = m.jump_loss(c, r, r)
+    assert at_edge == pytest.approx(c * r / 4)
+    assert m.jump_loss(c, -0.03, r) == pytest.approx(at_edge + c * 0.02 / 2)
+    assert m.jump_loss(c, 0.03, r) < c * 0.03 ** 2 / (4 * r)   # 大きな飛びを 2乗で数えすぎない

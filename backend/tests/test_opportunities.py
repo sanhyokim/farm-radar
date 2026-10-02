@@ -436,3 +436,30 @@ def test_uncertain_venue_is_listed_but_not_recommended(cfg):
     assert unsure in ranked
     flags = [o.recommended(1000.0, target) for o in ranked]
     assert flags == sorted(flags, reverse=True)
+
+
+def test_cautious_move_uses_the_larger_of_7_and_30_days_and_counts_jumps():
+    from farm_radar.opportunities import Move
+
+    mv = Move(sigma=0.012, smooth=0.012, jumps=(0.004,), days=7.0, sigma30=0.027, smooth30=0.02,
+              jumps30=(0.1, -0.016), days30=30.0)
+    assert mv.case(False) == (0.012, 0.012, (0.004,), 7.0)
+    total, smooth, jumps, days = mv.case(True)
+    assert (total, smooth, jumps, days) == (0.027, 0.02, (0.1, -0.016), 30.0)
+    assert Move(sigma=0.01, smooth=0.01, jumps=(), days=7.0).case(True)[1] == 0.01   # 30日が無ければ7日のまま
+
+
+def test_narrow_range_pays_for_jumps_over_the_range():
+    from farm_radar.config import load_config
+    from farm_radar.opportunities import Move, _variant
+
+    cfg = load_config()
+    kw = dict(hedge=False, amount=1000.0, split={"pool": 0.95, "hedge_margin": 0.0, "reserve": 0.05},
+              kind="pool_range", legs=[], campaigns=[], tvl=1e6, base_apr_pct=0.0, cautious=True,
+              s=cfg.opportunities, config=cfg, gas=0.1, fee=0.0005, stay_days=7.0, r=0.005)
+    calm = _variant(move=Move(sigma=0.012, smooth=0.012, jumps=(), days=7.0), **kw)
+    jumpy = _variant(move=Move(sigma=0.012, smooth=0.012, jumps=(), days=7.0, sigma30=0.027, smooth30=0.012,
+                               jumps30=(0.1, -0.016, 0.002), days30=30.0), **kw)
+    assert jumpy.jumps_per_day == pytest.approx(2 / 30)          # 幅（±0.5%）を飛び越えた2回
+    assert jumpy.gamma > calm.gamma and jumpy.rebalance > calm.rebalance
+    assert jumpy.in_range_ratio < calm.in_range_ratio

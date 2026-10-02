@@ -20,9 +20,14 @@ NY = ZoneInfo("America/New_York")
 
 def hourly_grid(points: list[tuple[int, float]], start: int, end: int) -> list[tuple[int, float]]:
     """(UNIX秒, 価格) の並び（古い順）を、毎時0分の値に並べ直す。値はその時刻までの最後の値。"""
+    return step_grid(points, start, end, HOUR)
+
+
+def step_grid(points: list[tuple[int, float]], start: int, end: int, step: int) -> list[tuple[int, float]]:
+    """hourly_grid と同じことを、step 秒ごとに（N4b: 30日分は4時間ごと）。"""
     pts = sorted((t, v) for t, v in points if v and v > 0 and math.isfinite(v))
     out: list[tuple[int, float]] = []
-    h = start - start % HOUR
+    h = start - start % step
     i, last = 0, None
     while h <= end:
         while i < len(pts) and pts[i][0] <= h:
@@ -30,7 +35,7 @@ def hourly_grid(points: list[tuple[int, float]], start: int, end: int) -> list[t
             i += 1
         if last is not None:
             out.append((h, last))
-        h += HOUR
+        h += step
     return out
 
 
@@ -45,10 +50,37 @@ def hourly_returns(grid: list[tuple[int, float]]) -> list[tuple[int, float]]:
     return [(t1, math.log(v1 / v0)) for (_, v0), (t1, v1) in zip(grid, grid[1:])]
 
 
-def daily_sigma(returns: list[float], min_count: int = 24) -> float | None:
+def daily_sigma(returns: list[float], min_count: int = 24, per_day: float = 24) -> float | None:
+    """per_day は1日あたりの区切りの数（1時間ごとなら24、4時間ごとなら6）。"""
     if len(returns) < min_count:
         return None
-    return math.sqrt(sum(r * r for r in returns) / len(returns)) * math.sqrt(24)
+    return math.sqrt(sum(r * r for r in returns) / len(returns)) * math.sqrt(per_day)
+
+
+def jump_times(grid: list[tuple[int, float]], min_flat: int) -> set[int]:
+    """値段が min_flat 秒以上まったく変わらなかったあと、最初に変わった区切りの時刻（N4b。2026-10-03 オーナー）。
+
+    株のコインは、市場が閉まっている間（週末など）は値段が止まり、開いたときに一度に動く（飛び）。
+    この飛びは「なめらかに動く」前提の回数・目減りの式では数えきれないので、別に数える。
+    """
+    out: set[int] = set()
+    flat_since: int | None = None
+    for (t0, v0), (t1, v1) in zip(grid, grid[1:]):
+        if v1 == v0:
+            if flat_since is None:
+                flat_since = t0
+            continue
+        if flat_since is not None and t0 - flat_since >= min_flat:
+            out.add(t1)
+        flat_since = None
+    return out
+
+
+def split_jumps(returns: list[tuple[int, float]], jumps: set[int]) -> tuple[list[float], list[float]]:
+    """(なめらかな動き, 飛び)。returns は (その区切りの終わりの時刻, 対数の変化率)。"""
+    smooth = [r for t, r in returns if t not in jumps]
+    gaps = [r for t, r in returns if t in jumps]
+    return smooth, gaps
 
 
 def us_market_open(ts: int) -> bool:

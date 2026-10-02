@@ -36,6 +36,7 @@ from typing import Any
 
 from . import safety, venue_match
 from .feeds import pools as feed_pools
+from .feeds import vaults as feed_vaults
 from .feeds import venues as feed_venues
 from .config import Config, ConfigError, OpportunitySettings, load_venue, mechanic_value
 from .registry import coin_chains, load_chain, receipt_chains, stable_addresses
@@ -85,6 +86,8 @@ class Variant:
     in_range_ratio: float | None = None
     range_pct: float | None = None
     liquidity_share: float | None = None   # 幅に配るプールで、チェーンの記録の流動性から出した取り分（N3）
+    sigma_pct: float | None = None         # 計算に使った1日の値動き（%。幅に配るプールは飛びを除いたもの。N4b）
+    jumps_per_day: float | None = None     # 幅を飛び越える飛び（市場が閉まっていたあとなど）の1日あたりの回数（N4b）
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -121,6 +124,7 @@ class Opportunity:
     campaigns: list[dict[str, Any]] = field(default_factory=list)
     venue_safety: dict[str, Any] | None = None   # 会場の危なさ（N4a。safety.py・riskscore.py）
     limits: dict[str, Any] | None = None         # 推奨金額に使う上限（config.yaml の limits。変えるのはオーナーだけ）
+    vault_watch: dict[str, Any] | None = None    # 金庫の運用先の見張り（N4b。feeds/vaults.py）
 
     @property
     def excluded(self) -> bool:
@@ -145,7 +149,7 @@ class Opportunity:
         out: dict[str, Any] = {
             **self.base.to_dict(), "kind": self.kind, "computable": self.computable, "reason": self.reason,
             "flags": [asdict(f) for f in self.flags], "excluded": self.excluded, "unprotected": self.unprotected,
-            "cap_usd": self.cap_usd, "new_pool": self.new_pool,
+            "cap_usd": self.cap_usd, "new_pool": self.new_pool, "vault_watch": self.vault_watch,
         }
         amounts = [amount] if amount is not None else [float(a) for a in self.calc]
         out["calc"] = {_akey(a): {case: {k: (v.to_dict() if v else None) for k, v in vs.items()}
@@ -175,6 +179,46 @@ class TokenStat:
     sigma: float | None              # 1日の値動き（ドル建て）
     trend_daily: float | None        # 7日の変化を1日あたりに直したもの
     grid: tuple[tuple[int, float], ...]
+    sigma30: float | None = None     # 30日の値動き（4時間ごとの値段から。N4b）
+    grid30: tuple[tuple[int, float], ...] = ()
+
+
+FLAT_7D = 6 * 3600                   # 1時間ごとの値段: 6時間止まっていたあとの変化を「飛び」とみなす（N4b。仮）
+FLAT_30D = 8 * 3600                  # 4時間ごとの値段: 8時間（2区切り）止まっていたあと
+STEP_30D = 4 * 3600
+
+
+@dataclass(frozen=True)
+class Move:
+    """2つのコインの比率（片方が値動きしないときはそのコイン）の値動き（N4b。2026-10-03 オーナーの質問1）。
+
+    なめらかな動き（smooth）と、値段が止まっていたあとの飛び（jumps。株のコインの週末など）を分けて持つ。
+    ふつうの見込みは7日分、控えめは「7日と30日の大きい方」のなめらかな動きと、飛びの多い方の期間を使う。
+    """
+    sigma: float                     # 7日・全部（飛びも含む。今までの値と同じ）
+    smooth: float                    # 7日・飛びを除いたもの
+    jumps: tuple[float, ...]         # 7日の飛び（対数の変化率）
+    days: float
+    sigma30: float | None = None
+    smooth30: float | None = None
+    jumps30: tuple[float, ...] = ()
+    days30: float | None = None
+
+    def case(self, cautious: bool) -> tuple[float, float, tuple[float, ...], float]:
+        """(全部の値動き, なめらかな値動き, 飛び, 飛びを数えた日数)。"""
+        if not cautious or self.smooth30 is None or not self.days30:
+            return self.sigma, self.smooth, self.jumps, self.days
+        sigma = max(self.sigma, self.sigma30 or 0.0)
+        smooth = max(self.smooth, self.smooth30)
+        rate7 = sum(j * j for j in self.jumps) / self.days if self.days else 0.0
+        rate30 = sum(j * j for j in self.jumps30) / self.days30
+        if rate30 >= rate7:
+            return sigma, smooth, self.jumps30, self.days30
+        return sigma, smooth, self.jumps, self.days
+
+    @staticmethod
+    def flat(sigma: float) -> "Move":
+        return Move(sigma=sigma, smooth=sigma, jumps=(), days=7.0)
 
 
 class FeedData:
@@ -196,6 +240,7 @@ class FeedData:
             self.known = {}
         self.known_by_protocol = venue_match.by_protocol(self.known)
         self.venue_checks: dict[tuple[int, str], dict[str, dict[str, Any]]] = {}
+        self.vaults: dict[tuple[int, str], dict[str, Any]] = {}      # N4b: 金庫の運用先の見張り
         self._llama: dict[str, dict[str, Any] | None] = {}
         self.hacks: list[dict[str, Any]] | None = None
         try:
@@ -207,6 +252,7 @@ class FeedData:
             return
         self.pools = feed_pools.latest(conn, self.s.pool_state_max_age_hours, now)
         self.venue_checks = feed_venues.latest(conn)
+        self.vaults = feed_vaults.latest(conn)
         hacks = [json.loads(r[0] or "{}") for r in conn.execute(
             "SELECT info_json FROM feed_items WHERE source='llama_hacks'")]
         self.hacks = hacks or None             # 一覧がまだ読めていなければ「分からない」
@@ -271,8 +317,10 @@ class FeedData:
         if coin not in self._tokens:
             end = int(self.now.timestamp())
             start = end - 8 * 86400
-            pts = [(r[0], r[1]) for r in self.conn.execute(
-                "SELECT ts, price FROM token_prices WHERE coin=? AND ts>=? AND ts<=? ORDER BY ts", (coin, start, end))]
+            allpts = [(r[0], r[1]) for r in self.conn.execute(
+                "SELECT ts, price FROM token_prices WHERE coin=? AND ts>=? AND ts<=? ORDER BY ts",
+                (coin, end - 31 * 86400, end))]
+            pts = [p for p in allpts if p[0] >= start]
             sym = self.conn.execute("SELECT symbol FROM token_meta WHERE coin=?", (coin,)).fetchone()
             if len(pts) < 25:
                 self._tokens[coin] = None
@@ -281,7 +329,12 @@ class FeedData:
                 sigma = vol.daily_sigma([r for _, r in vol.hourly_returns(grid)])
                 days = max(1e-9, (grid[-1][0] - grid[0][0]) / 86400)
                 trend = (grid[-1][1] / grid[0][1]) ** (1 / days) - 1 if grid[0][1] > 0 else None
-                self._tokens[coin] = TokenStat(coin, sym[0] if sym else None, grid[-1][1], sigma, trend, tuple(grid))
+                # N4b: 30日分（4時間ごと）。10日分より短ければ使わない
+                g30 = vol.step_grid(allpts, allpts[0][0], end, STEP_30D)
+                ok30 = len(g30) >= 60
+                s30 = vol.daily_sigma([r for _, r in vol.hourly_returns(g30)], per_day=6) if ok30 else None
+                self._tokens[coin] = TokenStat(coin, sym[0] if sym else None, grid[-1][1], sigma, trend, tuple(grid),
+                                               s30, tuple(g30) if ok30 else ())
         return self._tokens[coin]
 
     def token_by_symbol(self, chain_id: int | None, symbol: str | None) -> TokenStat | None:
@@ -298,6 +351,31 @@ class FeedData:
 
     def pair_sigma(self, a: TokenStat, b: TokenStat) -> float | None:
         return vol.daily_sigma([r for _, r in vol.hourly_returns(vol.ratio_grid(list(a.grid), list(b.grid)))])
+
+    def move(self, a: TokenStat | None, b: TokenStat | None) -> Move | None:
+        """値動き（飛びを分けたもの）。b が None なら a だけ（もう片方は値動きしないコイン）。"""
+        def one(ga, gb, flat, per_day):
+            g = vol.ratio_grid(list(ga), list(gb)) if gb is not None else list(ga)
+            rets = vol.hourly_returns(g)
+            if len(rets) < (24 if per_day == 24 else 30):
+                return None
+            jt = vol.jump_times(list(ga), flat) | (vol.jump_times(list(gb), flat) if gb is not None else set())
+            smooth, gaps = vol.split_jumps(rets, jt)
+            total = vol.daily_sigma([r for _, r in rets], per_day=per_day)
+            sm = vol.daily_sigma(smooth, min_count=1, per_day=per_day) if smooth else 0.0
+            days = max(1e-9, (g[-1][0] - g[0][0]) / 86400)
+            return total, sm, tuple(gaps), days
+        if a is None:
+            return None
+        r7 = one(a.grid, b.grid if b else None, FLAT_7D, 24)
+        if r7 is None:
+            return None
+        r30 = one(a.grid30, b.grid30 if b else None, FLAT_30D, 6) if a.grid30 and (b is None or b.grid30) else None
+        mv = Move(sigma=r7[0], smooth=r7[1], jumps=r7[2], days=r7[3])
+        if r30 is not None:
+            mv = Move(sigma=r7[0], smooth=r7[1], jumps=r7[2], days=r7[3], sigma30=r30[0], smooth30=r30[1],
+                      jumps30=r30[2], days30=r30[3])
+        return mv
 
     def perp(self, symbol: str | None, alias: bool = True) -> dict[str, Any] | None:
         """保険に使える銘柄（資金調達率と証拠金の割合が分かるものだけ）。"""
@@ -475,7 +553,7 @@ def cl_share(c_pos: float, r: float, cl: ClPool, crowd: float) -> tuple[float, f
     return mine, (mine / (cl.liquidity * crowd + mine) if mine > 0 else 0.0)
 
 
-def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, legs: list[Leg], sigma_pair: float | None,
+def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, legs: list[Leg], move: Move | None,
              campaigns: list[dict[str, Any]], tvl: float, base_apr_pct: float, cautious: bool,
              s: OpportunitySettings, config: Config, gas: float, fee: float, stay_days: float,
              cl: ClPool | None = None, r: float | None = None, crowd: float = 1.0) -> Variant:
@@ -484,6 +562,10 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
 
     ボーナスのコインの値下がり: ふつうは記録の傾きで1日分を引く（今の版の承認済みの式）。
     控えめは、記録がなければ仮の値下がり（月 −30%）を当て、いる日数のあいだに下がる分も数える（stay_factor）。
+
+    値動き（N4b。2026-10-03 オーナーの質問1）: 幅に配るプールは、なめらかな動きで置き直す回数と目減りを数え、
+    値段が止まっていたあとの飛び（株のコインの週末など）は1回ずつ数える（幅を飛び越えたら置き直し1回と、その損）。
+    控えめは、なめらかな動きを7日と30日の大きい方にする。
     """
     c_pos = amount * split["pool"]
     r = r if r is not None else s.merkl_range_pct / 100
@@ -518,17 +600,19 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
                 haircut += inc * -trend
         income += inc
     irr = None
-    gamma_day = reb = 0.0
+    gamma_day = reb = n_reb = 0.0
     swap_ratio = config.scoring.swap_ratio
-    if kind == "pool_range" and sigma_pair is not None:
-        irr = m.in_range_ratio(sigma_pair, r, config.scoring.rebalance_wait_minutes)
+    sig_total, sig_smooth, jumps, jdays = move.case(cautious) if move is not None else (None, None, (), 1.0)
+    forced = None
+    if kind == "pool_range" and move is not None:
+        forced = sum(1 for j in jumps if abs(j) > r) / jdays
+        n_reb = m.rebalances_per_day(sig_smooth, r) + forced
+        irr = max(0.0, 1.0 - n_reb * config.scoring.rebalance_wait_minutes / m.MINUTES_PER_DAY)
         income *= irr
-        gamma_day = m.gamma(c_pos, sigma_pair, r)
-        n = m.rebalances_per_day(sigma_pair, r)
-        reb = n * (gas * 2 + c_pos * swap_ratio * fee)
-    elif kind == "pool_full" and sigma_pair is not None:
-        gamma_day = c_pos * sigma_pair ** 2 / 8
-    n_reb = m.rebalances_per_day(sigma_pair, r) if kind == "pool_range" and sigma_pair else 0.0
+        gamma_day = m.gamma(c_pos, sig_smooth, r) + sum(m.jump_loss(c_pos, j, r) for j in jumps) / jdays
+        reb = n_reb * (gas * 2 + c_pos * swap_ratio * fee)
+    elif kind == "pool_full" and move is not None:
+        gamma_day = c_pos * sig_total ** 2 / 8
     if kind == "pool_range" and irr is not None:
         haircut *= irr                                     # 幅の外にいる間はボーナスも値下がりの分もない
     income += c_pos * base_apr_pct / 100 / 365            # 元の利回り（貸し出しの利息など。分かるときだけ）
@@ -546,6 +630,8 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
             hedged_notional += exposure
         else:
             sig = leg.stat.sigma if leg.stat and leg.stat.sigma is not None else 0.0
+            if cautious and leg.stat and leg.stat.sigma30 is not None:
+                sig = max(sig, leg.stat.sigma30)          # 控えめは 7日と30日の大きい方（N4b）
             direction += exposure * 0.4 * sig          # 承認済みの C_lp × 0.5 × 0.4 × σ と同じ（プールは exposure = C_lp × 0.5）
     net = income - gamma_day - reb - hedge_cost - haircut - direction
     # 入る・出る費用: 両替（プールは半分、1つのコインを持つ型は値動きするときだけ全部）× 2回、ガス代4回、保険の開け閉め
@@ -557,7 +643,9 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
                    points=points, gamma=gamma_day, rebalance=reb, hedge_cost=hedge_cost, haircut=haircut,
                    direction=direction, net=net, move_cost=move, stay_days=stay_days, net_after_move=after,
                    apr_pct=after / amount * 365 * 100, payback_days=(move / net) if net > 0 else None,
-                   in_range_ratio=irr, range_pct=r * 100 if kind == "pool_range" else None, liquidity_share=lshare)
+                   in_range_ratio=irr, range_pct=r * 100 if kind == "pool_range" else None, liquidity_share=lshare,
+                   sigma_pct=(sig_smooth if kind == "pool_range" else sig_total) * 100 if move is not None else None,
+                   jumps_per_day=forced)
 
 
 def _kind(info: dict[str, Any]) -> str:
@@ -602,6 +690,7 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     live = [c for c in campaigns if (c.get("start_ts") or 0) <= now_s and (c.get("end_ts") is None or c["end_ts"] > now_s)]
     tvl = base.tvl_usd or 0.0
     _flags(op, info, live, base, s, now_s)
+    _vault_flags(op, base, info, data)
     if identity["status"] != "verified":
         note = safety.match_note(info.get("trust"))
         op.flags.append(Flag("VENUE_MATCH", LEVEL_INFO, f"{safety.UNCERTAIN_MATCH}: {identity['reason']}"
@@ -642,16 +731,16 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     if not legs:
         op.computable, op.reason = False, "コインが分からない"
         return op
-    sigma_pair = 0.0
+    move: Move | None = Move.flat(0.0)
     if op.kind.startswith("pool") and len(legs) >= 2:
         a, b = legs[0], legs[1]
         if a.stable and b.stable:
-            sigma_pair = 0.0
+            move = Move.flat(0.0)
         elif a.stat and b.stat:
-            sigma_pair = data.pair_sigma(a.stat, b.stat)
+            move = data.move(a.stat, b.stat)
         else:
-            sigma_pair = (a.stat or b.stat).sigma if (a.stat or b.stat) else None
-        if sigma_pair is None:
+            move = data.move(a.stat or b.stat, None)
+        if move is None:
             op.computable, op.reason = False, "2つのコインの比率の値動きが分からない"
             return op
     # ボーナスのコインの値動き（同じチェーンで値段の記録があるときだけ）。キャンペーンごとに印を付けて _variant で使う
@@ -712,7 +801,7 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     for amount in s.amounts_usd:
         row: dict[str, dict[str, Variant | None]] = {}
         for case, mult in (("normal", 1.0), ("cautious", s.cautious_tvl_multiple)):
-            kw = dict(amount=amount, kind=op.kind, legs=legs, sigma_pair=sigma_pair, campaigns=live,
+            kw = dict(amount=amount, kind=op.kind, legs=legs, move=move, campaigns=live,
                       tvl=tvl * mult, base_apr_pct=base_apr, cautious=case == "cautious", s=s, config=config,
                       gas=gas, fee=fee, stay_days=stay)
             res = reserve_usd(s, base.chain) / amount
@@ -731,6 +820,33 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     if b is not None and days_left is not None and (b.payback_days is None or b.payback_days > days_left):
         op.flags.append(Flag("PAYBACK", LEVEL_EXCLUDE, "残りの日数で、入る・出る費用を取り返せない"))
     return op
+
+
+VAULT_RECENT_DAYS = 7          # この日数のうちに運用先が変わったら注意の印（仮）
+
+
+def _vault_flags(op: Opportunity, base: StandardOpportunity, info: dict[str, Any], data: FeedData) -> None:
+    """金庫の運用先の見張り（N4b。2026-10-03 オーナー）: 見張っている金庫なら印を付け、最近変わったら注意にする。"""
+    addr = str(info.get("explorer_address") or "").lower()
+    v = data.vaults.get((int(base.evm_chain_id), addr)) if base.evm_chain_id is not None and addr else None
+    if v is None:
+        return
+    st = v.get("state") or {}
+    op.vault_watch = {"checked_at": v.get("checked_at"), "adapters": st.get("adapters_count"),
+                      "changes_30d": v.get("changes") or 0, "last_change": v.get("last_change"), "error": v.get("error")}
+    last = v.get("last_change")
+    recent = False
+    if last:
+        try:
+            recent = (data.now - datetime.fromisoformat(last)).total_seconds() < VAULT_RECENT_DAYS * 86400
+        except ValueError:
+            recent = False
+    if recent:
+        op.flags.append(Flag("VAULT_CHANGED", LEVEL_WARN, f"金庫の運用先が変わった（{last[:16]}。チェーンの記録）。"
+                             "運営が仕組みを変えた合図（早く出る段階1）"))
+    else:
+        op.flags.append(Flag("VAULT_WATCH", LEVEL_INFO, f"金庫の運用先を1時間に1回見張っている（運用先 {st.get('adapters_count', '?')}つ・"
+                             f"最近30日の変化 {v.get('changes') or 0}回。チェーンの記録）"))
 
 
 RANGES = m.ModelParams().ranges          # 幅の候補（今の版で承認済み: ±0.5%〜±15%）

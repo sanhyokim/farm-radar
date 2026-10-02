@@ -24,6 +24,7 @@ services:
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./chains:/app/chains:ro      # チェーンの登録（N2b: コインの値段を読むチェーンを決める）
+      - ./venues:/app/venues:ro      # 会場の登録（N4a: venues/known で会場を契約の住所で見分ける。N4b で足した）
       - ./data:/app/data             # data/feeds.sqlite3 と data/feeds/（圧縮した元の応答）
     restart: unless-stopped
 

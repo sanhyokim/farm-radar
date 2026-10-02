@@ -37,7 +37,7 @@ from .execution.base import PositionRef
 from .execution import evaluation as paper_evaluation_mod
 from .hedges import status as hedge_status
 from .execution import review as paper_review
-from .execution import risk_job
+from .execution import hedge_guard, risk_job
 from . import market_calendar
 from .notify.telegram import settings_from_env
 from .scoring import volatility as vol
@@ -937,7 +937,40 @@ def paper_position(position_id: int) -> dict:
         d["sell_now"]["hours"] = config.scoring.reward_sell_hours
         d["outlook"] = paper_review.outlook(conn, config, now, [p]) if p["status"] == "open" else None
         d["timeline"] = paper_review.timeline(conn, limit=50, position_id=position_id)
+        # 保険の強制決済までの余裕（N4b）
+        d["hedge_margin"] = hedge_guard.margin_status(conn, config, p) if p["status"] == "open" else None
         return d
+
+
+@app.get("/api/paper/positions/{position_id}/hedge-test")
+def paper_hedge_test(position_id: int, rise_pct: float = 30.0) -> dict:
+    """練習の試し（N4b）: 「値動きするコインが今から rise_pct% 上がったら」保険はどうなるか。計算だけで、建玉は変えない。"""
+    if not -90 < rise_pct <= 1000:
+        raise HTTPException(400, "上がり幅は −90 より大きく 1000 以下の%で入れてください。")
+    with _open() as (config, conn):
+        p = conn.execute("SELECT * FROM positions WHERE id=? AND is_paper=1", (position_id,)).fetchone()
+        if p is None:
+            raise HTTPException(404, "この建玉は見つかりません")
+        if p["status"] != "open":
+            raise HTTPException(400, "この建玉はもう閉じています。")
+        ms = hedge_guard.margin_status(conn, config, p, rise_pct=rise_pct)
+        if ms is None:
+            raise HTTPException(400, "この建玉には保険（Lighter の売り）がありません。")
+        ex = PaperExecutor(conn, config, _paper_tokens(config, p["venue_id"]), now=_now())
+        try:
+            close_cost = ex.estimate_close_cost(PositionRef(position_id))
+        except PaperError:
+            close_cost = None
+        pair = paper_views.card(conn, p, _now(), config.risk)["pair"]
+        would = {"ok": "何もしません（余裕は十分です）",
+                 "alert": "知らせを出します（お金を足すか、出るかを選びます）",
+                 "liquidated": "強制決済の線に届くので、段階1（すぐ逃げる）で建玉を閉じます"}[ms["state"]]
+        return {"status": ms, "would_ja": would,
+                "message_ja": hedge_guard.message_ja(pair, ms) if ms["state"] != "ok" else None,
+                "options": {"add": {"usd": ms["add_to_restore_usd"],
+                                    "note": "練習では、足したお金も Lighter に置いているお金として上限に数えます（今は試しの計算だけ）"},
+                            "exit": {"close_cost_usd": close_cost}},
+                "note": "試しの計算です。建玉と記録は変えていません。"}
 
 
 @app.post("/api/paper/positions")

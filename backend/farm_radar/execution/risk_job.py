@@ -19,13 +19,14 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from ..config import Config, contract_address, load_venue
+from ..app_settings import target_apr_pct
+from ..config import Config, ConfigError, contract_address, load_venue, practice_allowed
 from ..db import database as db
-from ..risk.rules import LEVEL_JA, Finding, PortfolioInput, PositionInput, check_portfolio, check_position
+from ..risk.rules import LEVEL_JA, STAGE, Finding, PortfolioInput, PositionInput, check_portfolio, check_position
 from ..scoring.run import EXTERNAL_SOURCE, merge_series, own_series
 from ..tokens import TokenBook
 from ..views import JST, series_change
-from . import bonus_drop
+from . import bonus_drop, hedge_guard, loss_lines
 from .base import PositionRef
 from .paper import REFERENCE, PaperError, PaperExecutor, latest_score, official_sql
 
@@ -40,6 +41,8 @@ def record_event(conn: sqlite3.Connection, now: datetime, position_id: int | Non
                  pool_id: str | None = None) -> int:
     """見張りの記録を1つ書き、通知の箱（alerts）にも入れる。"""
     ts = now.astimezone(UTC).isoformat(timespec="seconds")
+    if kind in STAGE:
+        data = {**(data or {}), "stage": STAGE[kind]}          # 早く出る4段階のどれか（N4b）
     cur = conn.execute("INSERT INTO risk_events(ts, position_id, level, kind, message_ja, action, data_json) "
                        "VALUES (?,?,?,?,?,?,?)", (ts, position_id, level, kind, message_ja, action,
                                                   json.dumps(data or {}, default=str)))
@@ -58,6 +61,7 @@ def _action_ja(action: str) -> str:
             "closed_all": " → 全部の建玉を閉じ、新しく始めるのを止めました。",
             "closed_reference": " → 参考の練習だけ閉じました（評価の建玉はそのままです）。",
             "skipped_gas": " → ガス代が高いので見送りました（次の回にもう一度調べます）。",
+            "hedge_matched": " → 保険の量を中身に合わせました。",
             "none": "", "stopped": "", "resumed": ""}.get(action, "")
 
 
@@ -170,7 +174,8 @@ def token_moves(conn: sqlite3.Connection, pos: sqlite3.Row, tokens: TokenBook, s
 
 
 def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, tokens: TokenBook | None = None,
-                   own_tok: dict | None = None, own_pool: dict | None = None) -> PositionInput | None:
+                   own_tok: dict | None = None, own_pool: dict | None = None, target: float | None = None,
+                   below_needed: int = 3) -> PositionInput | None:
     snap = conn.execute("SELECT * FROM pool_snapshots WHERE pool_id=? AND price IS NOT NULL ORDER BY ts DESC LIMIT 1",
                         (pos["pool_id"],)).fetchone()
     if snap is None:
@@ -206,7 +211,103 @@ def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, to
         token_moves=token_moves(conn, pos, tokens, snap["ts"], own_tok or {}, own_pool or {}) if tokens else (),
         hedge_cost_day=(float(st.get("funding_paid", 0.0)) / hours * 24) if hours > 0 and pos["hedges_json"]
         and json.loads(pos["hedges_json"]) else None,
+        net_apr_pct=float(score["net_daily_pct"]) * 365 if score and score["net_daily_pct"] is not None else None,
+        target_apr_pct=target,
+        below_target_count=int(st.get("below_target_n") or 0),
+        below_target_needed=below_needed,
+        started_below_target=pred.get("net_apr_pct") is not None and pred.get("target_apr_pct") is not None
+        and float(pred["net_apr_pct"]) < float(pred["target_apr_pct"]),
     )
+
+
+# 段階2の「続けて下回った」は、15分ごとの見張り1回を1回と数える（市場が開くころの5分ごとの見張りで早く数えすぎないように）
+BELOW_COUNT_SPACING = timedelta(minutes=14)
+
+
+def count_below_target(conn: sqlite3.Connection, pos: sqlite3.Row, target: float | None) -> None:
+    """最新のスコアの残る利回りが狙い利回りより低ければ、続けて下回った回数を1つ増やす（上なら0に戻す）。state に書く。"""
+    score = latest_score(conn, pos["pool_id"])
+    if target is None or score is None or score["net_daily_pct"] is None:
+        return
+    st = json.loads(pos["state_json"] or "{}")
+    last = st.get("below_target_ts")
+    if last and datetime.fromisoformat(score["ts"]) - datetime.fromisoformat(last) < BELOW_COUNT_SPACING:
+        return
+    below = float(score["net_daily_pct"]) * 365 < target
+    st["below_target_n"] = int(st.get("below_target_n") or 0) + 1 if below else 0
+    st["below_target_ts"] = score["ts"]
+    conn.execute("UPDATE positions SET state_json=? WHERE id=?", (json.dumps(st), pos["id"]))
+    conn.commit()
+
+
+def better_place(conn: sqlite3.Connection, config: Config, ex: PaperExecutor, pos: sqlite3.Row, now: datetime,
+                 target: float | None) -> Finding | None:
+    """段階4（N4b）: もっと良い場所があるか。（利回りの差 × 残りの日数）が、移る費用の guard.better_cost_multiple 倍より大きければ出る。
+
+    比べる先は、練習ができる会場（自分で読む会場）のほかのプールで、判定が🔴でなく、狙い利回り以上のもの。
+    残りの日数は、比べる先の会場の次の切り替えまで（その先のボーナスは分からないので数えない）。
+    移る費用 = 今の建玉を閉じる費用の見込み ＋ 比べる先で始める費用（両替の手数料とずれ・ガス代2回）。
+    移った先で練習を始めるのは自分で（アプリ任せの練習は N6）。
+    """
+    from .bonus_drop import _next_flip
+
+    cur = latest_score(conn, pos["pool_id"])
+    if cur is None or cur["net_daily_pct"] is None:
+        return None
+    open_pools = {r[0] for r in conn.execute("SELECT pool_id FROM positions WHERE is_paper=1 AND status='open'")}
+    venues = []
+    for vid in config.venues:
+        try:
+            if practice_allowed(load_venue(vid, config.root)):
+                venues.append(vid)
+        except (OSError, ConfigError):
+            continue
+    if not venues:
+        return None
+    rows = conn.execute(
+        f"""SELECT s.* FROM scores s JOIN pools p ON p.id = s.pool_id
+            WHERE p.venue_id IN ({",".join("?" * len(venues))}) AND s.ts = (SELECT MAX(ts) FROM scores WHERE pool_id = s.pool_id)
+              AND s.net_daily_pct IS NOT NULL AND COALESCE(s.signal, '') <> 'red'
+            ORDER BY s.net_daily_pct DESC LIMIT 5""", venues).fetchall()
+    capital = float(pos["capital"])
+    s = config.scoring
+    try:
+        close_cost = ex.estimate_close_cost(PositionRef(pos["id"]))
+    except PaperError:
+        return None
+    for alt in rows:
+        if alt["pool_id"] in open_pools or alt["pool_id"] == pos["pool_id"]:
+            continue
+        alt_apr = float(alt["net_daily_pct"]) * 365
+        if target is not None and alt_apr < target:
+            continue
+        diff_day = (float(alt["net_daily_pct"]) - float(cur["net_daily_pct"])) / 100 * capital
+        if diff_day <= 0:
+            continue
+        snap = conn.execute("SELECT * FROM pool_snapshots WHERE pool_id=? AND price IS NOT NULL ORDER BY ts DESC LIMIT 1",
+                            (alt["pool_id"],)).fetchone()
+        p = conn.execute("SELECT venue_id, token0_symbol, token1_symbol FROM pools WHERE id=?", (alt["pool_id"],)).fetchone()
+        flip = _next_flip(config, p["venue_id"], now, snap) if snap is not None and p is not None else None
+        if flip is None:
+            continue
+        days = max(0.0, (flip - now).total_seconds() / 86400)
+        inp = (json.loads(alt["details_json"] or "{}").get("inputs") or {})
+        fee, slip, gas = float(inp.get("fee") or 0.0), float(inp.get("slippage") or 0.0), float(inp.get("gas_usd_per_tx") or 0.0)
+        open_cost = capital * s.allocation_lp * s.swap_ratio * (fee + slip) + 2 * gas
+        move_cost = close_cost + open_cost
+        gain = diff_day * days
+        mult = config.guard.better_cost_multiple
+        if gain > mult * move_cost and gain > 0:
+            pair = f"{p['token0_symbol']}/{p['token1_symbol']}"
+            cur_apr = float(cur["net_daily_pct"]) * 365
+            return Finding("exit", "better_place",
+                           f"{pair} の残る利回り（年{alt_apr:.1f}%）が、今の場所（年{cur_apr:.1f}%）より1日 ${diff_day:,.2f} 多く、"
+                           f"次の切り替えまでの{days:.1f}日で ${gain:,.2f} です。移る費用 ${move_cost:,.2f} の{mult:g}倍より大きいので出ます"
+                           "（移った先の練習は「探す」から自分で始めます。アプリが自動で移るのは N6）。",
+                           {"to_pool": alt["pool_id"], "to_pair": pair, "to_apr_pct": alt_apr, "cur_apr_pct": cur_apr,
+                            "diff_usd_day": diff_day, "days": days, "gain_usd": gain, "move_cost_usd": move_cost,
+                            "close_cost_usd": close_cost, "open_cost_usd": open_cost, "multiple": mult})
+    return None
 
 
 def usdg_prices(conn: sqlite3.Connection, tokens: TokenBook, now: datetime, n: int) -> tuple[float, ...]:
@@ -262,15 +363,23 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
     # 今日の損は、合否用の建玉と参考の練習で分けて数える（2026-10-01 案B）
     refs = [p for p in positions if (p["purpose"] or "") == REFERENCE]
     mains = [p for p in positions if (p["purpose"] or "") != REFERENCE]
-    pf = PortfolioInput(reward_symbol=symbol, reward_change_24h=change, today_net_usd=today_net(conn, now, False),
+    # 今日の損で全部閉じる決まりは、損の線（N4b。guard.loss_lines の 1日・すべて止める）に置きかえた
+    pf = PortfolioInput(reward_symbol=symbol, reward_change_24h=change, today_net_usd=None,
                         open_capital_usd=sum(p["capital"] for p in mains),
                         usdg_prices=usdg_prices(conn, tokens, now, s.emergency_usdg_times),
                         contract_changes=tuple(contract_changes or ()))
     events: list[int] = []
+    target = target_apr_pct(conn, config)
+    mmf_table = hedge_guard._mmf_table(config.feeds.database_path)
 
     # 全体の緊急離脱（会場プログラムの変化・USDG・今日の損）
     for f in check_portfolio(pf, s):
         events.append(_emergency(conn, ex, f, now, None, venue_id, None))
+        return events
+    # 損の線（N4b）: 注意・新しく入らない は記録して知らせる。すべて止める は全部閉じて、新しく始めるのも止める
+    loss = loss_lines.status(conn, config.guard, now)
+    events += _loss_line_events(conn, ex, loss, now, venue_id)
+    if loss["level"] == "stop":
         return events
     # 参考の練習の今日の損が基準を超えたら、参考の練習だけ閉じる（評価の建玉と、新しく始められるかはそのまま）
     if refs:
@@ -292,14 +401,28 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
         pos = conn.execute("SELECT * FROM positions WHERE id=?", (pos["id"],)).fetchone()
         if pos["status"] != "open":
             continue
-        inp = position_input(conn, pos, now, tokens, own_tok, own_pool)
+        count_below_target(conn, pos, target)
+        pos = conn.execute("SELECT * FROM positions WHERE id=?", (pos["id"],)).fetchone()
+        inp = position_input(conn, pos, now, tokens, own_tok, own_pool, target, config.guard.below_target_times)
         if inp is None:
             continue
         findings = check_position(inp, pf, s)
+        # 保険の強制決済までの余裕（N4b）。0以下なら段階1（すぐ閉じる）、はじめの半分を切ったら注意
+        ms = hedge_guard.margin_status(conn, config, pos, mmf_table=mmf_table)
+        if ms and ms["state"] == "liquidated":
+            findings = [Finding("emergency", "hedge_liquidation", hedge_guard.message_ja(inp.pair, ms), ms), *findings]
+        elif ms and ms["state"] == "alert":
+            findings = sorted([*findings, Finding("caution", "hedge_margin_low", hedge_guard.message_ja(inp.pair, ms), ms)],
+                              key=lambda f: -f.rank)
+        if not any(f.level in ("exit", "emergency") for f in findings):
+            better = better_place(conn, config, ex, pos, now, target)
+            if better is not None:
+                findings = sorted([*findings, better], key=lambda f: -f.rank)
         st = json.loads(pos["state_json"] or "{}")
         active_before = set(st.get("risk_active") or [])
         active_now: set[str] = set()
         top = findings[0] if findings else None
+        rebalanced = False
         if top and top.level == "emergency":
             # 1つのプールだけの危険は、その建玉だけ閉じる（2026-10-01 オーナー決定 C）。ほかの建玉と評価は続く
             ex.close_position(PositionRef(pos["id"]), reason=f"emergency:{top.kind}")
@@ -322,11 +445,26 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
                                            top.data, pos["venue_id"], pos["pool_id"]))
                 continue
             else:
+                rebalanced = True
                 res = ex.rebalance(PositionRef(pos["id"]), reason=top.kind)
                 events.append(record_event(
                     conn, now, pos["id"], "rebalance", top.kind,
                     top.message_ja + f"新しいレンジは ±{res['r_pct']:g}%、費用 ${res['cost_usd']:,.2f}。",
                     "rebalanced", {**top.data, **res}, pos["venue_id"], pos["pool_id"]))
+        # 値段が幅から出たときの保険（N4b・追加の決定 11）: 境目の余裕の外に30分いたら中身に合わせる。直したあと1時間は直さない
+        cur = conn.execute("SELECT * FROM positions WHERE id=?", (pos["id"],)).fetchone()
+        if cur["status"] == "open" and not rebalanced:
+            pool = ex.market.pool(cur["pool_id"])
+            why = hedge_guard.adjust_due(cur, pool, inp.price, now, config)
+            if why:
+                res = ex.match_hedges(PositionRef(cur["id"]), reason=why)
+                side = {"above": "幅の上に出たまま30分たったので、保険を閉じました（中身は値動きしないコインだけです）",
+                        "below": "幅の下に出たまま30分たったので、保険を中身に合わせて大きくしました",
+                        "inside": "値段が幅の中に戻って30分たったので、保険を中身に合わせて戻しました"}[why]
+                events.append(record_event(
+                    conn, now, cur["id"], "rebalance", "hedge_adjust",
+                    f"{inp.pair}: {side}（境目の余裕は幅の{config.guard.hedge_edge_buffer_frac * 100:g}%。費用 ${res['fee_usd']:,.2f}）。",
+                    "hedge_matched", {"zone": why, **res}, cur["venue_id"], cur["pool_id"]))
         for f in findings:
             if f.level != "caution":
                 continue
@@ -346,6 +484,36 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
     if events:
         log.info("paper risk events", extra={"data": {"events": events}})
     return events
+
+
+def _loss_line_events(conn: sqlite3.Connection, ex: PaperExecutor, loss: dict[str, Any], now: datetime,
+                      venue_id: str) -> list[int]:
+    """損の線を越えたときの記録（内訳つき）。同じ線を越えたままのあいだは、最初の1回だけ記録する。"""
+    before = loss_lines.active(conn)
+    keys: set[str] = set()
+    out: list[int] = []
+    for row in loss["periods"]:
+        level = row["level"]
+        if level is None:
+            continue
+        key = f"{row['period']}:{level}"
+        keys.add(key)
+        data = {"period": row["period"], "level": level, "pct": row["pct"], "net_usd": row["net_usd"],
+                "base_usd": row["base_usd"], "line_pct": row["lines"][level]["pct"], "since": row["since"],
+                "breakdown": row["breakdown"], "main_cause": row["main_cause"], "provisional": True}
+        if level == "stop":
+            closed = close_all(conn, ex, reason=f"loss_line:{row['period']}")
+            set_stopped(conn, True, f"損の線: {loss_lines.message_ja(row, level)}", now)
+            out.append(record_event(conn, now, None, "emergency", "loss_line_stop", loss_lines.message_ja(row, level),
+                                    "closed_all", {**data, "closed": closed}, venue_id, None))
+            loss_lines.set_active(conn, keys, now)
+            return out
+        if key not in before:
+            extra = "線より戻るまで、新しい練習は始めません。" if level == "no_new" else ""
+            out.append(record_event(conn, now, None, "caution", f"loss_line_{level}",
+                                    loss_lines.message_ja(row, level) + extra, "none", data, venue_id, None))
+    loss_lines.set_active(conn, keys, now)
+    return out
 
 
 def _emergency(conn: sqlite3.Connection, ex: PaperExecutor, f: Finding, now: datetime, position_id: int | None,

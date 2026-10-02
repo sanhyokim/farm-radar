@@ -202,6 +202,19 @@ def gamma(c_lp: float, sigma_pair: float, r: float) -> float:
     return c_lp * sigma_pair ** 2 / (4 * r)
 
 
+def jump_loss(c_lp: float, jump: float, r: float) -> float:
+    """1回の飛び（対数の変化率 jump）での目減り（N4b。2026-10-03 オーナー: 市場が閉まっている間の飛び）。
+
+    幅の中なら gamma と同じ形 C × J² / (4r)。幅を飛び越えたら、幅の端までの分 C × r / 4 に、
+    その先は片方のコインだけを持つので、両方を半分ずつ持つときより C × (|J| − r) / 2 だけ多く損をする
+    （どちらも幅の端で傾きがつながる近似）。飛び越えたあとは置き直すので、損はそこで決まる。
+    """
+    j = abs(jump)
+    if j <= r:
+        return c_lp * j * j / (4 * r)
+    return c_lp * (r / 4 + (j - r) / 2)
+
+
 def evaluate(inp: PoolInputs, params: ModelParams) -> Evaluation:
     c_lp = params.c_lp
     volatile = [t for t in (inp.token0, inp.token1) if not t.stable]

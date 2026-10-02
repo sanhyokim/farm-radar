@@ -8,6 +8,15 @@ from farm_radar.config import RpcSettings
 
 
 @pytest.fixture(autouse=True)
+def _no_better_place(request, monkeypatch):
+    """段階4（もっと良い場所へ。N4b）は、試験用の記録の極端な利回りのプールで、ほかの決まりのテストの建玉を閉じてしまう。
+    段階4を確かめるテスト（@pytest.mark.stage4）のほかは止めておく。"""
+    if request.node.get_closest_marker("stage4") is None:
+        from farm_radar.execution import risk_job
+        monkeypatch.setattr(risk_job, "better_place", lambda *a, **k: None)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_rate_limits():
     ratelimit.reset()
     ratelimit.set_sink(None)

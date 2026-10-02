@@ -9,7 +9,7 @@ from typing import Any
 
 from .. import views
 from ..config import RiskSettings
-from ..risk.rules import LEVEL_JA
+from ..risk.rules import LEVEL_JA, STAGE, STAGE_JA
 from .paper import CATS, latest_score, lp_amounts
 
 OPTION_JA = {"stay": "そのまま", "fees": "ステークをやめて手数料", "exit": "抜ける"}
@@ -18,10 +18,13 @@ RED_START_NOTE = ("判定が🔴のプールで始めた練習です。「判定
                   "（ほかの離脱・緊急離脱のルールは当てはめます）。")
 ACTION_JA = {"none": "記録のみ", "rebalanced": "置き直した", "closed": "閉じた", "closed_all": "全部閉じた",
              "closed_pool": "この建玉だけ閉じた",
-             "skipped_gas": "ガス代が高く見送り", "stopped": "停止", "resumed": "再開"}
+             "skipped_gas": "ガス代が高く見送り", "stopped": "停止", "resumed": "再開",
+             "hedge_matched": "保険を中身に合わせた"}
 CAUTION_JA = {"edge_near": "レンジの端が近い", "reward_shortfall": "報酬が予測より少ない",
               "hedge_cost": "ヘッジの費用が大きい", "bonus_drop": "切り替えでボーナスが減った（記録だけ）",
-              "active_liquidity_drop": "今の値段のところの流動性が急に減った（表示だけ）"}
+              "active_liquidity_drop": "今の値段のところの流動性が急に減った（表示だけ）",
+              "hedge_margin_low": "保険の余裕が少ない（強制決済に近い）",
+              "loss_line_caution": "損の線・注意", "loss_line_no_new": "損の線・新しく入らない"}
 ESTIMATE_NOTES = [
     "報酬は15分ごとの記録（実際の報酬の量・ステーク流動性・価格）から計算しています。",
     "perp の値段は、プールから出したドル価格で代用しています。",
@@ -152,25 +155,55 @@ def close_reason_ja(reason: str | None) -> str | None:
         return "オーナーが全部閉じた"
     if reason.startswith("emergency:"):
         detail = {"pool_funds_drop": "プールのお金が減った", "liquidity_drop": "前の決まり: レンジ内の流動性",
-                  "contract_change": "会場プログラムの変化", "usdg_depeg": "USDG の値段", "daily_loss": "今日の損"
-                  }.get(reason.partition(":")[2])
+                  "contract_change": "会場プログラムの変化", "usdg_depeg": "USDG の値段", "daily_loss": "今日の損",
+                  "hedge_liquidation": "保険の強制決済"}.get(reason.partition(":")[2])
         return f"緊急離脱・{detail}" if detail else "緊急離脱"
+    if reason.startswith("loss_line:"):
+        from .loss_lines import PERIOD_JA
+        return f"損の線（{PERIOD_JA.get(reason.partition(':')[2], '')}・すべて止める）"
     if reason.startswith("risk:"):
-        return "離脱のルール"
+        # どの段階の、どの決まりで出たか（N4b。早く出る4段階）
+        kind = reason.partition(":")[2]
+        detail = RULE_JA.get(kind)
+        stage = STAGE.get(kind)
+        if stage:
+            return f"{STAGE_JA[stage]}・{detail or kind}"
+        return f"離脱のルール・{detail}" if detail else "離脱のルール"
     return reason
 
 
-def events(conn: sqlite3.Connection, pid: int | None, limit: int = 50) -> list[dict[str, Any]]:
-    """見張りの記録（新しい順）。pid を指定すればその建玉の分と全体の分、None なら全部。"""
-    q = "SELECT * FROM risk_events"
+RULE_JA = {
+    "pool_funds_drop": "プールのお金が減った", "contract_change": "会場プログラムの変化", "usdg_depeg": "ドルのコインのずれ",
+    "hedge_liquidation": "保険の強制決済", "reward_token_drop": "ボーナスのコインの値下がり", "dump": "投げ売り",
+    "signal_red": "判定が🔴", "out_of_range_low_score": "幅の外で置き直しても低い", "below_target": "狙い利回りを続けて下回った",
+    "bonus_drop": "ボーナスが減った（切り替えのあと）", "better_place": "もっと良い場所がある",
+}
+
+
+def events(conn: sqlite3.Connection, pid: int | None, limit: int = 50,
+           kinds: list[str] | None = None) -> list[dict[str, Any]]:
+    """見張りの記録（新しい順）。pid を指定すればその建玉の分と全体の分、None なら全部。kinds で種類を絞る。"""
+    q = "SELECT * FROM risk_events WHERE 1=1"
     args: list[Any] = []
     if pid is not None:
-        q += " WHERE position_id=? OR position_id IS NULL"
+        q += " AND (position_id=? OR position_id IS NULL)"
         args.append(pid)
+    if kinds:
+        q += f" AND kind IN ({','.join('?' * len(kinds))})"
+        args += kinds
     rows = conn.execute(q + " ORDER BY ts DESC, id DESC LIMIT ?", (*args, limit)).fetchall()
-    return [{"id": r["id"], "ts": r["ts"], "position_id": r["position_id"], "level": r["level"],
-             "level_ja": LEVEL_JA.get(r["level"], r["level"]), "kind": r["kind"], "message": r["message_ja"],
-             "action": r["action"], "action_ja": ACTION_JA.get(r["action"] or "none", r["action"])} for r in rows]
+    out = []
+    for r in rows:
+        data = json.loads(r["data_json"] or "{}") if r["data_json"] else {}
+        stage = data.get("stage") if isinstance(data, dict) else None
+        out.append({"id": r["id"], "ts": r["ts"], "position_id": r["position_id"], "level": r["level"],
+                    "level_ja": LEVEL_JA.get(r["level"], r["level"]), "kind": r["kind"], "message": r["message_ja"],
+                    "action": r["action"], "action_ja": ACTION_JA.get(r["action"] or "none", r["action"]),
+                    # N4b: 早く出る4段階のどれか、損の線なら内訳
+                    "stage": stage, "stage_ja": STAGE_JA.get(stage) if stage else None,
+                    "rule_ja": RULE_JA.get(r["kind"]),
+                    "breakdown": data.get("breakdown") if isinstance(data, dict) else None})
+    return out
 
 
 def risk_rules(r: RiskSettings) -> list[dict[str, str]]:

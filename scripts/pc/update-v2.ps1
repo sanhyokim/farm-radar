@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\feeds\pools.py', 'backend\farm_radar\riskscore.py', 'backend\farm_radar\venue_match.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -202,6 +202,9 @@ try {
     Say "[入れる先] total: $($o.counts.total) / computed: $($o.counts.computed) / listed: $($o.counts.listed) / above_target: $($o.counts.above_target) / recommended: $($o.counts.recommended) / target: $($o.target_apr_pct)"
     $dg = $o.counts.danger
     if ($dg) { Say "[危なさ] low: $($dg.low) / mid: $($dg.mid) / high: $($dg.high) / very_high: $($dg.very_high) / venue_verified: $($o.counts.venue_verified)" }
+    foreach ($x in @($o.items | Where-Object { $_.recommended })) {
+        Say ("   おすすめ: {0}  年利 {1}%  危なさ {2}" -f $x.name, [math]::Round($x.best.apr_pct, 1), $x.safety.level)
+    }
     $c = @($o.items | Where-Object { $_.flags.code -contains 'RANGE_CHAIN' })
     $u = @($o.items | Where-Object { $_.safety.uncertain_match })
     Say "[チェーンの記録で計算] chain: $($c.Count) / 会場の見分けが不確か: $($u.Count)"
@@ -213,6 +216,10 @@ try {
     }
     $g = Invoke-RestMethod "$NewApi/api/guard" -TimeoutSec 60
     Say "[守る] placed: $($g.placed_usd) / left: $($g.total_left_usd) / loss_line: $($g.loss_line.state) / venues: $(@($g.venues).Count) / chains: $(@($g.chains).Count)"
+    Say "[守る] loss_lines: $(@($g.loss_lines.periods).Count) / level: $($g.loss_lines.level) / stages: $(@($g.stages).Count) / lighter: $(@($g.venues | Where-Object { $_.venue_id -eq 'lighter' }).Count)"
+    $vs = @($fs.sources | Where-Object { $_.id -eq 'vault_states' })
+    $vc = @($fs.sources | Where-Object { $_.id -eq 'venue_checks' })
+    Say "[見張り] vault_states: $($vs.status) $($vs.items) / venue_checks: $($vc.status) $($vc.items)"
 
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
     Say "[今の版] 前: eval: $($before.eval) / open: $($before.open) / last_ok_at: $($before.last)"

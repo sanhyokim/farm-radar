@@ -97,6 +97,8 @@ export interface OppVariant {
   direction: number; net: number; move_cost: number; stay_days: number; net_after_move: number; apr_pct: number;
   payback_days: number | null; in_range_ratio: number | null; range_pct: number | null;
   liquidity_share?: number | null;   // 幅に配るプールで、チェーンの記録の流動性から出した取り分（N3）
+  sigma_pct?: number | null;         // 計算に使った1日の値動き（%。N4b）
+  jumps_per_day?: number | null;     // 幅を飛び越える飛び（市場が閉まっていたあとなど）の1日あたりの回数（N4b）
 }
 export interface OppFlag { code: string; level: "exclude" | "warn" | "info"; text: string }
 export type OppCase = { no_hedge: OppVariant | null; hedge: OppVariant | null };
@@ -146,7 +148,30 @@ export interface Guard {
   chains: { chain: string; name: string; placed_usd: number; venues: number; cap_usd: number | null; left_usd: number | null }[];
   pnl: { open_change_usd: number; today_usd: number };
   loss_line: { pct: number; line_usd: number | null; today_usd: number; state: "none" | "ok" | "near" | "hit"; near_frac: number; used_frac: number };
+  loss_lines: LossLines; stages: StageRow[]; signals: RiskEvent[];
+  hedges: { position_id: number; pair: string; margin_usd: number; status: HedgeMargin | null }[];
   notes: string[];
+}
+/** 損の線（N4b。3つの期間 × 3段階。数字は仮） */
+export type LossLevel = "caution" | "no_new" | "stop";
+export interface LossBreakdown { income: number; pool: number; bonus: number; hedge: number; costs: number; net: number }
+export interface LossPeriod {
+  period: "day" | "week" | "since_start"; label: string; since: string | null; base_usd: number; net_usd: number; pct: number | null;
+  level: LossLevel | null; level_ja: string | null; lines: Record<LossLevel, { pct: number; usd: number | null; label: string }>;
+  breakdown: LossBreakdown | null; main_cause: keyof LossBreakdown | null;
+}
+export interface LossLines { periods: LossPeriod[]; level: LossLevel | null; level_ja: string | null; period: string | null; provisional: boolean; note: string }
+/** 早く出る4段階（N4b） */
+export interface StageRow { stage: 1 | 2 | 3 | 4; label: string; auto: boolean; waits_for_gas: boolean; rules: string[] }
+/** 保険の強制決済までの余裕（N4b） */
+export interface HedgeMargin {
+  rise_pct: number; margin_usd: number; hedge_pnl_usd: number; equity_usd: number; notional_usd: number; maintenance_usd: number;
+  buffer_usd: number; buffer_initial_usd: number; buffer_frac: number | null; alert_frac: number; to_liquidation_pct: number;
+  state: "ok" | "alert" | "liquidated"; mmf_from_lighter: boolean; add_to_restore_usd: number;
+}
+export interface HedgeTest {
+  status: HedgeMargin; would_ja: string; message_ja: string | null; note: string;
+  options: { add: { usd: number; note: string }; exit: { close_cost_usd: number | null } };
 }
 export interface OpportunitiesResp {
   computed_at: string; target_apr_pct: number; amount: number; amounts: number[];
@@ -318,6 +343,7 @@ export interface Watch {
 export interface RiskEvent {
   id: number; ts: string; position_id: number | null; level: "caution" | "rebalance" | "exit" | "emergency" | "info";
   level_ja: string; kind: string; message: string; action: string; action_ja: string;
+  stage?: number | null; stage_ja?: string | null; rule_ja?: string | null; breakdown?: LossBreakdown | null;
 }
 
 export interface Paper {
@@ -408,7 +434,7 @@ export interface PaperDetail extends PaperCard {
     price_jpy: number | null; fx_rate: number | null; fx_date: string | null; note: string }[];
   labels: Record<string, string>; apy_note: string; apy_display: number; apy_net: number;
   red_note: string | null; notes: string[]; events: RiskEvent[];
-  outlook: Outlook | null; timeline: TimelineItem[];
+  outlook: Outlook | null; timeline: TimelineItem[]; hedge_margin?: HedgeMargin | null;
 }
 
 /** POST して JSON を返す。失敗したらサーバーの日本語の理由を投げる。 */

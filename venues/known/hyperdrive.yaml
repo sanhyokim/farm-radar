@@ -25,5 +25,6 @@ match:
   base:
     - method: addresses
       addresses: ["0x58a0f600d555eb25b792Ec2c6824D0bff5127B1F"]   # Hyperdrive USDC Ecosystem（Morpho Vault V2）
+      watch: morpho_vault_v2      # N4b（オーナー 2026-10-03）: 待ち時間なしで運用先を変えられるので、運用先の変化を記録する
       source_url: https://docs.hyperdrive.finance/developers/contracts/
       checked_at: "2026-10-02"
