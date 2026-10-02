@@ -20,12 +20,12 @@ $ErrorActionPreference = 'Stop'
 function Step([string]$text) { Write-Host ''; Write-Host "== $text" -ForegroundColor Cyan }
 function Ok([string]$text) { Write-Host "   OK: $text" -ForegroundColor Green }
 
-# 古いフォルダーの表ごとに、同じ期間の記録の数を今の版と比べる（どちらも読むだけで開く）
+# 古いフォルダーの表ごとに、同じ期間の記録の数を今の版と比べる。
+# 比べるのは、一時フォルダーに写したもの（今の版のデータベースそのものは開かない。写すのは読むだけ）。
 $Check = @'
-import sqlite3, sys, pathlib
-old_p, live_p = sys.argv[1], sys.argv[2]
-old = sqlite3.connect(pathlib.Path(old_p).as_uri() + "?mode=ro&immutable=1", uri=True)
-live = sqlite3.connect(pathlib.Path(live_p).as_uri() + "?mode=ro", uri=True)
+import sqlite3, sys
+old = sqlite3.connect(sys.argv[1])
+live = sqlite3.connect(sys.argv[2])
 def tables(c):
     return [r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
 def cols(c, t):
@@ -81,11 +81,13 @@ try {
     $o = Get-Item -LiteralPath $oldDb
     $l = Get-Item -LiteralPath $liveDb
     $lTime = $l.LastWriteTime
+    $lSize = $l.Length
     $wal = "$liveDb-wal"
-    if (Test-Path -LiteralPath $wal) { $w = (Get-Item -LiteralPath $wal).LastWriteTime; if ($w -gt $lTime) { $lTime = $w } }
+    # まだ本体に書き込まれていない分（-wal）も今の版のデータベースに数える
+    if (Test-Path -LiteralPath $wal) { $w = Get-Item -LiteralPath $wal; $lSize += $w.Length; if ($w.LastWriteTime -gt $lTime) { $lTime = $w.LastWriteTime } }
     Write-Host ("   古い方: {0:N0} バイト / 最後に書かれたのは {1:yyyy-MM-dd HH:mm}" -f $o.Length, $o.LastWriteTime)
-    Write-Host ("   今の版: {0:N0} バイト / 最後に書かれたのは {1:yyyy-MM-dd HH:mm}" -f $l.Length, $lTime)
-    if ($l.Length -le $o.Length) { throw '今の版のデータベースの方が小さいです。何も消しません。' }
+    Write-Host ("   今の版: {0:N0} バイト / 最後に書かれたのは {1:yyyy-MM-dd HH:mm}" -f $lSize, $lTime)
+    if ($lSize -le $o.Length) { throw '今の版のデータベースの方が小さいです。何も消しません。' }
     if ($lTime -le $o.LastWriteTime) { throw '今の版のデータベースの方が古いです。何も消しません。' }
     Ok '今の版のデータベースの方が大きく新しいです。'
 
@@ -98,15 +100,25 @@ try {
         }
     }
     if (-not $Python) { throw 'Python 3 が見つかりません（表ごとの確かめができないので、何も消しません）。' }
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) 'farm-radar-compare.py'
-    [IO.File]::WriteAllText($tmp, $Check, (New-Object Text.UTF8Encoding($false)))
-    $env:PYTHONIOENCODING = 'utf-8'
-    $enc = [Console]::OutputEncoding
-    try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }   # Python の日本語を化けさせない
-    & $Python $tmp $oldDb $liveDb
-    $code = $LASTEXITCODE
-    try { [Console]::OutputEncoding = $enc } catch { }
-    Remove-Item -LiteralPath $tmp -Force
+    # 一時フォルダーに写して比べる（データベースの本体と、まだ本体に書き込まれていない分 -wal の2つ。元は変えない）
+    $work = Join-Path ([IO.Path]::GetTempPath()) ('farm-radar-compare-' + (Get-Date -Format 'yyyyMMddHHmmss'))
+    New-Item -ItemType Directory -Path $work | Out-Null
+    try {
+        foreach ($pair in @(@($oldDb, 'old.sqlite3'), @($liveDb, 'live.sqlite3'))) {
+            Copy-Item -LiteralPath $pair[0] -Destination (Join-Path $work $pair[1])
+            if (Test-Path -LiteralPath "$($pair[0])-wal") { Copy-Item -LiteralPath "$($pair[0])-wal" -Destination (Join-Path $work "$($pair[1])-wal") }
+        }
+        $tmp = Join-Path $work 'compare.py'
+        [IO.File]::WriteAllText($tmp, $Check, (New-Object Text.UTF8Encoding($false)))
+        $env:PYTHONIOENCODING = 'utf-8'
+        $enc = [Console]::OutputEncoding
+        try { [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) } catch { }   # Python の日本語を化けさせない
+        & $Python $tmp (Join-Path $work 'old.sqlite3') (Join-Path $work 'live.sqlite3')
+        $code = $LASTEXITCODE
+        try { [Console]::OutputEncoding = $enc } catch { }
+    } finally {
+        Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue   # 写したものだけを消す
+    }
     if ($code -ne 0) { throw '古いフォルダーにしかない記録があるかもしれません（NG の表）。何も消しません。' }
     Ok '古いフォルダーの記録は、どの表も今の版に同じ数以上あります。'
 
