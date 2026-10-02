@@ -167,12 +167,17 @@ def test_red_start_is_labeled(world):
 def test_limits_come_from_config_and_are_enforced(world):
     path, conn = world
     _open(conn, path)
-    # 1会場あたり合計の50%（$1,500）までなので、2つ目の $1,000 は入れられない
     ex = PaperExecutor(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW)
-    with pytest.raises(PaperError, match="1つの会場に置ける上限"):
-        ex.open_position("up-robinhood:p-nvda", 1000.0)
     with pytest.raises(PaperError, match="1つの建玉の上限"):
         ex.open_position("up-robinhood:p-nvda", 5000.0)
+    # 1会場あたり合計の50%（$1,500）まで。N4b から保険に預けるお金（$1,000 の 40% = $400）は Lighter に数えるので、
+    # 会場には1つ $600。2つ目（会場 $1,200）は入り、3つ目（会場 $1,800）は入れられない
+    ex.open_position("up-robinhood:p-nvda", 1000.0)
+    with pytest.raises(PaperError, match="1つの会場に置ける上限"):
+        ex.check_can_open("up-robinhood", 1000.0, hedge_margin=400.0)
+    # Lighter も1つの置き場所として上限に入る（今 $800 ＋ $800 = $1,600 > $1,500）
+    with pytest.raises(PaperError, match="Lighter"):
+        ex.check_can_open("other-venue", 1000.0, hedge_margin=800.0)
 
 
 # --- 毎回の計算 -----------------------------------------------------------------------------
@@ -309,8 +314,10 @@ def test_api_open_detail_close(client):
     r = c.post("/api/paper/positions", json={"pool_id": WETH_POOL})
     assert r.status_code == 200
     pid = r.json()["position_id"]
-    # 2つ目は上限で断られ、理由が日本語で返る
+    # 2つ目は入り（保険の預け金は Lighter に数える。N4b）、3つ目は会場の上限で断られ、理由が日本語で返る
     r2 = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-nvda"})
+    assert r2.status_code == 200
+    r2 = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-up"})
     assert r2.status_code == 400 and "上限" in r2.json()["detail"]
     # 同じプールは「すでに練習中」で断られる（上限より先に調べる）
     r3 = c.post("/api/paper/positions", json={"pool_id": WETH_POOL})

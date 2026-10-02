@@ -26,6 +26,7 @@ include = ["farm_radar*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["stage4: 段階4（もっと良い場所へ）を止めずに動かすテスト"]
 
 [tool.setuptools.package-data]
 "farm_radar.db" = ["schema.sql"]

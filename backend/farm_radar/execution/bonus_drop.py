@@ -170,6 +170,16 @@ def run(conn: sqlite3.Connection, config: Config, ex: PaperExecutor, now: dateti
         if r["state"] == "drop":
             p = conn.execute("SELECT token0_symbol, token1_symbol FROM pools WHERE id=?", (pos["pool_id"],)).fetchone()
             pair = f"{p['token0_symbol']}/{p['token1_symbol']}" if p else pos["pool_id"]
+            act = config.risk.bonus_drop_action == "exit" and r["best"] == "exit"
+            if act:
+                # 段階3（予定どおり。N4b）: 抜けるのがいちばん損が少なければ閉じる（練習は4つの段階とも自動。決定 9）
+                ex.close_position(PositionRef(pos["id"]), reason="risk:bonus_drop")
+                eid = record_event(conn, now, pos["id"], "exit", "bonus_drop",
+                                   message_ja(pair, r).replace("今は記録と知らせだけで、建玉はそのままです。", ""),
+                                   "closed", {**r, "action_mode": config.risk.bonus_drop_action},
+                                   pos["venue_id"], pos["pool_id"])
+                out.append(eid)
+                continue
             eid = record_event(conn, now, pos["id"], "caution", "bonus_drop", message_ja(pair, r), "none",
                                {**r, "action_mode": config.risk.bonus_drop_action}, pos["venue_id"], pos["pool_id"])
             out.append(eid)

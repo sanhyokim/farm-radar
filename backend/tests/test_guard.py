@@ -34,7 +34,7 @@ def test_guard_summary_without_positions(tmp_path):
     up = next(v for v in g["venues"] if v["venue_id"] == "up-robinhood")
     assert up["left_usd"] == g["limits"]["venue_cap_usd"] and up["safety"]["provisional"] is True
     assert {c["chain"] for c in g["chains"]} == set(config.chains)
-    assert g["loss_line"]["state"] == "none" and g["loss_line"]["pct"] == config.risk.emergency_daily_loss_pct
+    assert g["loss_line"]["state"] == "none" and g["loss_line"]["pct"] == -config.guard.loss_lines["day"]["stop"]
 
 
 def test_guard_and_detail_api(cfg, monkeypatch):  # noqa: F811

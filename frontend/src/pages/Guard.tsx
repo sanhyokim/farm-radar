@@ -1,23 +1,25 @@
 import { Link } from "react-router-dom";
-import { useApi, type Guard as GuardData, type GuardVenue } from "../api";
-import { signedUsd, usd } from "../format";
+import { useApi, type Guard as GuardData, type GuardVenue, type LossBreakdown, type LossPeriod } from "../api";
+import { jst, signedUsd, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Line, Loading, Note, PageHead, Pill, Term, useWide } from "../ui";
 import { SafetyPill } from "./opp";
 
 /**
- * 守る（N2c。SPEC 13.1 の追加の決定 2）: 置いている額と上限（会場ごと・チェーンごとに、上限まであといくら）、損失ライン。
- * 今ある数字で作り、N4 で中身（危なさの点数・保険の預け金の上限・強制決済に近いときの知らせ）を足す。
+ * 守る（N2c。SPEC 13.1 の追加の決定 2）: 置いている額と上限（会場ごと・Lighter・チェーンごとに、上限まであといくら）。
+ * N4b: 損の線（3つの期間 × 3段階と内訳）、早く出る4段階の決まりと最近の合図、保険の強制決済までの余裕。
  */
 export default function Guard() {
   const wide = useWide();
   const { data, error } = useApi<GuardData>("/api/guard");
   const head = <PageHead title="守る" right={<Pill icon="info">練習の数字</Pill>} />;
   if (!data) return <>{head}<Loading error={error} /></>;
-  const loss = <LossLine data={data} />;
+  const loss = <LossLinesCard data={data} />;
   const total = <TotalCard data={data} />;
   const venues = <VenuesCard data={data} />;
   const chains = <ChainsCard data={data} />;
+  const stages = <StagesCard data={data} />;
+  const hedges = <HedgesCard data={data} />;
   const notes = (
     <Card title="この画面について">
       {data.notes.map((n) => <Note key={n}>{n}</Note>)}
@@ -28,11 +30,11 @@ export default function Guard() {
     <>
       {head}
       <div className="grid grid-cols-12 items-start gap-6">
-        <div className="col-span-7 flex flex-col gap-6">{loss}{venues}</div>
-        <div className="col-span-5 flex flex-col gap-6">{total}{chains}{notes}</div>
+        <div className="col-span-7 flex flex-col gap-6">{loss}{stages}{venues}</div>
+        <div className="col-span-5 flex flex-col gap-6">{total}{hedges}{chains}{notes}</div>
       </div>
     </>
-  ) : <>{head}{loss}{total}{venues}{chains}{notes}</>;
+  ) : <>{head}{loss}{total}{stages}{hedges}{venues}{chains}{notes}</>;
 }
 
 /** 棒（どれだけ使ったか）。色は印だけ: 上限に近いと黄、超えたら赤 */
@@ -46,28 +48,106 @@ function Bar({ frac, warnAt = 0.8 }: { frac: number | null; warnAt?: number }) {
   );
 }
 
-function LossLine({ data }: { data: GuardData }) {
-  const l = data.loss_line;
-  const pill = l.state === "hit" ? <Pill tone="r" icon="alert">ラインに達した</Pill>
-    : l.state === "near" ? <Pill tone="y" icon="alert">ラインに近い</Pill>
-    : l.state === "ok" ? <Pill tone="g" icon="check">大丈夫</Pill> : <Pill>建玉なし</Pill>;
+const LEVEL_TONE = { caution: "y", no_new: "y", stop: "r" } as const;
+const PART_JA: Record<keyof LossBreakdown, string> = {
+  pool: "プールの値動き", bonus: "ボーナスのコイン", hedge: "保険", costs: "費用", income: "収入", net: "合計",
+};
+
+/** 損の線（N4b。決定 10）: 期間ごとに、今の損益と3つの線（注意・新しく入らない・すべて止める）、内訳 */
+function LossLinesCard({ data }: { data: GuardData }) {
+  const ll = data.loss_lines;
+  const pill = ll.level ? <Pill tone={LEVEL_TONE[ll.level]} icon="alert">{ll.level_ja}</Pill>
+    : data.positions ? <Pill tone="g" icon="check">線の内側</Pill> : <Pill>建玉なし</Pill>;
   return (
-    <Card title={<span className="flex items-center gap-2"><Icon name="shield" size={16} /><Term k="損失ライン">損失ライン</Term>（今日）</span>} right={pill}>
-      <div className="flex items-end justify-between gap-4">
-        <div className="flex flex-col">
-          <span className="cap">今日の損益（日本時間の0時から）</span>
-          <span className="t32 num">{signedUsd(l.today_usd)}</span>
-        </div>
-        <div className="flex flex-col items-end">
-          <span className="cap">ライン</span>
-          <span className="num">{l.line_usd == null ? "—" : usd(l.line_usd)}</span>
-        </div>
-      </div>
-      <Bar frac={l.used_frac} warnAt={l.near_frac} />
+    <Card title={<span className="flex items-center gap-2"><Icon name="shield" size={16} /><Term k="損失ライン">損の線</Term><Pill>仮</Pill></span>} right={pill}>
+      {ll.periods.map((p) => <LossRow key={p.period} p={p} />)}
+      <Note>{ll.note}</Note>
       <Note>
-        今日の損が、置いている額の {l.pct}% に達したら、練習の建玉を全部閉じます（今の版の緊急離脱と同じ決まり）。
-        ラインの {(l.near_frac * 100).toFixed(0)}% まで来たら「近い」と出します。
+        注意は記録と知らせだけ、「新しく入らない」を越えると新しい練習を始めません、「すべて止める」を越えると練習の建玉を全部閉じて、
+        新しく始めるのも止めます。「再開」を押すと、どの期間もそこから数え直します。
       </Note>
+    </Card>
+  );
+}
+
+function LossRow({ p }: { p: LossPeriod }) {
+  const stop = p.lines.stop.pct;
+  const frac = p.pct == null || p.pct >= 0 ? 0 : p.pct / stop;
+  const parts = p.breakdown;
+  return (
+    <div className="flex flex-col gap-2 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+      <div className="flex items-end justify-between gap-4">
+        <span className="flex flex-col">
+          <span className="bold">{p.label}</span>
+          <span className="cap">{p.since ? `${jst(p.since)} から` : "まだ練習がありません"}</span>
+        </span>
+        <span className="flex flex-col items-end">
+          <span className="bold num">{signedUsd(p.net_usd)}</span>
+          <span className="cap num">{p.pct == null ? "—" : `${p.pct >= 0 ? "+" : ""}${p.pct.toFixed(2)}%`}{p.base_usd ? ` / 置いている ${usd(p.base_usd, 0)}` : ""}</span>
+        </span>
+      </div>
+      <Bar frac={frac} warnAt={p.lines.caution.pct / stop} />
+      <div className="cap num">
+        {(["caution", "no_new", "stop"] as const).map((k) => `${p.lines[k].label} ${p.lines[k].pct}%${p.lines[k].usd != null ? `（${usd(p.lines[k].usd, 0)}）` : ""}`).join(" · ")}
+      </div>
+      {p.level && <Pill tone={LEVEL_TONE[p.level]} icon="alert">{p.level_ja}を越えています</Pill>}
+      {parts && p.net_usd !== 0 && (
+        <div className="cap num">
+          内訳: {(["pool", "bonus", "hedge", "costs", "income"] as const).filter((k) => Math.abs(parts[k]) >= 0.005)
+            .map((k) => `${PART_JA[k]} ${signedUsd(parts[k])}`).join(" · ")}
+          {p.main_cause && p.net_usd < 0 ? `（いちばん大きいのは${PART_JA[p.main_cause]}）` : ""}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 早く出る4段階（N4b。決定 9: 練習では4つとも自動）と最近の合図 */
+function StagesCard({ data }: { data: GuardData }) {
+  return (
+    <Card title={<span className="flex items-center gap-2"><Icon name="alert" size={16} />早く出る4段階<Pill>仮</Pill></span>}>
+      {data.stages.map((s) => (
+        <div key={s.stage} className="flex flex-col gap-1 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+          <div className="flex items-center justify-between gap-2">
+            <span className="bold">{s.label}</span>
+            <span className="flex gap-2">
+              {s.auto ? <Pill tone="g">練習は自動で出る</Pill> : <Pill tone="y">今は知らせだけ</Pill>}
+              {!s.waits_for_gas && <Pill>ガス代が高くても出る</Pill>}
+            </span>
+          </div>
+          {s.rules.map((r) => <span key={r} className="cap">・{r}</span>)}
+        </div>
+      ))}
+      <div className="label pt-2">最近の合図</div>
+      {data.signals.length === 0 ? <Note>まだありません。</Note> : data.signals.map((e) => (
+        <div key={e.id} className="flex flex-col gap-1 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+          <span className="cap">{jst(e.ts)} · {e.stage_ja ?? e.level_ja}{e.rule_ja ? `・${e.rule_ja}` : ""} · {e.action_ja}</span>
+          <span className="sec">{e.message}</span>
+        </div>
+      ))}
+    </Card>
+  );
+}
+
+/** 保険の強制決済までの余裕（N4b） */
+function HedgesCard({ data }: { data: GuardData }) {
+  return (
+    <Card title={<span className="flex items-center gap-2"><Icon name="shield" size={16} />保険（Lighter）の余裕</span>}>
+      {data.hedges.length === 0 ? <Note>保険のある練習の建玉はありません。</Note> : data.hedges.map((h) => {
+        const st = h.status;
+        const pill = !st ? <Pill>保険は0（閉じている）</Pill> : st.state === "liquidated" ? <Pill tone="r" icon="alert">強制決済の線</Pill>
+          : st.state === "alert" ? <Pill tone="y" icon="alert">余裕が少ない</Pill> : <Pill tone="g" icon="check">余裕あり</Pill>;
+        return (
+          <Link key={h.position_id} to={`/practice/${h.position_id}`} className="flex flex-col gap-2 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+            <div className="flex items-center justify-between gap-2"><span className="bold">{h.pair}</span>{pill}</div>
+            {st && <Bar frac={st.buffer_frac == null ? null : 1 - st.buffer_frac} warnAt={1 - st.alert_frac} />}
+            <span className="cap num">
+              預けたお金 {usd(h.margin_usd, 0)}{st ? ` · 余裕 ${usd(st.buffer_usd)}（はじめの ${st.buffer_frac == null ? "—" : (st.buffer_frac * 100).toFixed(0)}%）· あと約 ${st.to_liquidation_pct.toFixed(0)}% 上がると強制決済` : ""}
+            </span>
+          </Link>
+        );
+      })}
+      <Note>余裕（担保 − 維持に要る額）が、はじめの半分を切ったら知らせます（仮）。練習の詳しい画面で「値段が○%上がったら」を試せます。</Note>
     </Card>
   );
 }

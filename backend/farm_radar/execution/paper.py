@@ -33,11 +33,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ..app_settings import target_apr_pct
 from ..config import Config, ConfigError, load_venue, practice_allowed
 from ..fx import Frankfurter, rate_for
 from ..scoring.prices import PoolPrice, usd_prices
 from ..tokens import TokenBook
 from .base import ClaimResult, CloseResult, HedgeResult, PositionRef, SwapResult
+from .hedge_guard import edge_zone, track_zone
 
 log = logging.getLogger(__name__)
 JST = ZoneInfo("Asia/Tokyo")
@@ -195,7 +197,7 @@ class PaperExecutor:
 
     # --- 上限と状態 -------------------------------------------------------------------------
 
-    def check_can_open(self, venue_id: str, capital: float, reference: bool = False) -> None:
+    def check_can_open(self, venue_id: str, capital: float, reference: bool = False, hedge_margin: float = 0.0) -> None:
         """上限（config.yaml の limits。変更はオーナーだけ）と、モード・停止の確認。守れなければ PaperError。
 
         参考の練習（2026-10-01 案B）は、evaluation.reference_outside_limits が true なら、合計と会場ごとの上限の
@@ -212,17 +214,33 @@ class PaperExecutor:
         outside = self.config.evaluation.reference_outside_limits
         caps = not (reference and outside)
         where = f" AND {OFFICIAL_SQL}" if outside else ""
-        open_rows = self.conn.execute("SELECT venue_id, capital FROM positions WHERE is_paper=1 AND status='open'"
+        open_rows = self.conn.execute("SELECT * FROM positions WHERE is_paper=1 AND status='open'"
                                       + where).fetchall()
         total = sum(r["capital"] for r in open_rows) + capital
         if caps and "total_usd" in lim and total > float(lim["total_usd"]):
             raise PaperError(f"建玉の合計の上限（${lim['total_usd']:,.0f}）を超えます。")
-        venue_total = sum(r["capital"] for r in open_rows if r["venue_id"] == venue_id) + capital
-        if caps and "per_venue_share" in lim and "total_usd" in lim and \
-                venue_total > float(lim["total_usd"]) * float(lim["per_venue_share"]):
+        # 保険に預けるお金は、会場ではなく「Lighter」に置いているお金として数える（N4b。SPEC 13.1 の練習に入れること1）
+        from .hedge_guard import margin_of
+        margins = {r["id"]: margin_of(r, self.config) for r in open_rows}
+        venue_total = sum(r["capital"] - margins[r["id"]] for r in open_rows if r["venue_id"] == venue_id) \
+            + capital - hedge_margin
+        lighter_total = sum(margins.values()) + hedge_margin
+        if caps and "per_venue_share" in lim and "total_usd" in lim:
             cap = float(lim["total_usd"]) * float(lim["per_venue_share"])
-            raise PaperError(f"1つの会場に置ける上限（合計の{float(lim['per_venue_share']) * 100:.0f}% = "
-                             f"${cap:,.0f}）を超えます。先にほかの建玉を閉じてください。")
+            share = float(lim["per_venue_share"]) * 100
+            if venue_total > cap:
+                raise PaperError(f"1つの会場に置ける上限（合計の{share:.0f}% = ${cap:,.0f}）を超えます。"
+                                 "先にほかの建玉を閉じてください。")
+            if hedge_margin > 0 and lighter_total > cap:
+                raise PaperError(f"保険の預け先（Lighter）に置ける上限（合計の{share:.0f}% = ${cap:,.0f}）を超えます"
+                                 f"（預けているお金 ${lighter_total - hedge_margin:,.0f} ＋ この練習の分 ${hedge_margin:,.0f}）。"
+                                 "先にほかの建玉を閉じてください。")
+        if not reference:
+            # 損の線の「新しく入らない」以上を越えていたら始めない（N4b。SPEC 13.1 の追加の決定 10。数字は仮）
+            from .loss_lines import no_new_reason
+            why = no_new_reason(self.conn, self.config.guard, self.now)
+            if why:
+                raise PaperError(why)
         day_start = (self.now - timedelta(hours=24)).isoformat(timespec="seconds")
         trades = self.conn.execute(
             "SELECT COUNT(*) FROM positions WHERE is_paper=1 AND (opened_at>=? OR closed_at>=?)",
@@ -289,7 +307,6 @@ class PaperExecutor:
         score = latest_score(self.conn, pool_id)
         if snap is None or score is None or score["best_r"] is None:
             raise PaperError("このプールはまだ計算できていないので、練習を始められません。")
-        self.check_can_open(pool["venue_id"], capital, reference=reference)
         details = json.loads(score["details_json"] or "{}")
         inp = details.get("inputs") or {}
         price = float(snap["price"])
@@ -329,6 +346,10 @@ class PaperExecutor:
                            "size": amt, "entry": usd})
         hedge_fee = sum(h["size"] * h["entry"] * self.taker_fee(h["market_id"], h.get("hedge_id") or "lighter") for h in hedges)
         costs = swap_cost + 2 * gas + hedge_fee
+        hedge_margin = capital * s.allocation_hedge_margin if hedges else 0.0
+        self.check_can_open(pool["venue_id"], capital, reference=reference, hedge_margin=hedge_margin)
+        for h in hedges:
+            h["size_open"] = h["size"]
 
         started_red = 1 if score["signal"] == "red" else 0
         predicted = {
@@ -337,10 +358,14 @@ class PaperExecutor:
             "rebalance": pred.get("rebalance"), "hedge": pred.get("hedge"), "haircut": pred.get("haircut"),
             "direction_risk": pred.get("direction_risk"), "net_sell_now": pred.get("net_sell_now"),
             "in_range_ratio": pred.get("in_range_ratio"), "c_total": s.total_capital_usd,
+            # 段階2（N4b）: 始めたときの残る利回りと狙い利回り。狙いより低いと分かって始めた練習には「下回った」で出る決まりを当てない
+            "net_apr_pct": float(score["net_daily_pct"]) * 365 if score["net_daily_pct"] is not None else None,
+            "target_apr_pct": target_apr_pct(self.conn, self.config),
         }
         mode = pred.get("mode") or score["mode"] or "staked"
         up_price = self._reward_price(prices, pool["venue_id"])
         state = _new_state(snap, costs, up_price, gas)
+        state["hedge_margin"] = hedge_margin       # 保険に預けたお金（Lighter に置いているお金。N4b）
         # 始めた費用の内訳（2026-09-29 オーナー追加: 両替のずれがいくら含まれるかを画面に出す）
         state["open_breakdown"] = {
             "swap_usd": c_lp * s.swap_ratio, "fee_pct": fee * 100, "slippage_pct": slip * 100,
@@ -469,6 +494,9 @@ class PaperExecutor:
                           detail={"price": price, "usd0": u0, "usd1": u1, "reward_usd": up,
                                   "dt_s": dt, **({"gap": True} if estimated else {})})
             st["prev"] = _prev_of(snap)
+            # 境目の余裕を入れた値段の場所（保険を中身に合わせる判定に使う。N4b・追加の決定 11）
+            track_zone(st, edge_zone(price, pos["lower"], pos["upper"], float(pos["r"] or 0.0),
+                                     self.config.guard.hedge_edge_buffer_frac), snap["ts"])
             # レンジの外に出た時刻（置き直しの判定に使う。M5b）
             if pos["lower"] <= price <= pos["upper"]:
                 st.pop("out_since", None)
@@ -579,6 +607,9 @@ class PaperExecutor:
         st["rebalance_cost"] = float(st.get("rebalance_cost", 0.0)) + cost
         st["rebalance_slippage"] = float(st.get("rebalance_slippage", 0.0)) + v_lp * s.swap_ratio * slip
         st.pop("out_since", None)
+        st.pop("hedge_zone", None)              # 置き直しで保険も中身に合わせたので、境目の時計は数え直す
+        st.pop("hedge_zone_since", None)
+        st.pop("hedge_matched_out", None)
         ts = _iso(self.now)
         row_ts = max(ts, _iso(_ts(pos["last_ts"]) + timedelta(seconds=1)))
         self.conn.execute(
@@ -610,6 +641,68 @@ class PaperExecutor:
         log.info("paper position rebalanced", extra={"data": {"position": pos["id"], "r_pct": r_pct,
                                                               "cost_usd": round(cost, 4)}})
         return {"r_pct": r_pct, "lower": lower, "upper": upper, "cost_usd": cost}
+
+    def match_hedges(self, ref: PositionRef, reason: str = "") -> dict[str, Any]:
+        """保険（perp の仮想の売り）の量を、今の中身に合わせる（N4b・追加の決定 11。プールはそのまま）。
+
+        幅の上に出ていれば中身は値動きしないコインだけなので保険は0（閉じる）、下に出ていれば値動きするコインだけなので大きくする。
+        ここまでの保険の損益は state の off に固定し、新しい量と今の値段から先を足していく（置き直しと同じ形）。
+        費用は perp の取引手数料（量の差 × 値段 × 手数料の割合）。
+        """
+        pos = self._open_pos(ref.position_id)
+        self.update(pos)
+        pos = self._open_pos(ref.position_id)
+        pool = self.market.pool(pos["pool_id"])
+        st = json.loads(pos["state_json"])
+        hedges = json.loads(pos["hedges_json"] or "[]")
+        snap = self.market.latest(pos["pool_id"])
+        price = float(snap["price"])
+        prices = self.market.prices(snap["run_id"])
+        t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+        u0, u1 = prices.get(t0, st["last_prices"].get(t0)), prices.get(t1, st["last_prices"].get(t1))
+        up = st["last_prices"].get("reward")
+        d0, d1 = int(pool["token0_decimals"]), int(pool["token1_decimals"])
+        x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"], d0, d1)
+        hedge_pnl = sum(-h["size"] * (prices.get(h["token"], h["entry"]) - h["entry"]) for h in hedges)
+        off = dict(st.get("off") or {})
+        off["hedge"] = float(off.get("hedge", 0.0)) + hedge_pnl
+        new_hedges, fee, changes = [], 0.0, []
+        for h in hedges:
+            hp = prices.get(h["token"], h["entry"])
+            size = x if h["token"] == t0 else y
+            fee += abs(size - h["size"]) * hp * self.taker_fee(h["market_id"], h.get("hedge_id") or "lighter")
+            changes.append({"perp": h["perp"], "from": h["size"], "to": size, "price": hp})
+            new_hedges.append({**h, "size": size, "entry": hp})
+        st["off"] = off
+        st["costs"] += fee
+        st["hedge_adjusts"] = int(st.get("hedge_adjusts", 0)) + 1
+        st["hedge_adjust_cost"] = float(st.get("hedge_adjust_cost", 0.0)) + fee
+        ts = _iso(self.now)
+        st["hedge_adjusted_at"] = ts
+        zone = st.get("hedge_zone")
+        if zone in ("above", "below"):
+            st["hedge_matched_out"] = zone          # 幅の中に戻ったら、同じ決まりで戻す
+        elif zone == "inside":
+            st.pop("hedge_matched_out", None)
+        row_ts = max(ts, _iso(_ts(pos["last_ts"]) + timedelta(seconds=1)))
+        self.conn.execute("UPDATE positions SET hedges_json=? WHERE id=?", (json.dumps(new_hedges), pos["id"]))
+        pos = self._open_pos(pos["id"])
+        cum = _cumulative(pos, st, new_hedges, price, u0, u1, up, prices, d0, d1)
+        delta = {c: cum[c] - st["cum"][c] for c in CATS}
+        delta_sell = cum["haircut_sell"] - st["cum"]["haircut_sell"]
+        st["cum"] = cum
+        self._pnl_row(pos["id"], row_ts, delta, delta_sell, in_range=None, reward_amount=0.0,
+                      value=pos["capital"] + sum(cum[c] for c in CATS), estimated=False,
+                      detail={"event": "hedge_adjust", "reason": reason, "changes": changes})
+        for c in changes:
+            self._ledger(ts, pos["id"], "hedge_adjust", c["perp"], c["to"], c["price"],
+                         f"保険を中身に合わせる（{reason}）: {c['from']:.6g} → {c['to']:.6g}")
+        if fee:
+            self._ledger(ts, pos["id"], "cost", "USD", fee, 1.0, "保険を中身に合わせる: perp の取引手数料")
+        self.conn.execute("UPDATE positions SET last_ts=?, state_json=? WHERE id=?", (row_ts, json.dumps(st), pos["id"]))
+        self.conn.commit()
+        log.info("paper hedge matched", extra={"data": {"position": pos["id"], "reason": reason, "fee_usd": round(fee, 4)}})
+        return {"changes": changes, "fee_usd": fee}
 
     def _open_pos(self, pid: int) -> sqlite3.Row:
         pos = self.conn.execute("SELECT * FROM positions WHERE id=? AND is_paper=1", (pid,)).fetchone()

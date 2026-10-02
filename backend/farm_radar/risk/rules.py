@@ -31,6 +31,16 @@ from typing import Any
 from ..config import RiskSettings
 
 LEVELS = ("caution", "rebalance", "exit", "emergency")
+
+# 早く出る4段階（N4b。SPEC 13.2「早く出る4段階」と 13.1 の追加の決定 9）。どの決まりがどの段階かを記録と画面に出す
+# 段階1 すぐ逃げる（ガス代が高くても）/ 段階2 利益が消えた / 段階3 予定どおり / 段階4 もっと良い場所へ
+STAGE = {
+    "pool_funds_drop": 1, "contract_change": 1, "usdg_depeg": 1, "hedge_liquidation": 1,
+    "reward_token_drop": 2, "dump": 2, "signal_red": 2, "out_of_range_low_score": 2, "below_target": 2,
+    "bonus_drop": 3,
+    "better_place": 4,
+}
+STAGE_JA = {1: "段階1 すぐ逃げる", 2: "段階2 利益が消えた", 3: "段階3 予定どおり", 4: "段階4 もっと良い場所へ"}
 LEVEL_JA = {"caution": "注意", "rebalance": "置き直し", "exit": "離脱", "emergency": "緊急離脱", "info": "お知らせ"}
 
 
@@ -68,6 +78,12 @@ class PositionInput:
     # 値動きする側のトークンの変化（記号, 1時間の変化, 24時間の変化。−0.15 = −15%。分からなければ None）
     token_moves: tuple[tuple[str, float | None, float | None], ...] = ()
     hedge_cost_day: float | None = None          # ヘッジの1日あたりの費用（資金調達料。ドル）
+    # 段階2（N4b）: 残る利回り（最新のスコアの純日利 × 365。年%）が狙い利回りを下回った回数（続けて）
+    net_apr_pct: float | None = None
+    target_apr_pct: float | None = None
+    below_target_count: int = 0
+    below_target_needed: int = 3
+    started_below_target: bool = False           # 狙い利回りより低いと分かって始めた練習（この決まりは当てはめない）
 
 
 @dataclass(frozen=True)
@@ -132,6 +148,15 @@ def check_position(p: PositionInput, pf: PortfolioInput, s: RiskSettings) -> lis
     # 離脱: プールの判定が🔴になった（🔴と分かって始めた練習には当てはめない。2026-09-29 オーナー決定）
     if p.signal == "red" and not p.started_red:
         out.append(Finding("exit", "signal_red", f"{p.pair} の判定が🔴（見送り）になりました。"))
+
+    # 離脱（段階2。N4b）: 残る利回りが狙い利回りを続けて下回った（狙いより低いと分かって始めた練習には当てはめない）
+    if (p.net_apr_pct is not None and p.target_apr_pct is not None and not p.started_below_target
+            and p.below_target_count >= p.below_target_needed):
+        out.append(Finding("exit", "below_target",
+                           f"{p.pair} の残る利回り（年{p.net_apr_pct:.1f}%）が、狙い利回り（年{p.target_apr_pct:g}%）を"
+                           f"{p.below_target_count}回続けて下回りました（基準は{p.below_target_needed}回）。",
+                           {"net_apr_pct": p.net_apr_pct, "target_apr_pct": p.target_apr_pct,
+                            "times": p.below_target_count}))
 
     # 置き直し: レンジの外に一定時間いた
     if p.minutes_out_of_range is not None and p.minutes_out_of_range >= s.rebalance_after_minutes:
