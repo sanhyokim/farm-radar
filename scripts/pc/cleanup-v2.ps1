@@ -11,8 +11,9 @@
 
 param(
     [string]$Desk = 'C:\Users\user\Desktop',
-    # 2026-10-02 23:15 JST オーナー「この3つは消してかまいません」
-    [string[]]$Names = @('farm-radar-v2-failed-20261002-2248', 'farm-radar-v2-old', 'farm-radar-v2-n2b-old'),
+    # 2026-10-02 23:15 JST オーナー「この3つは消してかまいません」、23:34 JST「farm-radar-v2-old-20261002-2258 を消す手順をください」
+    # （-File で渡すと配列が1つの文字になるので、カンマで区切った1つの文字でも受け取る）
+    [string[]]$Names = @('farm-radar-v2-failed-20261002-2248', 'farm-radar-v2-old', 'farm-radar-v2-n2b-old', 'farm-radar-v2-old-20261002-2258'),
     [string]$Docker = 'docker'
 )
 
@@ -29,6 +30,8 @@ function Projects {
     $j = $raw | ConvertFrom-Json
     return @($j | ForEach-Object { $_ })
 }
+
+$Names = @($Names | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
 try {
     Write-Host 'もう使わないフォルダーを消します。今の版（18000）と新しい版（18001）には触りません。'
