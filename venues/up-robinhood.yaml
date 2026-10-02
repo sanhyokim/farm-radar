@@ -7,6 +7,12 @@
 id: up-robinhood
 name: "up."
 type: ve33            # ve(3,3)型（ロックした人がボーナスの配り先を投票で決める）
+# 仕組みの型（N1。backend/farm_radar/registry.py の MECHANISMS）。根拠は下の mechanics:
+#  range       = 報酬は「レンジ内でステークされた流動性」に比例（reward_proportional_to_staked_inrange_liquidity）
+#  vote_weekly = 毎週木曜 09:00 JST の切り替えで、プールごとの配分が変わる（epoch。上限はチームが手で決める: gauge_emission_cap）
+mechanisms: [range, vote_weekly]
+# 読み方の名前（N1。backend/farm_radar/adapters/registry.py の READERS）。ve(3,3) の集中流動性とゲージを読む
+reader: ve33_cl_gauge
 website: https://up33.xyz/
 audited: null         # 未確認（DefiLlama に監査情報なし。検証済みソースにも監査の記載なし。2026-09-27 確認）
 launch_date: "2026-07-10"  # 主要コントラクトの作成日（UP トークン作成 block 6180888 = 2026-07-10 15:17 UTC）。取引開始日そのものは未確認
@@ -22,19 +28,8 @@ listings:
   geckoterminal: [up-v3]             # https://api.geckoterminal.com/api/v2/networks/robinhood/dexes の id（"Up V3"。up-v2 は載っていない）
   checked_at: "2026-09-29"
 
-chain:
-  id: robinhood
-  chain_id: 4663
-  native_token: ETH
-  public_rpc: https://rpc.mainnet.chain.robinhood.com
-  # Alchemy のURL。{API_KEY} は .env の ALCHEMY_API_KEY で置き換えます。
-  alchemy_rpc: https://robinhood-mainnet.g.alchemy.com/v2/{API_KEY}
-  explorer: https://robinhoodchain.blockscout.com
-  geckoterminal_network: robinhood   # GeckoTerminal の API でのチェーン名（https://api.geckoterminal.com/api/v2/networks で確認 2026-09-29）
-  unverified: false
-  source_url: https://docs.robinhood.com/chain/connecting
-  checked_at: "2026-09-27"
-  note: "公開RPCは回数制限あり。公式は本番用途に Alchemy などを推奨。"
+# チェーン（N1）: chains/robinhood.yaml を指す。接続先・出典・確認日はそちらに書く
+chain: robinhood
 
 # ---------------------------------------------------------------------------
 # 確認方法（2026-09-27）

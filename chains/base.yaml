@@ -1,0 +1,24 @@
+# チェーンの登録: Base（N1。SPEC 13.1 の5「詳しい計算は Robinhood Chain と Base から」）
+# ルール: 推測で埋めない。出典（source_url）と確認日（checked_at）を書く。確かめられないものは unverified: true。
+# まだ会場は登録していない（Base の会場の読み方は N3 で作る。会場の住所はそのときに公式の資料で確かめる）。
+
+id: base
+name: Base
+family: evm                 # 系統: ETH系
+chain_id: 8453
+native_token: ETH
+public_rpc: https://mainnet.base.org   # 公式の公開RPC（回数制限あり。公式は本番用途に専用のRPCを推奨）
+alchemy_rpc: null                      # 未確認（使うときに Alchemy の公式資料で確かめてから書く）
+explorer: https://basescan.org
+unverified: false
+source_url: https://docs.base.org/base-chain/quickstart/connecting-to-base
+checked_at: "2026-10-02"
+note: "公式の資料の値: Network Name Base Mainnet、Chain ID 8453、RPC https://mainnet.base.org、Currency ETH、Explorer https://basescan.org"
+
+# コインの一覧（安定コイン・ヘッジ先）は、Base の会場を足すとき（N3）に venues/tokens-base.yaml として作る
+tokens_file: null
+
+# 外の一覧での名前
+geckoterminal_network: base        # https://api.geckoterminal.com/api/v2/networks で確認（2026-10-02）
+defillama_name: Base               # https://api.llama.fi/v2/chains の name（chainId 8453。2026-10-02 確認）
+lists_checked_at: "2026-10-02"     # Merkl・Across・Relay・LI.FI の一覧に chain_id 8453 があることを確認

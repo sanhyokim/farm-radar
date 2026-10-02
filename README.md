@@ -242,6 +242,9 @@ docker compose down
 - `venues/tokens-robinhood.yaml`: トークンの分類（ステーブルコイン・株トークン・ヘッジ先）。公式の情報から自動で作ったもので、
   手で直しません（作り直しは開発側で `python -m farm_radar.tools.refresh_tokens` を実行します）。
 - `venues/up-robinhood.yaml`: 会場（取引所）の情報。アドレスと仕組みの出典URLと確認日を書きます。確認できていないものは `unverified: true` です。
+- `chains/<id>.yaml`: チェーンの登録（2026-10-02 N1。今は robinhood と base）。番号・公開の読み取り口・出典URLと確認日を書きます。
+  チェーンを足すときは、ここにファイルを置いて `config.yaml` の `chains` に1行足すだけです。会場のファイルは `chain: robinhood` のようにチェーンを指し、
+  `mechanisms`（仕組みの型。例: 幅に配る型・投票で決める型）と `reader`（読み方の名前）を書きます。
 
 RPC を使う順番: `.env` に Alchemy のキーがあれば Alchemy → 公式の公開RPC → 予備のRPC（`config.yaml` の `rpc.extra_urls` と `.env` の `EXTRA_RPC_URLS`）。
 1つのRPCが失敗したら、自動で次に切り替えます。
