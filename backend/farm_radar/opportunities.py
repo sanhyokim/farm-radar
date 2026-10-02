@@ -31,6 +31,7 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from . import safety
 from .config import Config, ConfigError, OpportunitySettings, load_venue, mechanic_value
 from .registry import coin_chains, load_chain, receipt_chains, stable_addresses
 from .scoring import model as m
@@ -96,6 +97,7 @@ class Opportunity:
     reason: str | None = None        # 計算できない理由
     new_pool: bool = False
     campaigns: list[dict[str, Any]] = field(default_factory=list)
+    venue_safety: dict[str, Any] | None = None   # 会場の安全度（仮の3段階。safety.py）
 
     @property
     def excluded(self) -> bool:
@@ -119,6 +121,8 @@ class Opportunity:
             out["best"] = b.to_dict() if b else None
             out["above_target"] = (b.apr_pct >= target_apr_pct) if b and target_apr_pct is not None else None
             out["over_cap"] = bool(self.cap_usd is not None and amount > self.cap_usd)
+        out["venue_safety"] = self.venue_safety
+        out["safety"] = safety.opportunity(out, self.venue_safety)
         return out
 
 
@@ -464,7 +468,8 @@ def _kind(info: dict[str, Any]) -> str:
 def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: list[dict[str, Any]], data: FeedData,
                    config: Config) -> Opportunity:
     s = config.opportunities
-    op = Opportunity(base=base, kind=_kind(info), campaigns=[_campaign_view(c) for c in campaigns])
+    op = Opportunity(base=base, kind=_kind(info), campaigns=[_campaign_view(c) for c in campaigns],
+                     venue_safety=safety.venue_from_merkl(info.get("trust"), data.now))
     now_s = int(data.now.timestamp())
     live = [c for c in campaigns if (c.get("start_ts") or 0) <= now_s and (c.get("end_ts") is None or c["end_ts"] > now_s)]
     tvl = base.tvl_usd or 0.0
@@ -663,6 +668,7 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
         venue = load_venue(base.venue, config.root)
     except (OSError, ConfigError):
         venue = {}
+    op.venue_safety = safety.venue_from_registry(venue) if venue else None
     if not inp or inp.get("sigma_pair") is None:
         op.computable, op.reason = False, "スコアの計算に必要な数字がそろっていない"
         return op

@@ -235,12 +235,7 @@ def opportunities_api(amount: float = 1000.0, chain: str | None = None, kind: st
 
     with _open() as (config, conn):
         target = app_settings.target_apr_pct(conn, config)
-        now = _now()
-        with _opps_lock:
-            hit = _opps_cache.get("all")
-            if hit is None or (now - hit[0]).total_seconds() > 60:
-                hit = (now, opps.collect(conn, config, now))
-                _opps_cache["all"] = hit
+        hit = _opps_all(conn, config)
         ops = hit[1]
     amounts = list(config.opportunities.amounts_usd)
     if amount not in amounts:
@@ -261,6 +256,48 @@ def opportunities_api(amount: float = 1000.0, chain: str | None = None, kind: st
             "hedge_withstand_rise_pct")},
         "items": [o.to_dict(amount, target) for o in ranked[:max(1, min(limit, 500))]],
     }
+
+
+def _opps_all(conn, config) -> tuple[datetime, list]:
+    from . import opportunities as opps
+
+    now = _now()
+    with _opps_lock:
+        hit = _opps_cache.get("all")
+        if hit is None or (now - hit[0]).total_seconds() > 60:
+            hit = (now, opps.collect(conn, config, now))
+            _opps_cache["all"] = hit
+    return hit
+
+
+@app.get("/api/opportunities/{key}")
+def opportunity_detail(key: str, amount: float = 1000.0) -> dict:
+    """入れる先の詳しい画面（N2c）: 1つの機会の計算の内訳・保険あり／なし・印・会場の安全度・キャンペーン。"""
+    from . import app_settings
+
+    with _open() as (config, conn):
+        target = app_settings.target_apr_pct(conn, config)
+        at, ops = _opps_all(conn, config)
+    if amount not in config.opportunities.amounts_usd:
+        raise HTTPException(400, "金額は一覧の切り替えにある額にしてください。")
+    op = next((o for o in ops if o.base.key == key), None)
+    if op is None:
+        raise HTTPException(404, "この入れる先は、今の一覧にありません（終わったか、登録したチェーンではない）。")
+    return {"computed_at": at.isoformat(timespec="seconds"), "target_apr_pct": target, "amount": amount,
+            "amounts": list(config.opportunities.amounts_usd), "item": op.to_dict(amount, target),
+            "campaigns": op.campaigns,
+            "practice": {"available": op.base.source == "chain", "pool_id": op.base.key if op.base.source == "chain" else None,
+                         "note": None if op.base.source == "chain" else
+                         "Merkl の入れる先の練習は N6 で作ります（今は自分で読む会場のプールだけ練習できます）。"}}
+
+
+@app.get("/api/guard")
+def guard_api() -> dict:
+    """「守る」の画面（N2c）: 置いている額と上限（会場ごと・チェーンごと）、損失ライン。"""
+    from . import guard
+
+    with _open() as (config, conn):
+        return guard.summary(conn, config, _now())
 
 
 @app.get("/api/venues")

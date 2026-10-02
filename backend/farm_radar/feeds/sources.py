@@ -56,6 +56,15 @@ def _int(v: Any) -> int | None:
 
 # --- Merkl ------------------------------------------------------------------------------------
 
+def _trust(t: Any) -> dict[str, Any] | None:
+    if not isinstance(t, dict):
+        return None
+    hacks = t.get("hacks")
+    return {"audits": _int(t.get("audits")), "hacks": len(hacks) if isinstance(hacks, list) else None,
+            "listed_at": _int(t.get("listedAt")), "tvl": _num(t.get("tvl")), "category": t.get("category"),
+            "slug": t.get("slug")}
+
+
 def merkl_opportunities(data: Any) -> list[Item]:
     out = []
     for o in data if isinstance(data, list) else []:
@@ -76,6 +85,8 @@ def merkl_opportunities(data: Any) -> list[Item]:
                 # N2b: コインの住所（値動きの計算に使う）と、同じキャンペーンの続きを見分ける名前
                 "token_addrs": [t.get("address") for t in o.get("tokens") or [] if isinstance(t, dict)][:6],
                 "identifier": o.get("identifier"),
+                # N2c: 会場の安全度（仮）に使う、Merkl が載せている会場の情報（監査の数・事件・載った日・預かり額）
+                "trust": _trust(proto.get("trustData")),
             }))
     return out
 
