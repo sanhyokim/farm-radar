@@ -111,7 +111,10 @@ export interface Opportunity {
   safety: Safety; venue_safety: Safety | null;
 }
 /** 安全度（仮の3段階。N2c。N4 で危なさの点数に置きかえる） */
-export interface Safety { level: "high" | "mid" | "low"; label: string; provisional: boolean; reasons: string[] }
+export interface Safety {
+  level: "high" | "mid" | "low"; label: string; provisional: boolean; reasons: string[];
+  uncertain_match?: boolean;   // 会場の情報が名前だけで結びついている（N4 で契約の住所で見分ける）
+}
 export interface OppCampaign {
   campaign_id: string; distribution_type: string | null; distribution_method: string | null; reward_symbol: string | null;
   reward_type: string | null; daily_rewards: number | null; apr: number | null; start_ts: number | null; end_ts: number | null;

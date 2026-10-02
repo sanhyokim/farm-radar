@@ -30,6 +30,10 @@ export function SafetyPill({ s, short = false }: { s: Safety | null | undefined;
 export const isGuess = (o: Opportunity) => o.flags.some((f) => f.code === "RWD_GUESS");
 export const GuessPill = () => <Pill tone="y" icon="alert">値下がり未計算（仮の値で計算）</Pill>;
 
+/** 会場の情報が名前だけで結びついている印（オーナー依頼 2026-10-02 17:07 JST。N4 で契約の住所で見分ける） */
+export const isUncertainVenue = (o: Opportunity) => !!o.safety?.uncertain_match;
+export const VenueMatchPill = () => <Pill icon="info">仮・会場の見分けが不確か</Pill>;
+
 /** 狙い利回りを変える（設定。リスク上限とは別のもの） */
 export function TargetEdit({ current, onSaved }: { current: number; onSaved: () => void }) {
   const [open, setOpen] = useState(false);

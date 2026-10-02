@@ -523,7 +523,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         rpc=rpc,
         venues=tuple(raw.get("venues") or ()),
         stale_after_minutes=int(raw.get("stale_after_minutes", 45)),
-        limits=dict(raw.get("limits") or {}),
+        limits=_limits(raw),
         epoch_fresh_minutes=int((raw.get("rewards") or {}).get("epoch_fresh_minutes", 120)),
         reward_drop_alert_pct=float((raw.get("alerts") or {}).get("reward_rate_drop_pct", 30)),
         scoring=_scoring(raw),
@@ -539,6 +539,23 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         chains=_chains(raw),
         root=root,
     )
+
+
+def _limits(raw: dict[str, Any]) -> dict[str, Any]:
+    """リスク上限（limits）。値はオーナーが config.yaml で決める（エージェントは変えない。絶対ルール5）。
+
+    ここでは形だけ確かめる（数字であること・0 より大きいこと・会場の割合は 0〜1）。範囲の上は決めない
+    （はじめは $100〜$1,000、のちに $10,000、作りは $100,000 まで。SPEC 13.1）。
+    """
+    lim = dict(raw.get("limits") or {})
+    for k in ("position_usd", "total_usd", "trades_per_day"):
+        if k in lim and (isinstance(lim[k], bool) or not isinstance(lim[k], (int, float)) or lim[k] <= 0):
+            raise ConfigError(f"limits.{k} は 0 より大きい数字にしてください（カンマや $ は付けない。例: 10000）。今: {lim[k]!r}")
+    if "per_venue_share" in lim:
+        v = lim["per_venue_share"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= 1:
+            raise ConfigError(f"limits.per_venue_share は 0 より大きく 1 以下の数字にしてください（例: 0.5）。今: {v!r}")
+    return lim
 
 
 def chain_reads_enabled(env: dict[str, str] | None = None) -> bool:

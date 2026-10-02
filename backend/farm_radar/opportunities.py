@@ -474,6 +474,9 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     live = [c for c in campaigns if (c.get("start_ts") or 0) <= now_s and (c.get("end_ts") is None or c["end_ts"] > now_s)]
     tvl = base.tvl_usd or 0.0
     _flags(op, info, live, base, s, now_s)
+    note = safety.match_note(info.get("trust"))
+    if note:
+        op.flags.append(Flag("VENUE_MATCH", LEVEL_INFO, note))
     if op.kind == "other":
         op.computable, op.reason = False, "借りる型などは計算しない（預けて受け取る型だけ）"
         return op
