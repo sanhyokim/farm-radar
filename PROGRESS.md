@@ -133,6 +133,24 @@
   Merkl の値段 1.0001 と中身の値段の差は 0.01%。
 - **次にやること**: PR #19 は 2026-10-02 13:59 JST にオーナーがマージ。N2c は PR #20 に出した（下の「N2c 画面の作り直しの実装メモ」）。
 
+## 新しい版の更新を1行にした（2026-10-02 22:14 JST オーナー選択「A. 1行だけ貼る形にする」）
+- オーナー「手順がかなり面倒。あなたができないの？」→ 案 A（1行で更新）を選択。B（Remote Control でパソコンにつなぐ）は使わない。
+- `scripts/pc/update-v2.ps1`（UTF-8 の BOM つき。Windows PowerShell 5.1 で日本語が化けないため）。PowerShell に貼る1行:
+  `Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/sanhyokim/farm-radar/claude/project-thread-np18zb/scripts/pc/update-v2.ps1 -OutFile C:\Users\user\Downloads\update-v2.ps1; powershell -NoProfile -ExecutionPolicy Bypass -File C:\Users\user\Downloads\update-v2.ps1`
+- 中身: 確かめ（フォルダー・.env・2つの版が running）→ 今の版の状態のメモ → ZIP のダウンロードと展開・中身の確かめ → 新しい版だけ止める（`-p farm-radar-v2`）→
+  前のフォルダーを `farm-radar-v2-old-日付-時刻` で残す → .env と data を引き継ぐ → 組み立てて起動 → 一覧を読み終わるまで待つ → 結果のまとめ（今の版の前後の比べも）。
+  途中で失敗したら、新しい中身を `farm-radar-v2-failed-日付-時刻` にして前のフォルダーを戻し、前の版を起動し直す。記録は Downloads の `farm-radar-v2-update-日付-時刻.txt`。
+- 作業場所で PowerShell 7 と偽の docker・偽の今の版で、通る場合と途中で失敗する場合を試した（Windows では未確認）。
+- 次からの更新も、`$MustHave`（新しい版に入っているはずのファイル）を変えるだけで同じ1行を使う。
+- 22:48 JST の1回目（あなたのパソコンで確かめた値）: 組み立てと起動は成功したが、そのあと Windows PowerShell 5.1 が docker の表示を受け取るところで
+  「インデックスが配列の境界外です」と止まり、前の新しい版に戻った（farm-radar-v2 は前の版で動いている。新しい中身は farm-radar-v2-failed-20261002-2248）。
+  直し: docker を PowerShell を通さず Start-Process で直接動かし、終わりの番号だけを見る。
+- 22:58 JST の2回目（あなたのパソコンで確かめた値）: **更新は成功。新しい版は N3 で動いている**（一覧 15 個すべて ok、pool_states 25、入れる先 174 件・計算 107、
+  チェーンの記録で計算 15・会場の見分けが不確か 71、SPY-NVDA 幅 ±2.0% 年利 7.5%、守る left 3000.0）。前のフォルダーは farm-radar-v2-old-20261002-2258。
+  最後の「今の版（18000）の前後の比べ」だけが 30 秒で時間切れになり「止めました」と出た（起動の後なので戻しはしていない）。
+  直し: 今の版を読むときは 90 秒まで待ち、だめなら 20 秒あけて 3 回まで試す。最後の比べで読めなくても止めずに注意だけ出す。
+  作業場所で「ずっと答えない／1回目だけ遅い／すぐ答える」の3つの偽の今の版で試した。
+
 ## N3 読み方の型の実装メモ（2026-10-02 JST。SPEC 13.4 の N3。オーナー「確認が済んだら N3 を始めてください」17:07 JST）
 - **やったこと**: Merkl の「幅に配る」プール（Uniswap v3・v4 の型）のボーナスの取り分を、預かり額の割合ではなく、
   **チェーンの記録の流動性（今の値段のところに置かれたお金）の割合**で出すようにした。今の版の Alandale と同じ考え方（scoring/model.py の `liquidity_for_usd`）。
