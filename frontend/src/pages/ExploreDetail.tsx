@@ -3,7 +3,7 @@ import { useApi, type OppCampaign, type OppDetailResp, type Safety } from "../ap
 import { bigUsd, jst, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Folds, Line, Loading, Note, PageHead, Pill, Segmented, Term } from "../ui";
-import { Breakdown, GuessPill, KIND, SafetyPill, Side, VenueMatchPill, apr, days, isGuess, isUncertainVenue } from "./opp";
+import { Breakdown, GuessPill, KIND, SafetyPill, Side, VenueMatchPill, apr, days, isGuess, isRecommended, isUncertainVenue } from "./opp";
 
 /**
  * 入れる先の詳しい画面（N2c）: 計算の内訳、保険あり・なし、印、この会場の安全度、「$1,000 を試す」。
@@ -39,7 +39,8 @@ export default function ExploreDetail() {
         </div>
         <div className="flex flex-wrap gap-2">
           {o.excluded ? <Pill tone="r" icon="alert">外した</Pill>
-            : o.above_target ? <Pill tone="g" icon="check">狙い以上</Pill> : <Pill>狙いより低い</Pill>}
+            : isRecommended(o) ? <Pill tone="g" icon="check">狙い以上・おすすめ</Pill>
+            : o.above_target ? <Pill icon="info">狙い以上（会場の見分けが不確かなので、おすすめに入れない）</Pill> : <Pill>狙いより低い</Pill>}
           <SafetyPill s={o.safety} />
           {isGuess(o) && <GuessPill />}
           {isUncertainVenue(o) && <VenueMatchPill />}

@@ -199,7 +199,7 @@ try {
     foreach ($s in $fs.sources) { Say ("   {0,-22} {1,-12} {2}" -f $s.id, $s.status, $s.items) }
 
     $o = Invoke-RestMethod "$NewApi/api/opportunities?amount=1000&show_excluded=true&limit=300" -TimeoutSec 120
-    Say "[入れる先] total: $($o.counts.total) / computed: $($o.counts.computed) / listed: $($o.counts.listed) / above_target: $($o.counts.above_target) / target: $($o.target_apr_pct)"
+    Say "[入れる先] total: $($o.counts.total) / computed: $($o.counts.computed) / listed: $($o.counts.listed) / above_target: $($o.counts.above_target) / recommended: $($o.counts.recommended) / target: $($o.target_apr_pct)"
     $c = @($o.items | Where-Object { $_.flags.code -contains 'RANGE_CHAIN' })
     $u = @($o.items | Where-Object { $_.safety.uncertain_match })
     Say "[チェーンの記録で計算] chain: $($c.Count) / 会場の見分けが不確か: $($u.Count)"

@@ -3,7 +3,7 @@ import { useApi, type OpportunitiesResp, type Opportunity } from "../api";
 import { bigUsd, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Folds, Line, Loading, Note, PageHead, Segmented, Term, useWide } from "../ui";
-import { CHAINS, GuessPill, SafetyPill, TargetEdit, VenueMatchPill, apr, days, isGuess, isUncertainVenue, type Chain } from "./opp";
+import { CHAINS, GuessPill, SafetyPill, TargetEdit, VenueMatchPill, apr, days, isGuess, isRecommended, isUncertainVenue, type Chain } from "./opp";
 
 /**
  * 探す（N2c。SPEC 13.1 の追加の決定 2）: 「機会」と「プール」をまとめた、入れる先の1行ずつの表。
@@ -38,8 +38,9 @@ export default function Explore() {
       <Card>
         <p className="sec">
           入れる額 {usd(data.amount, 0)} で、<Term k="控えめの見込み">控えめの見込み</Term>が
-          <Term k="狙い利回り">狙い利回り</Term>（年{+data.target_apr_pct.toFixed(2)}%）以上なのは <span className="bold">{c.above_target}件</span>
-          （色の付いた行）。
+          <Term k="狙い利回り">狙い利回り</Term>（年{+data.target_apr_pct.toFixed(2)}%）以上なのは <span className="bold">{c.above_target}件</span>。
+          そのうち練習のおすすめ（色の付いた行）は <span className="bold">{c.recommended ?? 0}件</span>です。
+          「仮・会場の見分けが不確か」の行はおすすめに入れませんが、自分で選んで練習はできます。
         </p>
         <TargetEdit current={data.target_apr_pct} onSaved={reload} />
       </Card>
@@ -122,7 +123,7 @@ function HeadRow() {
 
 function Row({ o, wide, back }: { o: Opportunity; wide: boolean; back: string }) {
   const b = o.best;
-  const hit = !o.excluded && !!o.above_target;
+  const hit = isRecommended(o);
   const where = [o.chain_name, o.venue_name ?? o.venue].filter(Boolean).join(" · ");
   const to = `/explore/${encodeURIComponent(o.key)}${back}`;
   const style = { background: hit ? HIT_BG : undefined, borderTop: "1px solid var(--line-soft)",
