@@ -76,6 +76,8 @@ OPPS = [
     _opp("o-borrow", "Borrow USDC", action="BORROW", tokens=(("USDC", USDC),),
          campaigns=[_campaign("c-b", "o-borrow")]),
     _opp("o-soon", "Starts later", campaigns=[_campaign("c-soon", "o-soon", start=NOW_S + 86400)]),
+    _opp("o-guess", "Lend USDC for an unknown coin", action="LEND", typ="ERC20", tokens=(("USDC", USDC),),
+         campaigns=[_campaign("c-guess", "o-guess", daily=500.0, reward=("GUESS", "0x" + "9" * 40, 1.0))]),
     _opp("o-short", "Ends in an hour", campaigns=[_campaign("c-short", "o-short", daily=2.0,
                                                             end=NOW_S + 3600)]),
 ]
@@ -237,13 +239,28 @@ def test_hedge_deposit_is_enough_to_survive_the_rise():
     need = opps.margin_need(perp, 0.5)
     assert need == pytest.approx(0.5 + 1.5 * 0.03)                               # 50% 上がっても強制的に閉じられない
     assert opps.margin_need({"imf": 0.9, "mmf": 0.01}, 0.5) == 0.9               # 最初に要る割合のほうが大きいとき
-    s = CFG.opportunities
-    split = opps._split(s, CFG, True, 0.5 * need)                                # プールは半分が ETH
+    split = opps._split(True, 0.5 * need, 0.01)                                  # プールは半分が ETH・予備 $10 / $1,000
     assert sum(split.values()) == pytest.approx(1.0)
     assert split["hedge_margin"] == pytest.approx(split["pool"] * 0.5 * need)
-    assert split["reserve"] == CFG.scoring.allocation_reserve
-    assert 0.74 < split["pool"] < 0.76                                           # $1,000 → 約 $750 を置く
-    assert opps._split(s, CFG, False) == {"pool": 1 - split["reserve"], "hedge_margin": 0.0, "reserve": split["reserve"]}
+    assert split["reserve"] == 0.01
+    assert 0.77 < split["pool"] < 0.79                                           # $1,000 → 約 $780 を置く
+    assert opps._split(False, reserve=0.01) == {"pool": 0.99, "hedge_margin": 0.0, "reserve": 0.01}
+
+
+def test_reserve_is_gas_money_per_chain():
+    s = CFG.opportunities
+    assert opps.reserve_usd(s, "robinhood") == 20.0 and opps.reserve_usd(s, "base") == 10.0
+    assert opps.reserve_usd(s, "unknown") == 20.0                                # 書いていないチェーンは一番大きい値
+
+
+def test_stay_factor_and_provisional_drop():
+    s = CFG.opportunities
+    r = opps.provisional_trend(s)
+    assert (1 + r) ** 30 == pytest.approx(0.70)                                  # 月 −30%
+    f = opps.stay_factor(r, 14)
+    assert f == pytest.approx(0.9212, abs=1e-4)                                  # 14日いる間の平均の値段は約 92%
+    assert opps.stay_factor(0.01, 14) == 1.0 and opps.stay_factor(None, 14) == 1.0
+    assert opps.stay_factor(r, 30) == pytest.approx(-0.3 / math.log(0.7))
 
 
 # --- 1つの機会の計算 ------------------------------------------------------------------------------
@@ -290,7 +307,8 @@ def test_screening_flags(cfg):
     assert "SMALL" in codes["o-small"] and ops["o-small"].excluded
     assert "RESTRICTED" in codes["o-only"] and ops["o-only"].excluded         # 名前の [... Only]
     assert "RESTRICTED" in codes["o-wl"] and ops["o-wl"].excluded             # 名簿つき
-    assert {"POINTS", "CROSS_CHAIN", "RWD_TREND"} <= codes["o-pts"]                  # 別のチェーンのコインは値動きが分からない
+    assert {"POINTS", "CROSS_CHAIN", "RWD_GUESS"} <= codes["o-pts"]                  # 別のチェーンのコインは値動きが分からない
+    assert ops["o-pts"].flags[[f.code for f in ops["o-pts"].flags].index("RWD_GUESS")].level == "warn"
     assert ops["o-new"].new_pool and "NEW_POOL" in codes["o-new"] and "SMALL" not in codes["o-new"]
     assert "PAYBACK" in codes["o-short"] and ops["o-short"].excluded          # 1時間では費用を取り返せない
     assert not ops["o-noprice"].computable and "FOO" in ops["o-noprice"].reason
@@ -339,6 +357,28 @@ def test_own_venue_reuses_the_approved_model_with_the_split(tmp_path):
     assert yes.direction == 0 and no.direction > 0 and yes.hedge_cost > 0
     assert any(f.code == "VENUE" for f in o.flags)                               # 会場の警告（C4 など）をそのまま
     conn.close()
+
+
+def test_unknown_bonus_coin_gets_a_provisional_drop_in_the_cautious_case(cfg):
+    o = _collect(cfg)["o-guess"]
+    assert "RWD_GUESS" in {f.code for f in o.flags} and "値下がり未計算（仮の値で計算）" in o.flags[0].text
+    nor, cau = o.calc["1000"]["normal"]["no_hedge"], o.calc["1000"]["cautious"]["no_hedge"]
+    assert nor.haircut == 0                                                     # ふつうは引かない（記録がない）
+    s = cfg.opportunities
+    r = opps.provisional_trend(s)
+    pool, tvl = cau.split["pool"], 1_000_000.0 * s.cautious_tvl_multiple
+    bonus = 500.0 * pool / (tvl + pool) * opps.stay_factor(r, cau.stay_days)
+    assert cau.haircut == pytest.approx(bonus * -r)
+    assert cau.income == pytest.approx(bonus)                                   # 元の利息はない機会
+    assert cau.split["reserve"] == 10.0 and cau.split["pool"] == 990.0          # Base の予備 $10、保険なし
+
+
+def test_known_bonus_coin_uses_its_record(cfg):
+    o = _collect(cfg)["o-eth"]
+    nor, cau = o.calc["1000"]["normal"]["no_hedge"], o.calc["1000"]["cautious"]["no_hedge"]
+    assert "RWD_GUESS" not in {f.code for f in o.flags}
+    assert nor.haircut > 0 and cau.haircut > 0                                  # 記録の傾き（1日 −2%）で引く
+    assert cau.haircut / cau.income < nor.haircut / nor.income * 1.0001        # 控えめは平均の値段で数えるので比は同じか小さい
 
 
 # --- 設定と読み取り口 ----------------------------------------------------------------------------
