@@ -90,9 +90,19 @@ function Running([object[]]$list, [string]$name) {
 }
 
 function OldState {
-    $e = Invoke-RestMethod "$OldApi/api/paper/evaluation" -TimeoutSec 30
-    $q = Invoke-RestMethod "$OldApi/api/pulse" -TimeoutSec 30
-    return [pscustomobject]@{ eval = "$($e.state)"; open = "$($e.open_positions)"; stale = "$($q.stale)"; last = "$($q.last_ok_at)" }
+    # 今の版は毎時0分・15分ごとの集計中に返事が遅くなることがあるので（2026-10-02 22:58 JST に30秒で時間切れ）、
+    # 90秒まで待ち、だめなら20秒あけて3回まで試す
+    for ($i = 1; $i -le 3; $i++) {
+        try {
+            $e = Invoke-RestMethod "$OldApi/api/paper/evaluation" -TimeoutSec 90
+            $q = Invoke-RestMethod "$OldApi/api/pulse" -TimeoutSec 90
+            return [pscustomobject]@{ eval = "$($e.state)"; open = "$($e.open_positions)"; stale = "$($q.stale)"; last = "$($q.last_ok_at)" }
+        } catch {
+            if ($i -eq 3) { throw "今の版（18000）が答えません（3回試しました）: $($_.Exception.Message)" }
+            Say "   今の版の返事が遅いので、20秒後にもう一度確かめます（$i/3）……"
+            Start-Sleep -Seconds 20
+        }
+    }
 }
 
 try { Start-Transcript -Path $Log -Force | Out-Null } catch { }
@@ -202,13 +212,18 @@ try {
     $g = Invoke-RestMethod "$NewApi/api/guard" -TimeoutSec 60
     Say "[守る] placed: $($g.placed_usd) / left: $($g.total_left_usd) / loss_line: $($g.loss_line.state) / venues: $(@($g.venues).Count) / chains: $(@($g.chains).Count)"
 
-    $after = OldState
+    # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
     Say "[今の版] 前: eval: $($before.eval) / open: $($before.open) / last_ok_at: $($before.last)"
-    Say "[今の版] 後: eval: $($after.eval) / open: $($after.open) / stale: $($after.stale) / last_ok_at: $($after.last)"
-    if ($after.eval -ne $before.eval -or $after.open -ne $before.open -or $after.stale -eq 'True') {
-        Write-Host '   注意: 今の版の状態が前と違います。このまとめを送ってください。' -ForegroundColor Yellow
-    } else {
-        Ok '今の版はそのまま動いています。'
+    try {
+        $after = OldState
+        Say "[今の版] 後: eval: $($after.eval) / open: $($after.open) / stale: $($after.stale) / last_ok_at: $($after.last)"
+        if ($after.eval -ne $before.eval -or $after.open -ne $before.open -or $after.stale -eq 'True') {
+            Write-Host '   注意: 今の版の状態が前と違います。このまとめを送ってください。' -ForegroundColor Yellow
+        } else {
+            Ok '今の版はそのまま動いています。'
+        }
+    } catch {
+        Write-Host "   注意: 今の版の状態を読めませんでした（$($_.Exception.Message)）。新しい版の更新は終わっています。このまとめを送ってください。" -ForegroundColor Yellow
     }
     Write-Host ''
     Write-Host '更新が終わりました。上の「9/9 結果のまとめ」から下を全部コピーして送ってください。' -ForegroundColor Green
