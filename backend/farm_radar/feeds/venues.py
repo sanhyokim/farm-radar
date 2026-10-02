@@ -3,7 +3,7 @@
 会場の登録（venues/known/<id>.yaml）の工場の契約に、`isXxx(住所)` のような「作ったか」を聞く読み取りをする。
 - 確かめるのは、登録したチェーンで今動いている Merkl の入れる先のうち、会場の登録に工場が書いてあるものだけ。
 - 答え（作った・作っていない）は変わらないので、一度答えが出たら 30日は読み直さない。読み取り口の失敗は次の回に回す。
-- 1秒に1回まで（receipts と同じ間隔）。1日1回、預かり証のあとに読む。
+- 読み取りの間隔は、読み取り口ごとの回数制限（receipts と同じ）に任せる。1日1回、預かり証のあとに読む。
 
 読み取りだけ（eth_call）。お金を動かすコードはない。
 """
@@ -20,7 +20,7 @@ from typing import Any
 
 from .. import venue_match
 from ..rpc.client import RpcCallError
-from .receipts import _call, rpc_for
+from .receipts import CALL_GAP_SECONDS, _call, rpc_for
 
 log = logging.getLogger(__name__)
 MAX_PER_RUN = 200            # 1回に確かめる数の上限（読み取り口の回数制限のため）
@@ -46,7 +46,7 @@ def candidates(conn: sqlite3.Connection, chains: dict[int, dict[str, Any]], know
         v = by_proto.get(str(info.get("protocol") or "").lower())
         if cid not in chains or v is None or not addr.startswith("0x") or len(addr) != 42:
             continue
-        for rule in venue_match.factory_targets(v, chains[cid].get("id")):
+        for rule in venue_match.factory_targets(v, chains[cid].get("id"), info.get("type")):
             fac = str(rule["factory"]).lower()
             if (int(cid), addr, fac) in done:
                 continue
@@ -72,7 +72,7 @@ def read(conn: sqlite3.Connection, chains: dict[int, dict[str, Any]], known: dic
         except Exception as exc:  # noqa: BLE001  読み取り口の失敗は、次の回に回す
             row.update(failed=True, error=f"読み取りに失敗: {exc}"[:200])
         out[f"{c['chain_id']}:{c['address']}:{c['factory']}"] = row
-        sleep(0.0)
+        sleep(CALL_GAP_SECONDS)          # 間隔は読み取り口ごとの回数制限（ratelimit）に任せる（receipts と同じ）
     for rpc in clients.values():
         close = getattr(rpc, "close", None)
         if close:

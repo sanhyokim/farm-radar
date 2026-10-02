@@ -90,30 +90,36 @@ def by_protocol(known: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def rules(v: dict[str, Any], chain: str | None) -> list[dict[str, Any]]:
-    return [r for r in (v.get("match") or {}).get(chain or "", []) or [] if not r.get("unverified")]
+def rules(v: dict[str, Any], chain: str | None, kind: str | None = None) -> list[dict[str, Any]]:
+    """そのチェーンの見分け方。merkl_types を書いた見分け方は、その種類の入れる先だけに使う
+    （例: Morpho の「借りる」型は、Merkl の住所がコインの住所なので、金庫の工場には聞かない）。"""
+    return [r for r in (v.get("match") or {}).get(chain or "", []) or [] if not r.get("unverified")
+            and (kind is None or not r.get("merkl_types") or kind in r["merkl_types"])]
 
 
-def factory_targets(v: dict[str, Any], chain: str | None) -> list[dict[str, Any]]:
-    return [r for r in rules(v, chain) if r.get("method") == "factory"]
+def factory_targets(v: dict[str, Any], chain: str | None, kind: str | None = None) -> list[dict[str, Any]]:
+    return [r for r in rules(v, chain, kind) if r.get("method") == "factory"]
 
 
 def identify(protocol: str | None, chain: str | None, chain_id: int | None, address: str | None,
              known_by_protocol: dict[str, dict[str, Any]], checks: dict[tuple[int, str], dict[str, Any]],
-             cl_state: dict[str, Any] | None = None) -> dict[str, Any]:
+             cl_state: dict[str, Any] | None = None, kind: str | None = None) -> dict[str, Any]:
     """入れる先がどの会場かを、契約の住所で見分ける。
 
     戻り値: status（STATUS_JA のどれか）, venue_id, name, method, reason, source_url。
     checks は feeds/venues.py の結果（(チェーン番号, 住所) → {工場の住所（小文字）→ {verified, checked_at, error}}）。
     答えが出ていない（読み取り口の失敗）ものは入れない。
-    cl_state は N3 の幅に配るプールの読み取り（official・hooks）。
+    cl_state は N3 の幅に配るプールの読み取り（official・hooks）。kind は Merkl の入れる先の種類（type）。
     """
     v = known_by_protocol.get(str(protocol or "").lower())
     base = {"venue_id": v["id"] if v else None, "name": v["name"] if v else protocol, "method": None,
             "source_url": None}
     if v is None:
         return {**base, "status": "unregistered", "reason": STATUS_JA["unregistered"]}
-    rs = rules(v, chain)
+    rs = rules(v, chain, kind)
+    if not rs and rules(v, chain):
+        return {**base, "status": "no_address",
+                "reason": f"この種類の入れる先（{kind}）は、Merkl の書く住所が会場の契約ではないので、住所で見分けられない"}
     if not rs:
         return {**base, "status": "unregistered",
                 "reason": f"このチェーンでの {v['name']} の公式の住所をまだ確かめていない"}

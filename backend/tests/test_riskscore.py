@@ -53,6 +53,30 @@ def test_identify_uniswap_by_official_pool_reads_and_hooks():
     assert _id(**u, cl={"official": 0, "hooks": None})["status"] == "mismatch"
 
 
+def test_rules_with_merkl_types_only_apply_to_those_kinds():
+    known = {"m": {"id": "m", "name": "M", "merkl_protocols": ["M"], "match": {"base": [
+        {"method": "factory", "factory": FACTORY, "function": "isVaultV2(address)", "merkl_types": ["MORPHOVAULT"],
+         "source_url": "https://example.org/a", "checked_at": "2026-10-02"}]}}}
+    by = venue_match.by_protocol(known)
+    yes = {(8453, VAULT): {FACTORY: {"verified": 1, "checked_at": "t"}}}
+    assert venue_match.identify("M", "base", 8453, VAULT, by, yes, kind="MORPHOVAULT")["status"] == "verified"
+    # 「借りる」型は Merkl の住所がコインの住所なので、工場には聞かず「住所で見分けられない」
+    r = venue_match.identify("M", "base", 8453, VAULT, by, yes, kind="MORPHOBORROW")
+    assert r["status"] == "no_address" and "MORPHOBORROW" in r["reason"]
+    assert venue_match.factory_targets(known["m"], "base", "MORPHOBORROW") == []
+
+
+def test_real_registry_has_official_venues():
+    known = venue_match.load_known()
+    assert {"uniswap", "morpho", "hyperdrive", "ipor-fusion"} <= set(known)
+    hd = known["hyperdrive"]
+    # Merkl が結びつけた DefiLlama の「hyperdrive」（別の会社の終わったプロジェクト）は使わない
+    assert "hyperdrive" not in hd["defillama"]["slugs"]
+    by = venue_match.by_protocol(known)
+    r = venue_match.identify("Hyperdrive", "base", 8453, "0x58a0f600d555eb25b792Ec2c6824D0bff5127B1F", by, {})
+    assert r["status"] == "verified" and r["method"] == "addresses"
+
+
 def test_registry_rules_need_sources_and_address_shapes(tmp_path):
     d = tmp_path / "venues" / "known"
     d.mkdir(parents=True)

@@ -592,7 +592,8 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
                      limits=dict(config.limits))
     # N4a: どの会場かを契約の住所で見分ける。見分けた会場だけ、その会場の情報（DefiLlama・登録）を危なさの点数に使う
     identity = venue_match.identify(info.get("protocol"), base.chain, base.evm_chain_id, info.get("explorer_address"),
-                                    data.known_by_protocol, data.venue_checks, _pool_state(campaigns, base, data))
+                                    data.known_by_protocol, data.venue_checks, _pool_state(campaigns, base, data),
+                                    kind=info.get("type"))
     known = data.known.get(identity.get("venue_id") or "")
     facts = data.venue_facts(((known or {}).get("defillama") or {}).get("slugs") or [], known) \
         if identity["status"] == "verified" and known else None

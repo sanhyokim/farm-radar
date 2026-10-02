@@ -11,6 +11,20 @@ defillama:
   slugs: [uniswap-v3, uniswap-v4]
   source_url: https://api.llama.fi/protocols
   checked_at: "2026-10-02"
+# 運営の鍵（チェーンの記録 2026-10-02・公開ソース）: v4 の PoolManager は作り替えられない。管理者ができるのは手数料の設定だけ
+#   （上限 0.1%）。v3 の factory も、手数料を入れることと手数料の段階を足すことだけ。管理者は Base でも Robinhood でも
+#   Uniswap の投票（Ethereum の Timelock 0x1a9C8182C09F50C8318d769245beA52c32BE35BC、2日待ち）。
+admin:
+  type: timelock
+  note_ja: 管理者は Uniswap の投票（2日待ち）。できるのは手数料の設定だけで、預けたお金やプールの仕組みは変えられない
+  source_url: https://github.com/Uniswap/docs/blob/main/content/ecosystem/governance/technical-reference.mdx
+  checked_at: "2026-10-02"
+# バグ報奨金: https://uniswap.org/bug-bounty → Cantina（v4 の中心は最大 $15.5M、v3 は最大 $2.25M）
+bug_bounty:
+  url: https://cantina.xyz/bounties/f9df94db-c7b1-434b-bb06-d1360abdd1be
+  max_usd: 15500000
+  source_url: https://uniswap.org/bug-bounty
+  checked_at: "2026-10-02"
 match:
   robinhood:
     - method: uniswap

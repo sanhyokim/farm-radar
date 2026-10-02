@@ -1,0 +1,50 @@
+# 会場の登録（N4a。会場を契約の住所で見分けるためのもの）: Morpho（金庫）
+# 見分け方: Morpho の公式の工場（factory）に「この金庫はあなたが作ったか」を聞く（1日1回。答えは30日使う）。
+#   Vault V2 は isVaultV2(住所)、Vault V1・V1.1 は isMetaMorpho(住所)（関数の名前は Morpho の公開ソース）。
+# 住所の出典: https://docs.morpho.org/developers/contracts/addresses/（確認日 2026-10-02）。
+#   Base の工場3つは base.blockscout.com で中身の公開を確認、Robinhood の VaultV2Factory は Sourcify（4663）で確認。
+# 作業場所での確認（チェーンの記録 2026-10-02）: Base の Merkl の金庫15件と Robinhood の Steakhouse USDG V2 は、
+#   どれか1つの工場で true。USDC の住所は false。
+# 「借りる」「担保」型（MORPHOBORROW など）は、Merkl の住所がコインの住所なので、金庫の工場には聞かない（merkl_types）。
+# 運営の鍵: 中心の契約は作り替えられない。金庫ごとの待ち時間は、金庫の運用者（curator）が決める（初めは0。
+#   金庫ごとに読む必要がある）ので、ここでは「分からない」のままにする。
+# 読み取りだけ。お金を動かすコードはない。
+id: morpho
+name: Morpho
+merkl_protocols: [Morpho]
+defillama:
+  slugs: [morpho-blue]
+  source_url: https://api.llama.fi/protocols
+  checked_at: "2026-10-02"
+bug_bounty:
+  url: https://cantina.xyz/bounties/35a5f0a1-2ffd-432c-8f3b-77d169add8c3
+  max_usd: 2500000
+  source_url: https://docs.morpho.org/learn/resources/risks
+  checked_at: "2026-10-02"
+match:
+  base:
+    - method: factory
+      factory: "0x4501125508079A99ebBebCE205DeC9593C2b5857"   # VaultV2Factory
+      function: isVaultV2(address)
+      merkl_types: [ERC20LOGPROCESSOR, MORPHOVAULT]
+      source_url: https://docs.morpho.org/developers/contracts/addresses/
+      checked_at: "2026-10-02"
+    - method: factory
+      factory: "0xFf62A7c278C62eD665133147129245053Bbf5918"   # MetaMorphoV1_1Factory
+      function: isMetaMorpho(address)
+      merkl_types: [ERC20LOGPROCESSOR, MORPHOVAULT]
+      source_url: https://docs.morpho.org/developers/contracts/addresses/
+      checked_at: "2026-10-02"
+    - method: factory
+      factory: "0xA9c3D3a366466Fa809d1Ae982Fb2c46E5fC41101"   # MetaMorphoFactory（古い V1）
+      function: isMetaMorpho(address)
+      merkl_types: [ERC20LOGPROCESSOR, MORPHOVAULT]
+      source_url: https://docs.morpho.org/developers/contracts/addresses/
+      checked_at: "2026-10-02"
+  robinhood:
+    - method: factory
+      factory: "0x0FBad98595b0186dA120E41f77C102beb49f803c"   # VaultV2Factory（Robinhood には V1 の工場はない）
+      function: isVaultV2(address)
+      merkl_types: [ERC20LOGPROCESSOR, MORPHOVAULT]
+      source_url: https://docs.morpho.org/developers/contracts/addresses/
+      checked_at: "2026-10-02"
