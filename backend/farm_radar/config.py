@@ -393,6 +393,59 @@ def _feeds(raw: dict[str, Any], root: Path) -> FeedSettings:
 
 
 @dataclass(frozen=True)
+class OpportunitySettings:
+    """機会の一覧（N2b。SPEC 13.4）。config.yaml の opportunities から読む。
+
+    数字はオーナーが決めたもの（狙い利回り 年30%。13.1 の3）以外は仮。N5 の試しの結果で決め直してオーナーに相談する（13.3）。
+    """
+    target_apr_pct: float = 30.0                          # 狙い利回り（年%）の最初の値。画面の「設定」で変えられる
+    amounts_usd: tuple[float, ...] = (100.0, 1000.0, 10000.0, 100000.0)
+    max_pool_share: float = 0.05                          # 自分が預かり額のこの割合を超えない（仮）
+    cautious_tvl_multiple: float = 1.5                    # 「控えめ」: 預かり額がこの倍になるとして薄める（仮）
+    min_tvl_usd: float = 50_000.0                         # これより小さい機会は外す（新しいプールは別。仮）
+    new_pool_tvl_usd: float = 20_000.0                    # 預かり額がこれ未満で、始まったばかりのキャンペーンなら「新しいプール」
+    new_pool_days: float = 3.0                            # 「始まったばかり」の日数（仮）
+    too_high_apr_pct: float = 1000.0                      # 表示の年利がこれ以上なら警告（仮）
+    stay_days: float = 14.0                               # 移る費用を割る日数の上限（残りが短ければそちら。仮）
+    merkl_range_pct: float = 15.0                         # Merkl の幅に配るプールの幅（±%。仮）
+    pool_fee_pct: float = 0.3                             # 両替の手数料が分からないときの値（%。仮）
+    gas_usd_per_tx: dict[str, float] = field(default_factory=lambda: {"robinhood": 0.15, "base": 0.05})
+    stable_max_sigma: float = 0.005                       # 1日の値動きがこれ未満で $1 から2%以内なら「値動きしない」
+    perp_alias: dict[str, str] = field(default_factory=lambda: {"WETH": "ETH", "WBTC": "BTC", "cbBTC": "BTC"})
+    hedge_withstand_rise_pct: float = 50.0                # 保険に預けるお金: 値段がこの%上がっても強制的に閉じられない額（仮）
+
+
+def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
+    o = raw.get("opportunities") or {}
+    d = OpportunitySettings()
+    try:
+        out = OpportunitySettings(
+            target_apr_pct=float(o.get("target_apr_pct", d.target_apr_pct)),
+            amounts_usd=tuple(float(x) for x in o.get("amounts_usd", d.amounts_usd)),
+            max_pool_share=float(o.get("max_pool_share", d.max_pool_share)),
+            cautious_tvl_multiple=float(o.get("cautious_tvl_multiple", d.cautious_tvl_multiple)),
+            min_tvl_usd=float(o.get("min_tvl_usd", d.min_tvl_usd)),
+            new_pool_tvl_usd=float(o.get("new_pool_tvl_usd", d.new_pool_tvl_usd)),
+            new_pool_days=float(o.get("new_pool_days", d.new_pool_days)),
+            too_high_apr_pct=float(o.get("too_high_apr_pct", d.too_high_apr_pct)),
+            stay_days=float(o.get("stay_days", d.stay_days)),
+            merkl_range_pct=float(o.get("merkl_range_pct", d.merkl_range_pct)),
+            pool_fee_pct=float(o.get("pool_fee_pct", d.pool_fee_pct)),
+            gas_usd_per_tx={str(k): float(v) for k, v in (o.get("gas_usd_per_tx") or d.gas_usd_per_tx).items()},
+            stable_max_sigma=float(o.get("stable_max_sigma", d.stable_max_sigma)),
+            perp_alias={str(k): str(v) for k, v in (o.get("perp_alias") or d.perp_alias).items()},
+            hedge_withstand_rise_pct=float(o.get("hedge_withstand_rise_pct", d.hedge_withstand_rise_pct)),
+        )
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ConfigError(f"config.yaml の opportunities の書き方を確かめてください（{exc}）。") from None
+    if not out.amounts_usd or any(a <= 0 for a in out.amounts_usd) or not 0 < out.max_pool_share <= 1 \
+            or out.cautious_tvl_multiple < 1 or out.stay_days <= 0 or not 0 < out.merkl_range_pct < 100 \
+            or not 0 < out.hedge_withstand_rise_pct <= 500:
+        raise ConfigError("config.yaml の opportunities の数字を確かめてください（金額は正、割合は0〜1、倍率は1以上）。")
+    return out
+
+
+@dataclass(frozen=True)
 class Config:
     mode: str
     database_path: Path
@@ -414,6 +467,7 @@ class Config:
     feeds: FeedSettings = field(default_factory=FeedSettings)
     # 詳しく計算するチェーン（chains/<id>.yaml。N1）。チェーンを足すときは、ファイルを置いてここに1行足すだけ
     chains: tuple[str, ...] = ("robinhood",)
+    opportunities: OpportunitySettings = field(default_factory=OpportunitySettings)
     root: Path = REPO_ROOT
 
 
@@ -467,6 +521,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         discovery=_discovery(raw),
         observe_venues=_observe_venues(raw),
         feeds=_feeds(raw, root),
+        opportunities=_opportunities(raw),
         chains=_chains(raw),
         root=root,
     )

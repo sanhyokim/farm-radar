@@ -90,6 +90,35 @@ export interface FeedsStatus {
     articles: { slug: string; title: string; date: string | null; url: string; new: boolean; first_seen: string }[] };
 }
 
+/** 機会の一覧（N2b。SPEC 13.4）。金額はドル、1日あたり */
+export interface OppVariant {
+  hedge: boolean; amount: number; split: { pool: number; hedge_margin: number; reserve: number };
+  income: number; points: boolean; gamma: number; rebalance: number; hedge_cost: number; haircut: number;
+  direction: number; net: number; move_cost: number; stay_days: number; net_after_move: number; apr_pct: number;
+  payback_days: number | null; in_range_ratio: number | null; range_pct: number | null;
+}
+export interface OppFlag { code: string; level: "exclude" | "warn" | "info"; text: string }
+export type OppCase = { no_hedge: OppVariant | null; hedge: OppVariant | null };
+export interface Opportunity {
+  source: "chain" | "merkl"; chain: string | null; chain_name: string | null; venue: string; venue_name: string | null;
+  key: string; name: string | null; tokens: string[]; tvl_usd: number | null; bonus_usd_per_day: number | null;
+  bonus_token: string | null; shown_apr_pct: number | null; ends_at: string | null; days_left: number | null;
+  observed_at: string | null; url: string | null;
+  kind: "pool_range" | "pool_full" | "hold" | "other"; computable: boolean; reason: string | null;
+  flags: OppFlag[]; excluded: boolean; unprotected: string[]; cap_usd: number | null; new_pool: boolean;
+  calc: Record<string, { normal: OppCase; cautious: OppCase }>;
+  best: OppVariant | null; above_target: boolean | null; over_cap: boolean;
+}
+export interface OpportunitiesResp {
+  computed_at: string; target_apr_pct: number; amount: number; amounts: number[];
+  counts: { total: number; computed: number; listed: number; above_target: number; excluded: number; not_computable: number };
+  not_computable: [string, number][];
+  settings: { max_pool_share: number; cautious_tvl_multiple: number; min_tvl_usd: number; stay_days: number;
+    merkl_range_pct: number; hedge_withstand_rise_pct: number };
+  items: Opportunity[];
+}
+export interface AppSettings { target_apr_pct: number; default_target_apr_pct: number; updated_at: string | null; min: number; max: number }
+
 export interface EmissionEnd { at: string; days_left: number; soon: boolean; ended: boolean; source?: string | null }
 
 /** 「予定とメモ」の1件（docs/plans.yaml。期限の7日前から soon。2026-09-30 オーナー追加） */
@@ -348,6 +377,13 @@ export async function postApi<T>(path: string, body?: unknown): Promise<T> {
   const r = await fetch(path, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined,
   });
+  if (!r.ok) throw new Error((await r.json().catch(() => null))?.detail ?? `エラー ${r.status}`);
+  return r.json();
+}
+
+/** PUT して JSON を返す（設定の変更）。失敗したらサーバーの日本語の理由を投げる。 */
+export async function putApi<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error((await r.json().catch(() => null))?.detail ?? `エラー ${r.status}`);
   return r.json();
 }

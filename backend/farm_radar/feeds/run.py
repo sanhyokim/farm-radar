@@ -19,6 +19,7 @@ from . import store
 from .sources import SOURCES, Item, Source
 
 log = logging.getLogger(__name__)
+TOKEN_BATCH = 2
 
 
 class Fetcher:
@@ -31,6 +32,45 @@ class Fetcher:
 
     def text(self, url: str, params: dict[str, Any] | None = None) -> str:
         return self.http.get_text(url, params)
+
+
+def wanted_coins(conn: sqlite3.Connection, coin_chains: dict[int, str]) -> list[str]:
+    """値動きを読むコイン（N2b）: 登録したチェーンの、最新の回の Merkl の機会のコインと報酬のコイン。"""
+    last = conn.execute("SELECT MAX(ts) FROM merkl_opportunity_snaps").fetchone()[0]
+    if not last or not coin_chains:
+        return []
+    out: set[str] = set()
+    for r in conn.execute("""SELECT i.info_json FROM merkl_opportunity_snaps s JOIN feed_items i
+                             ON i.source='merkl_opportunities' AND i.key=s.opportunity_id WHERE s.ts=?""", (last,)):
+        info = json.loads(r[0] or "{}")
+        key = coin_chains.get(info.get("chain_id"))
+        if key:
+            out.update(f"{key}:{a.lower()}" for a in info.get("token_addrs") or [] if isinstance(a, str) and a)
+    now_s = int(datetime.fromisoformat(last).timestamp())
+    for r in conn.execute("SELECT distribution_chain_id, reward_address FROM merkl_campaigns WHERE reward_address IS NOT "
+                          "NULL AND (end_ts IS NULL OR end_ts > ?)", (now_s,)):
+        key = coin_chains.get(r[0])
+        if key:
+            out.add(f"{key}:{r[1].lower()}")
+    return sorted(out)
+
+
+def _read_token_prices(conn: sqlite3.Connection, source: Source, fetcher: Fetcher,
+                       coin_chains: dict[int, str]) -> tuple[Any, bytes, int]:
+    """DefiLlama の coins の chart を、コイン2個ずつまとめて読む（1秒に1回まで）。
+
+    1回に返せる点の数に上限があるらしく、1時間ごと7日分（169点）だと3個で 400 になった（2026-10-02 に確かめた。
+    2個 = 338点は通り、3個 = 507点は 400）。コイン150個なら約75回・約75秒。
+    """
+    coins = wanted_coins(conn, coin_chains)
+    merged: dict[str, Any] = {}
+    pages = 0
+    for i in range(0, len(coins), TOKEN_BATCH):
+        body = fetcher.text(f"{source.url}/{','.join(coins[i:i + TOKEN_BATCH])}", source.params or None)
+        pages += 1
+        data = json.loads(body)
+        merged.update((data or {}).get("coins") or {})
+    return merged, json.dumps(merged).encode("utf-8"), pages
 
 
 def _read(source: Source, fetcher: Fetcher) -> tuple[Any, bytes, int]:
@@ -54,12 +94,15 @@ def _read(source: Source, fetcher: Fetcher) -> tuple[Any, bytes, int]:
 
 
 def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, settings: FeedSettings,
-               now: datetime | None = None) -> dict[str, Any]:
+               now: datetime | None = None, coin_chains: dict[int, str] | None = None) -> dict[str, Any]:
     """1つの一覧を読んで保存する。結果（status・件数）を返す。"""
     now = now or datetime.now(UTC)
     run_id = store.start_run(conn, source.id, now)
     try:
-        data, raw, pages = _read(source, fetcher)
+        if source.id == "token_prices":
+            data, raw, pages = _read_token_prices(conn, source, fetcher, coin_chains or {})
+        else:
+            data, raw, pages = _read(source, fetcher)
         items: list[Item] = source.parse(data)
     except ExternalError as exc:
         status = "rate_limited" if getattr(exc, "status", None) == 429 else "error"
@@ -86,6 +129,12 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = store.write_merkl(conn, seen_at, data)
     elif source.id == "llama_yields":
         extra = store.write_yields(conn, now, items)
+    elif source.id == "lighter_markets":
+        extra = store.write_lighter_markets(conn, seen_at, items)
+    elif source.id == "lighter_funding":
+        extra = store.write_lighter_funding(conn, seen_at, items)
+    elif source.id == "token_prices":
+        extra = store.write_token_prices(conn, seen_at, data)
     store.finish_run(conn, run_id, datetime.now(UTC), "ok", items=len(items), new_items=new if prev else 0,
                      gone_items=gone, pages=pages, bytes=len(raw), raw_path=raw_path)
     log.info("feed saved", extra={"data": {"source": source.id, "items": len(items), "new": new if prev else 0,
@@ -110,8 +159,9 @@ class FeedRunner:
     """読む順番と時刻を決める（scheduler から呼ぶ）。"""
 
     def __init__(self, settings: FeedSettings, fetcher: Fetcher | None = None,
-                 connect: Callable[[], sqlite3.Connection] | None = None):
+                 connect: Callable[[], sqlite3.Connection] | None = None, coin_chains: dict[int, str] | None = None):
         self.settings = settings
+        self.coin_chains = coin_chains or {}          # N2b: コインの値動きを読むチェーン（チェーン番号 → DefiLlama の名前）
         self.fetcher = fetcher or Fetcher(settings)
         self._connect = connect or (lambda: store.connect(settings.database_path))
 
@@ -124,7 +174,7 @@ class FeedRunner:
                     continue
                 if cadence == "daily" and not daily_due(conn, s, self.settings, now or datetime.now(UTC)):
                     continue
-                out.append(run_source(conn, s, self.fetcher, self.settings, now))
+                out.append(run_source(conn, s, self.fetcher, self.settings, now, self.coin_chains))
             return out
         finally:
             conn.close()

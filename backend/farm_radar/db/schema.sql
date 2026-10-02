@@ -307,3 +307,11 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   kind TEXT NOT NULL                  -- external（外部データ） / rpc
 );
 CREATE INDEX IF NOT EXISTS idx_rate_limits_ts ON rate_limits(ts);
+
+-- 画面の「設定」で変える値（N2b。2026-10-02）。今は狙い利回り（target_apr_pct）だけ。
+-- 無ければ config.yaml の opportunities.target_apr_pct（年30%。13.1 の3 オーナー決定）を使う
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);

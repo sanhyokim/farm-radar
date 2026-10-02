@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -72,6 +73,9 @@ def merkl_opportunities(data: Any) -> list[Item]:
                 "start": _int(o.get("earliestCampaignStart")), "end": _int(o.get("latestCampaignEnd")),
                 "live_campaigns": _int(o.get("liveCampaigns")), "explorer_address": o.get("explorerAddress"),
                 "deposit_url": o.get("depositUrl"), "tags": (o.get("tags") or [])[:6],
+                # N2b: コインの住所（値動きの計算に使う）と、同じキャンペーンの続きを見分ける名前
+                "token_addrs": [t.get("address") for t in o.get("tokens") or [] if isinstance(t, dict)][:6],
+                "identifier": o.get("identifier"),
             }))
     return out
 
@@ -79,7 +83,7 @@ def merkl_opportunities(data: Any) -> list[Item]:
 def merkl_opportunity_snap(o: dict[str, Any]) -> tuple:
     """merkl_opportunity_snaps の1行（ts を除く）。"""
     return (str(o["id"]), o.get("status"), _num(o.get("apr")), _num(o.get("maxApr")), _num(o.get("nativeApr")),
-            _num(o.get("tvl")), _num(o.get("dailyRewards")), _int(o.get("liveCampaigns")))
+            _num(o.get("tvl")), _num(o.get("dailyRewards")), _int(o.get("liveCampaigns")), _num(o.get("maxDailyRewards")))
 
 
 def merkl_campaigns(o: dict[str, Any]) -> list[dict[str, Any]]:
@@ -105,8 +109,33 @@ def merkl_campaigns(o: dict[str, Any]) -> list[dict[str, Any]]:
             "reward_decimals": _int(tok.get("decimals")), "reward_price": _num(tok.get("price")),
             "daily_rewards": _num(c.get("dailyRewards")), "apr": _num(c.get("apr")),
             "creator": c.get("creatorAddress"), "created_at": _int(status.get("createdAt") or c.get("createdAt")),
+            **campaign_terms(c),
         })
     return out
+
+
+# 配り方の細かい設定のうち、自分の利回りの計算に使うもの（N2b。research/redesign-merkl-2026-10-01.md の 1-1・3章）
+_TERM_KEYS = ("apr", "targetAPR", "mode", "rewardTokenPricing", "targetTokenPricing", "side")
+_WEIGHT_KEYS = ("weightFees", "weightToken0", "weightToken1")
+
+
+def campaign_terms(c: dict[str, Any]) -> dict[str, Any]:
+    """配り方（山分け・上限つき・固定・上乗せ）、参加できる人の制限、報酬の種類（TOKEN か POINT など）。"""
+    params = c.get("params") if isinstance(c.get("params"), dict) else {}
+    dmp = params.get("distributionMethodParameters") if isinstance(params.get("distributionMethodParameters"), dict) else {}
+    settings = dmp.get("distributionSettings") if isinstance(dmp.get("distributionSettings"), dict) else {}
+    terms = {k: settings[k] for k in _TERM_KEYS if k in settings}
+    terms.update({k: params[k] for k in _WEIGHT_KEYS if k in params})
+    tok = c.get("rewardToken") if isinstance(c.get("rewardToken"), dict) else {}
+    whitelist = params.get("whitelist") or []
+    return {
+        "distribution_method": dmp.get("distributionMethod"),
+        "settings_json": json.dumps(terms, ensure_ascii=False, sort_keys=True) if terms else None,
+        "restricted": int(bool(whitelist) or bool(c.get("isPrivate"))),
+        "hidden": int(bool(c.get("hidden"))),
+        "reward_type": tok.get("type"),
+        "reward_verified": None if tok.get("verified") is None else int(bool(tok.get("verified"))),
+    }
 
 
 def merkl_chains(data: Any) -> list[Item]:
@@ -174,6 +203,40 @@ def lifi_chains(data: Any) -> list[Item]:
             for c in rows or [] if isinstance(c, dict) and c.get("id") is not None]
 
 
+# --- Lighter（保険の売り場。N2b） ----------------------------------------------------------------------
+
+LIGHTER = "https://mainnet.zklighter.elliot.ai/api/v1"
+
+
+def lighter_markets(data: Any) -> list[Item]:
+    """perp の銘柄（手数料・証拠金の割合・建玉の量）。単位の確認は venues/lighter.yaml。"""
+    rows = (data or {}).get("order_book_details") if isinstance(data, dict) else None
+    out = []
+    for m in rows or []:
+        if not isinstance(m, dict) or m.get("market_id") is None or m.get("market_type") != "perp":
+            continue
+        out.append(Item(str(m["market_id"]), m.get("symbol"), None, {
+            "status": m.get("status"), "taker_pct": _num(m.get("taker_fee")), "maker_pct": _num(m.get("maker_fee")),
+            "imf": _int(m.get("default_initial_margin_fraction")), "mmf": _int(m.get("maintenance_margin_fraction")),
+            "open_interest": _num(m.get("open_interest")), "daily_quote_volume": _num(m.get("daily_quote_token_volume")),
+            "mark_price": _num(m.get("mark_price"))}))
+    return out
+
+
+def lighter_funding(data: Any) -> list[Item]:
+    """今の資金調達率（exchange=lighter の行だけ。8時間あたりの割合。external/lighter.py の単位の確認）。"""
+    rows = (data or {}).get("funding_rates") if isinstance(data, dict) else None
+    return [Item(str(r["market_id"]), r.get("symbol"), None, {"rate_8h": _num(r.get("rate"))})
+            for r in rows or [] if isinstance(r, dict) and r.get("exchange") == "lighter" and r.get("market_id") is not None]
+
+
+def token_prices(data: Any) -> list[Item]:
+    """run._read_token_prices がまとめた {"<チェーン>:<住所>": {...}} を一覧の形にする。"""
+    return [Item(k, v.get("symbol"), k.partition(":")[0], {"points": len(v.get("prices") or []),
+                                                            "confidence": v.get("confidence")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
 # --- Aero の公式のお知らせ ------------------------------------------------------------------------
 
 _AERO_ENTRY = re.compile(r"^#{2,3} \[(?P<title>[^\]]+)\]\((?P<path>/articles/[^)\s]+)\)\s*$", re.M)
@@ -213,6 +276,14 @@ SOURCES: tuple[Source, ...] = (
            across_chains),
     Source("relay_chains", "Relay の対応チェーン（送金）", "https://api.relay.link/chains", "daily", relay_chains),
     Source("lifi_chains", "LI.FI の対応チェーン（送金）", "https://li.quest/v1/chains", "daily", lifi_chains),
+    # N2b: 保険（Lighter）の銘柄と資金調達率
+    Source("lighter_markets", "Lighter の銘柄（保険）", f"{LIGHTER}/orderBookDetails", "daily", lighter_markets),
+    Source("lighter_funding", "Lighter の資金調達率（保険の費用）", f"{LIGHTER}/funding-rates", "hourly",
+           lighter_funding),
+    # N2b: 登録したチェーンの機会に出てくるコインの、1時間ごとの値段（7日分）。値動きの大きさ（σ）に使う。
+    # 読むコインは run.wanted_coins が決める（住所はコインごとに違うので、決まった URL ではない）
+    Source("token_prices", "コインの値段（7日分。値動きの計算）", "https://coins.llama.fi/chart", "daily",
+           token_prices, params={"span": "169", "period": "1h"}),
 )
 
 BY_ID = {s.id: s for s in SOURCES}

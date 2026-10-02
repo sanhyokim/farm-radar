@@ -97,3 +97,45 @@ CREATE TABLE IF NOT EXISTS rate_limits (
   host TEXT NOT NULL,
   kind TEXT NOT NULL
 );
+
+-- ここから N2b（機会の一覧の計算に使う。2026-10-02）。古い表に足す列は store.py の _ADD_COLUMNS
+
+-- Lighter（保険の売り場）の銘柄（1日1回。/api/v1/orderBookDetails）
+CREATE TABLE IF NOT EXISTS lighter_markets (
+  market_id INTEGER PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  status TEXT,
+  taker_pct REAL,
+  maker_pct REAL,
+  initial_margin_fraction INTEGER,     -- 応答の値のまま（単位は公式の資料で確かめてから使う）
+  maintenance_margin_fraction INTEGER,
+  open_interest REAL,
+  daily_quote_volume REAL,
+  mark_price REAL,
+  updated_at TEXT NOT NULL
+);
+
+-- Lighter の資金調達率（1時間に1回。/api/v1/funding-rates の exchange=lighter。8時間あたりの割合）
+CREATE TABLE IF NOT EXISTS lighter_funding_snaps (
+  ts TEXT NOT NULL,
+  market_id INTEGER NOT NULL,
+  symbol TEXT,
+  rate_8h REAL,
+  PRIMARY KEY (ts, market_id)
+);
+
+-- コインの1時間ごとの値段（1日1回。DefiLlama の coins の chart。登録したチェーンの機会に出てくるコインだけ）
+CREATE TABLE IF NOT EXISTS token_prices (
+  coin TEXT NOT NULL,                  -- "<DefiLlama のチェーン名>:<住所>"
+  ts INTEGER NOT NULL,                 -- UNIX 秒
+  price REAL NOT NULL,
+  PRIMARY KEY (coin, ts)
+);
+CREATE TABLE IF NOT EXISTS token_meta (
+  coin TEXT PRIMARY KEY,
+  symbol TEXT,
+  chain_id INTEGER,
+  address TEXT,
+  confidence REAL,
+  updated_at TEXT NOT NULL
+);

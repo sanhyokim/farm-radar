@@ -168,9 +168,10 @@ def test_runner_reads_only_the_cadence_asked(settings):
     texts = {s.url: "[]" for s in sources.SOURCES if s.cadence == "daily" and not s.page_size}
     pages = {s.url: [] for s in sources.SOURCES if s.page_size}
     texts["https://aero.xyz/articles/index.md"] = AERO_MD
+    texts[sources.BY_ID["lighter_funding"].url] = "{}"
     r = FeedRunner(settings, FakeFetcher(pages=pages, texts=texts))
     out = r.run("hourly", NOW)
-    assert [o["source"] for o in out] == ["aero_articles"] and out[0]["items"] == 2
+    assert [o["source"] for o in out] == ["aero_articles", "lighter_funding"] and out[0]["items"] == 2
     out = r.run("daily", NOW)
     assert {o["source"] for o in out} == {s.id for s in sources.SOURCES if s.cadence == "daily"}
     assert r.run("daily", NOW + timedelta(minutes=30)) == []        # 今日はもう読んだ

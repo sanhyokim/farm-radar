@@ -192,6 +192,77 @@ def standard_api(source: str | None = None, chain: str | None = None, all_chains
     return {"total": len(rows), "counts": counts, "items": [r.to_dict() for r in rows[:max(0, min(limit, 2000))]]}
 
 
+class SettingsBody(BaseModel):
+    target_apr_pct: float
+
+
+@app.get("/api/settings")
+def settings_get() -> dict:
+    """画面の「設定」（N2b）。今は狙い利回り（年%）だけ。"""
+    from . import app_settings
+
+    with _open() as (config, conn):
+        return app_settings.view(conn, config)
+
+
+@app.put("/api/settings")
+def settings_put(body: SettingsBody) -> dict:
+    from . import app_settings
+
+    with _open() as (config, conn):
+        try:
+            app_settings.set_target_apr_pct(conn, body.target_apr_pct, _now())
+        except app_settings.SettingsError as exc:
+            raise HTTPException(400, str(exc)) from None
+        _opps_cache.clear()
+        return app_settings.view(conn, config)
+
+
+_opps_cache: dict[str, tuple[datetime, list]] = {}
+_opps_lock = threading.Lock()
+
+
+@app.get("/api/opportunities")
+def opportunities_api(amount: float = 1000.0, chain: str | None = None, kind: str | None = None,
+                      show_excluded: bool = False, limit: int = 100) -> dict:
+    """機会の一覧（N2b）: 本当に残る利回り（金額ごと・保険あり／なし・ふつう／控えめ）、狙い利回りとの比べ、ふるい分け。
+
+    並べ方: 計算できたもの → 狙い利回り以上 → 控えめの見込みの年利の高い順。外したもの（小さすぎる・参加できない・
+    費用を取り返せないなど）は show_excluded のときだけ。計算は1分ごとに作り直す（保存は15分ごと）。
+    """
+    from . import app_settings
+    from . import opportunities as opps
+
+    with _open() as (config, conn):
+        target = app_settings.target_apr_pct(conn, config)
+        now = _now()
+        with _opps_lock:
+            hit = _opps_cache.get("all")
+            if hit is None or (now - hit[0]).total_seconds() > 60:
+                hit = (now, opps.collect(conn, config, now))
+                _opps_cache["all"] = hit
+        ops = hit[1]
+    amounts = list(config.opportunities.amounts_usd)
+    if amount not in amounts:
+        raise HTTPException(400, f"金額は {', '.join(f'{a:g}' for a in amounts)} のどれかにしてください。")
+    sel = [o for o in ops if (chain is None or o.base.chain == chain) and (kind is None or o.kind.startswith(kind))]
+    ranked = opps.rank([o for o in sel if o.computable], amount, target, include_excluded=show_excluded)
+    above = sum(1 for o in ranked if not o.excluded and (b := o.best(amount)) and b.apr_pct >= target)
+    return {
+        "computed_at": hit[0].isoformat(timespec="seconds"), "target_apr_pct": target, "amount": amount,
+        "amounts": amounts, "counts": {
+            "total": len(sel), "computed": sum(1 for o in sel if o.computable),
+            "listed": sum(1 for o in sel if o.computable and not o.excluded), "above_target": above,
+            "excluded": sum(1 for o in sel if o.computable and o.excluded),
+            "not_computable": sum(1 for o in sel if not o.computable)},
+        "not_computable": Counter(o.reason for o in sel if not o.computable).most_common(10),
+        "settings": {k: getattr(config.opportunities, k) for k in (
+            "max_pool_share", "cautious_tvl_multiple", "min_tvl_usd", "stay_days", "merkl_range_pct",
+            "hedge_withstand_rise_pct")},
+        "items": [o.to_dict(amount, target) for o in ranked[:max(1, min(limit, 500))]],
+    }
+
+
 @app.get("/api/venues")
 def venues() -> dict:
     """会場ごとの確認状況と警告（C4 など）、4条件のランプ、報酬トークン価格と TVL の推移（SPEC 7.2章）。"""

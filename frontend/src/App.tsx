@@ -11,9 +11,11 @@ import Practice from "./pages/Practice";
 import PracticeDetail from "./pages/PracticeDetail";
 import { TimelinePage } from "./pages/PaperExtras";
 import Learn from "./pages/Learn";
+import Opportunities from "./pages/Opportunities";
 
 const TABS: { to: string; label: string; icon: IconName }[] = [
   { to: "/", label: "ホーム", icon: "home" },
+  { to: "/opportunities", label: "機会", icon: "flag" },
   { to: "/venues", label: "会場", icon: "venue" },
   { to: "/pools", label: "プール", icon: "pools" },
   { to: "/practice", label: "練習", icon: "flask" },
@@ -32,6 +34,7 @@ export default function App() {
         <main className={`mx-auto flex max-w-xl flex-col gap-4 px-4 pt-6 lg:ml-64 lg:max-w-none lg:px-8 lg:pt-8 lg:pb-8 ${detail ? "pb-32" : "pb-tab"}`}>
           <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/opportunities" element={<Opportunities />} />
             <Route path="/venues" element={<Venues />} />
             <Route path="/pools" element={<Pools />} />
             <Route path="/pools/:id" element={<PoolDetail />} />
@@ -48,10 +51,10 @@ export default function App() {
   );
 }
 
-/** スマホ: 下に浮かぶタブ（パソコンでは左のメニューに変わる。オーナー依頼 33） */
+/** スマホ: 下に浮かぶタブ（パソコンでは左のメニューに変わる。オーナー依頼 33）。N2b で「機会」を足して6つ */
 function TabBar() {
   return (
-    <nav aria-label="メニュー" className="glass tabbar fixed inset-x-4 z-40 mx-auto grid h-16 max-w-lg grid-cols-5 rounded-[32px] p-2 lg:hidden">
+    <nav aria-label="メニュー" className="glass tabbar fixed inset-x-4 z-40 mx-auto grid h-16 max-w-lg grid-cols-6 rounded-[32px] p-2 lg:hidden">
       {TABS.map((t) => (
         <NavLink key={t.to} to={t.to} end={t.to === "/"}
           className={({ isActive }) => `flex flex-col items-center justify-center rounded-3xl ${isActive ? "bg-white/10 text-ink" : "text-cap"}`}>
