@@ -112,10 +112,18 @@ export interface Opportunity {
   recommended?: boolean | null;   // 練習のおすすめ（狙い以上で、会場の見分けが確か。2026-10-02 23:15 JST）
   safety: Safety; venue_safety: Safety | null;
 }
-/** 安全度（仮の3段階。N2c。N4 で危なさの点数に置きかえる） */
+/** 危なさの点数（N4a。N2c の「安全度」を置きかえた。点が多いほど危ない。重みと区切りは仮） */
+export interface SafetyPart { key: string; label: string; points: number; note: string }
+export interface VenueIdentity {
+  status: "verified" | "unchecked" | "hooked" | "unregistered" | "no_address" | "mismatch";
+  venue_id: string | null; name: string | null; method: string | null; reason: string; source_url: string | null;
+}
+export interface Recommend { usd: number | null; pct: number | null; small_capital: boolean; note: string }
 export interface Safety {
-  level: "high" | "mid" | "low"; label: string; provisional: boolean; reasons: string[];
-  uncertain_match?: boolean;   // 会場の情報が名前だけで結びついている（N4 で契約の住所で見分ける）
+  level: "low" | "mid" | "high" | "very_high"; label: string; score: number; provisional: boolean;
+  parts: SafetyPart[]; reasons: string[]; identity: VenueIdentity | null;
+  uncertain_match?: boolean;   // 会場を契約の住所で見分けられていない
+  recommend?: Recommend;       // 推奨金額（本番で1か所に置いてよい額の目安）
 }
 export interface OppCampaign {
   campaign_id: string; distribution_type: string | null; distribution_method: string | null; reward_symbol: string | null;
@@ -142,7 +150,7 @@ export interface Guard {
 }
 export interface OpportunitiesResp {
   computed_at: string; target_apr_pct: number; amount: number; amounts: number[];
-  counts: { total: number; computed: number; listed: number; above_target: number; recommended?: number; uncertain_venue?: number; excluded: number; not_computable: number };
+  counts: { total: number; computed: number; listed: number; above_target: number; recommended?: number; uncertain_venue?: number; danger?: Partial<Record<Safety["level"], number>>; venue_verified?: number; excluded: number; not_computable: number };
   not_computable: [string, number][];
   settings: { max_pool_share: number; cautious_tvl_multiple: number; min_tvl_usd: number; stay_days: number;
     merkl_range_pct: number; hedge_withstand_rise_pct: number };

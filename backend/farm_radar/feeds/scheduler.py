@@ -38,7 +38,9 @@ def main() -> None:
     from ..registry import receipt_chains, stable_addresses
     from .run import ReceiptContext
     rchains = receipt_chains(config.chains, config.root)
-    ctx = ReceiptContext(chains=rchains, stables={cid: stable_addresses(c, config.root) for cid, c in rchains.items()})
+    from ..venue_match import load_known
+    ctx = ReceiptContext(chains=rchains, stables={cid: stable_addresses(c, config.root) for cid, c in rchains.items()},
+                         known=load_known(config.root))
     runner = FeedRunner(fs, coin_chains=coins, receipt_ctx=ctx)
     lock = threading.Lock()                            # 同時に2つ読まない（回数制限とパソコンの負荷のため）
 

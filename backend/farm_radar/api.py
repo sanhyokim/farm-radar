@@ -244,19 +244,24 @@ def opportunities_api(amount: float = 1000.0, chain: str | None = None, kind: st
     ranked = opps.rank([o for o in sel if o.computable], amount, target, include_excluded=show_excluded)
     above = sum(1 for o in ranked if not o.excluded and (b := o.best(amount)) and b.apr_pct >= target)
     recommended = sum(1 for o in ranked if o.recommended(amount, target))
+    items = [o.to_dict(amount, target) for o in ranked]
+    listed = [d for d in items if not d["excluded"]]
     return {
         "computed_at": hit[0].isoformat(timespec="seconds"), "target_apr_pct": target, "amount": amount,
         "amounts": amounts, "counts": {
             "total": len(sel), "computed": sum(1 for o in sel if o.computable),
             "listed": sum(1 for o in sel if o.computable and not o.excluded), "above_target": above,
             "recommended": recommended, "uncertain_venue": sum(1 for o in ranked if not o.excluded and o.uncertain_venue),
+            # 危なさの区分ごとの数と、会場を住所で見分けられた数（N4a。一覧に出すものだけ）
+            "danger": dict(Counter(d["safety"]["level"] for d in listed)),
+            "venue_verified": sum(1 for d in listed if not d["safety"].get("uncertain_match")),
             "excluded": sum(1 for o in sel if o.computable and o.excluded),
             "not_computable": sum(1 for o in sel if not o.computable)},
         "not_computable": Counter(o.reason for o in sel if not o.computable).most_common(10),
         "settings": {k: getattr(config.opportunities, k) for k in (
             "max_pool_share", "cautious_tvl_multiple", "min_tvl_usd", "stay_days", "merkl_range_pct",
             "hedge_withstand_rise_pct")},
-        "items": [o.to_dict(amount, target) for o in ranked[:max(1, min(limit, 500))]],
+        "items": items[:max(1, min(limit, 500))],
     }
 
 

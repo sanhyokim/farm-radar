@@ -182,9 +182,30 @@ def llama_protocols(data: Any) -> list[Item]:
         if not isinstance(p, dict) or not (p.get("slug") or p.get("name")):
             continue
         chains = p.get("chains") or []
+        # N4a: 危なさの点数の材料（監査の印・監査の資料の数・預かり額の増え減り・事件の一覧と結びつける番号）
         out.append(Item(str(p.get("slug") or p["name"]), p.get("name"), chains[0] if len(chains) == 1 else None,
                         {"category": p.get("category"), "chains": chains[:12], "tvl": _num(p.get("tvl")),
-                         "listed_at": _int(p.get("listedAt")), "url": p.get("url")}))
+                         "listed_at": _int(p.get("listedAt")), "url": p.get("url"),
+                         "id": str(p["id"]) if p.get("id") is not None else None, "parent": p.get("parentProtocol"),
+                         "audits": _int(p.get("audits")), "audit_links": len(p.get("audit_links") or []),
+                         "change_1d": _num(p.get("change_1d")), "change_7d": _num(p.get("change_7d")),
+                         "twitter": p.get("twitter")}))
+    return out
+
+
+def llama_hacks(data: Any) -> list[Item]:
+    """DefiLlama の事件の一覧（https://api.llama.fi/hacks。鍵はいらない。2026-10-02 に確かめた）。
+    会場との結びつけは DefiLlama の会場の番号（defillamaId）と親の番号（parentProtocolId）で行う（名前では結びつけない）。"""
+    out = []
+    for h in data if isinstance(data, list) else []:
+        if not isinstance(h, dict) or not h.get("name") or h.get("date") is None:
+            continue
+        out.append(Item(f"{h['name']}:{h['date']}", h.get("name"), None,
+                        {"date": _int(h.get("date")), "amount": _num(h.get("amount")),
+                         "classification": h.get("classification"), "technique": h.get("technique"),
+                         "defillama_id": str(h["defillamaId"]) if h.get("defillamaId") is not None else None,
+                         "parent_id": h.get("parentProtocolId"), "chains": (h.get("chain") or [])[:6],
+                         "returned": _num(h.get("returnedFunds"))}))
     return out
 
 
@@ -263,6 +284,12 @@ def receipts(data: Any) -> list[Item]:
             for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
 
 
+def venue_checks(data: Any) -> list[Item]:
+    """run が feeds/venues.py で確かめた {"<チェーン番号>:<住所>:<工場>": {...}} を一覧の形にする（N4a）。"""
+    return [Item(k, v.get("venue_id"), k.partition(":")[0], {"verified": v.get("verified"), "error": v.get("error")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
 def pool_states(data: Any) -> list[Item]:
     """run が feeds/pools.py で読んだ {"<チェーン番号>:<プール>": {...}} を一覧の形にする（N3）。"""
     return [Item(k, None, k.partition(":")[0], {"kind": v.get("kind"), "official": v.get("official"),
@@ -304,6 +331,7 @@ SOURCES: tuple[Source, ...] = (
     Source("merkl_protocols", "Merkl の会場", f"{MERKL}/protocols", "daily", merkl_protocols, page_size=100),
     Source("llama_chains", "DefiLlama のチェーン", "https://api.llama.fi/v2/chains", "daily", llama_chains),
     Source("llama_protocols", "DefiLlama の会場", "https://api.llama.fi/protocols", "daily", llama_protocols),
+    Source("llama_hacks", "DefiLlama の事件の一覧（危なさの点数）", "https://api.llama.fi/hacks", "daily", llama_hacks),
     Source("llama_yields", "DefiLlama の利回り", "https://yields.llama.fi/pools", "daily", llama_yields),
     Source("across_chains", "Across の対応チェーン（送金）", "https://app.across.to/api/swap/chains", "daily",
            across_chains),
@@ -320,6 +348,8 @@ SOURCES: tuple[Source, ...] = (
     # N2c: 値段の記録がないボーナスのコインが、中身のある預かり証か（チェーンの公開の読み取り口で読む。SPEC 13.1 の5）。
     # コインの値段のあとに読む（記録がないものだけ確かめるため、この順番のまま）
     Source("receipts", "預かり証の中身（チェーンの記録）", "eth_call", "daily", receipts),
+    # N4a: 入れる先の契約が、会場の公式の工場で作られたものか（チェーンの公開の読み取り口。会場を住所で見分ける）
+    Source("venue_checks", "会場の住所での見分け（チェーンの記録）", "eth_call", "daily", venue_checks),
     # N3: 幅に配るプール（Uniswap v3 / v4）の今の値段と流動性（チェーンの公開の読み取り口。公式の住所と確かめたものだけ）。
     # Merkl のあと（キャンペーンのプールを知るため）、1時間に1回。今の版（18000）の 0・15・30・45 分を避ける（Merkl の分と同じ）
     Source("pool_states", "幅に配るプールの値段と流動性（チェーンの記録）", "eth_call", "15min", pool_states,

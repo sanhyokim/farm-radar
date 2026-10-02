@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from ..config import FeedSettings
 from ..external.http import ExternalError, JsonGetter
-from . import pools, receipts, store
+from . import pools, receipts, store, venues
 from .sources import SOURCES, Item, Source
 
 log = logging.getLogger(__name__)
@@ -82,6 +82,7 @@ class ReceiptContext:
     stables: dict[int, dict[str, str]] = field(default_factory=dict)
     rpc_factory: Callable[[dict[str, Any]], Any] | None = None
     sleep: Callable[[float], None] | None = None
+    known: dict[str, dict[str, Any]] = field(default_factory=dict)   # N4a: 会場の登録（venues/known）
 
 
 def _read_receipts(conn: sqlite3.Connection, fetcher: Fetcher, coin_chains: dict[int, str],
@@ -107,6 +108,18 @@ def _read_pools(conn: sqlite3.Connection, ctx: ReceiptContext | None, now: datet
         kw["sleep"] = ctx.sleep
     data = pools.read(conn, ctx.chains, now or datetime.now(UTC), **kw)
     return data, json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"), len(data)
+
+
+def _read_venues(conn: sqlite3.Connection, ctx: ReceiptContext | None, now: datetime | None) -> tuple[Any, bytes, int]:
+    if ctx is None or not ctx.chains or not ctx.known:
+        return {}, b"{}", 0
+    kw: dict[str, Any] = {}
+    if ctx.rpc_factory:
+        kw["rpc_factory"] = ctx.rpc_factory
+    if ctx.sleep:
+        kw["sleep"] = ctx.sleep
+    data = venues.read(conn, ctx.chains, ctx.known, now or datetime.now(UTC), **kw)
+    return data, json.dumps(data, ensure_ascii=False).encode("utf-8"), len(data)
 
 
 def _read(source: Source, fetcher: Fetcher) -> tuple[Any, bytes, int]:
@@ -142,6 +155,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
             data, raw, pages = _read_receipts(conn, fetcher, coin_chains or {}, receipt_ctx, now)
         elif source.id == "pool_states":
             data, raw, pages = _read_pools(conn, receipt_ctx, now)
+        elif source.id == "venue_checks":
+            data, raw, pages = _read_venues(conn, receipt_ctx, now)
         else:
             data, raw, pages = _read(source, fetcher)
         items: list[Item] = source.parse(data)
@@ -180,6 +195,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = store.write_receipts(conn, seen_at, data)
     elif source.id == "pool_states":
         extra = store.write_pool_states(conn, seen_at, data)
+    elif source.id == "venue_checks":
+        extra = store.write_venue_checks(conn, seen_at, data)
     store.finish_run(conn, run_id, datetime.now(UTC), "ok", items=len(items), new_items=new if prev else 0,
                      gone_items=gone, pages=pages, bytes=len(raw), raw_path=raw_path)
     log.info("feed saved", extra={"data": {"source": source.id, "items": len(items), "new": new if prev else 0,

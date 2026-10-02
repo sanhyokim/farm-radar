@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\feeds\pools.py', 'backend\farm_radar\safety.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\feeds\pools.py', 'backend\farm_radar\riskscore.py', 'backend\farm_radar\venue_match.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -200,6 +200,8 @@ try {
 
     $o = Invoke-RestMethod "$NewApi/api/opportunities?amount=1000&show_excluded=true&limit=300" -TimeoutSec 120
     Say "[入れる先] total: $($o.counts.total) / computed: $($o.counts.computed) / listed: $($o.counts.listed) / above_target: $($o.counts.above_target) / recommended: $($o.counts.recommended) / target: $($o.target_apr_pct)"
+    $dg = $o.counts.danger
+    if ($dg) { Say "[危なさ] low: $($dg.low) / mid: $($dg.mid) / high: $($dg.high) / very_high: $($dg.very_high) / venue_verified: $($o.counts.venue_verified)" }
     $c = @($o.items | Where-Object { $_.flags.code -contains 'RANGE_CHAIN' })
     $u = @($o.items | Where-Object { $_.safety.uncertain_match })
     Say "[チェーンの記録で計算] chain: $($c.Count) / 会場の見分けが不確か: $($u.Count)"

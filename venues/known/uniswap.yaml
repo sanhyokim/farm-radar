@@ -1,0 +1,22 @@
+# 会場の登録（N4a。会場を契約の住所で見分けるためのもの）: Uniswap
+# 見分け方: Merkl が「Uniswap」と書いた幅に配るプールのうち、Uniswap の公式の住所（chains/<id>.yaml の uniswap）で
+# 読めたもの（N3 の pool_states で official=1）を「見分け済み」にする。フック付きのプールは、フックを作った会場が
+# 分からないので「見分けられない」にする。公式の住所の出典は chains/robinhood.yaml・chains/base.yaml に書いた。
+# 読み取りだけ。お金を動かすコードはない。
+id: uniswap
+name: Uniswap
+merkl_protocols: [Uniswap]
+defillama:
+  # DefiLlama の会場（v3・v4。同じ親 parent#uniswap）。事件の一覧はこの番号と親の番号で結びつける
+  slugs: [uniswap-v3, uniswap-v4]
+  source_url: https://api.llama.fi/protocols
+  checked_at: "2026-10-02"
+match:
+  robinhood:
+    - method: uniswap
+      source_url: https://developers.uniswap.org/deployments.json
+      checked_at: "2026-10-02"
+  base:
+    - method: uniswap
+      source_url: https://developers.uniswap.org/deployments.json
+      checked_at: "2026-10-02"

@@ -1,38 +1,25 @@
-"""安全度（仮の3段階。N2c。SPEC 13.3: N4 の危なさの点数ができるまで、今ある印から出す。画面には「仮」と書く）。
+"""危なさ（N4a で N2c の「安全度（仮の3段階）」を置きかえた。点数と区分は riskscore.py、会場の見分けは venue_match.py）。
 
-3段階: high（高い）・mid（ふつう）・low（低い）。決め方は今ある印だけ（新しい数字は作らない）:
-- 会場: 自分で読む会場は会場の登録（未確認の契約・警告 C4・監査の有無）、Merkl の会場は Merkl が載せている
-  会場の情報（事件の数・監査の数・載ってからの日数・会場全体の預かり額）。Merkl の会場の情報は DefiLlama のものを
-  写していて、名前の似た別の会場のものが混ざることがある（例: Hyperdrive）。仮の目安として使う。
-  この会場の情報は名前で結びついていて、契約の住所では確かめていないので、「仮・会場の見分けが不確か」の印を付ける
-  （2026-10-02 17:07 JST オーナー依頼。N4 で契約の住所で見分ける形にする）。
-- 入れる先: 会場の安全度から始めて、印で下げる。外す印 → 低い。注意の印・保険で守れない値動き・残りの日数が短い・
-  始まったばかり・入れる額が上限より多い → ふつうまで。
-区切りの数字（90日・7日）は仮。N4 で危なさの点数に置きかえる。
+- 会場: 契約の住所で見分けた会場だけ、会場の情報（DefiLlama の会場・事件の一覧、会場の登録の運営の鍵・バグ報奨金）を使う。
+  見分けられていない会場は、情報を「不明」として点を足す（安全側）。Merkl が名前で結びつけた会場の情報は、
+  参考として理由に書くだけ（2026-10-02 17:07 JST オーナー依頼。名前の似た別の会場の情報が混ざることがあるため。例: Hyperdrive）。
+- 自分で読む会場（up. など。venues/*.yaml）は、登録の住所がすべて確かめ済みなら「見分け済み」。
+- 入れる先: 会場の材料に、入れる先の印（外す印・注意の印・守れない値動きなど）の点を足す。
+読み取りと計算だけ。お金を動かすコードはない。
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
-LEVELS = ("low", "mid", "high")
-LABEL = {"high": "高い", "mid": "ふつう", "low": "低い"}
-NEW_VENUE_DAYS = 90          # 載ってからこの日数より短い会場は「ふつう」まで（仮）
-SHORT_DAYS_LEFT = 7.0        # 配る期間の残りがこの日数より短いと「ふつう」まで（仮）
-SMALL_VENUE_TVL = 1_000_000  # 会場全体の預かり額がこれより小さいと「ふつう」まで（仮）
-
+from . import riskscore
 
 UNCERTAIN_MATCH = "仮・会場の見分けが不確か"
 
 
-def _view(level: str, reasons: list[str], uncertain: bool = False) -> dict[str, Any]:
-    return {"level": level, "label": LABEL[level], "provisional": True, "reasons": reasons,
-            "uncertain_match": uncertain}
-
-
 def match_note(trust: dict[str, Any] | None) -> str | None:
-    """会場の情報が名前だけで結びついているときの説明（Merkl の会場の情報はすべてこれ。N4 まで）。"""
+    """会場の情報が名前だけで結びついているときの説明（住所で見分けられなかった Merkl の会場）。"""
     if not trust:
         return None
     slug = f"「{trust['slug']}」" if trust.get("slug") else ""
@@ -40,73 +27,71 @@ def match_note(trust: dict[str, Any] | None) -> str | None:
             "名前の似た別の会場の情報かもしれない")
 
 
-def _cap(level: str, at_most: str) -> str:
-    return LEVELS[min(LEVELS.index(level), LEVELS.index(at_most))]
-
-
-def venue_from_merkl(trust: dict[str, Any] | None, now: datetime) -> dict[str, Any]:
-    """Merkl の会場（Merkl が載せている会場の情報から）。"""
+def name_hint(trust: dict[str, Any] | None) -> str | None:
+    """名前で結びついた会場の情報（参考。点には使わない）。"""
     if not trust:
-        return _view("mid", ["会場の情報がない（Merkl に会場の記録が載っていない）"])
-    hacks, audits, listed = trust.get("hacks"), trust.get("audits"), trust.get("listed_at")
-    if hacks:
-        return _view("low", [f"過去に事件の記録がある（{hacks}件）", match_note(trust)], uncertain=True)
-    level, reasons = "high", []
-    if not audits:
-        level, reasons = "mid", reasons + ["監査の記録がない"]
-    days = (now.timestamp() - listed) / 86400 if listed else None
-    if days is None:
-        level, reasons = "mid", reasons + ["いつから続いている会場か分からない"]
-    elif days < NEW_VENUE_DAYS:
-        level, reasons = "mid", reasons + [f"載ってから {days:.0f} 日（{NEW_VENUE_DAYS}日未満）"]
+        return None
     tvl = trust.get("tvl")
-    if tvl is not None and tvl < SMALL_VENUE_TVL:
-        # 例: Hyperdrive（2026-10-02）は Merkl の会場の情報の預かり額が $79K。会場の情報が別の会場と混ざっていることもある
-        level, reasons = "mid", reasons + [f"会場全体の預かり額が小さい（${tvl / 1e3:,.0f}K。${SMALL_VENUE_TVL / 1e6:g}M 未満）"]
-    if level == "high":
-        reasons.append(f"監査 {audits}件・事件の記録なし・載ってから {days / 365:.1f} 年")
-    return _view(level, reasons + [match_note(trust)], uncertain=True)
+    bits = [f"監査の印 {trust.get('audits')}", f"事件 {trust.get('hacks') or 0}件"]
+    if tvl is not None:
+        bits.append(f"預かり額 ${tvl / 1e6:,.2f}M")
+    return f"参考（点には使わない）: Merkl が名前で結びつけた会場の情報「{trust.get('slug') or '?'}」は " + "・".join(bits)
 
 
-def venue_from_registry(v: dict[str, Any]) -> dict[str, Any]:
-    """自分で読む会場（venues/*.yaml。会場の画面の C4 と同じ材料）。"""
+def venue_from_merkl(identity: dict[str, Any], facts: dict[str, Any] | None, trust: dict[str, Any] | None,
+                     now: datetime) -> dict[str, Any]:
+    """Merkl の会場。facts は住所で見分けた会場の情報（見分けていなければ None）。"""
+    verified = identity.get("status") == "verified"
+    parts = riskscore.venue_parts(identity, facts if verified else None, now)
+    return riskscore.view(parts, identity, name_hint=None if verified else name_hint(trust))
+
+
+def registry_identity(v: dict[str, Any]) -> dict[str, Any]:
+    """自分で読む会場（venues/*.yaml）の見分け: 登録の住所がすべて確かめ済みなら見分け済み。"""
     unverified = [n for n, c in (v.get("contracts") or {}).items() if c.get("unverified", True)]
+    base = {"venue_id": v.get("id"), "name": v.get("name"), "method": "registry", "source_url": None}
     if unverified:
-        return _view("low", [f"住所を確かめられていない契約がある（{len(unverified)}件）"])
-    reasons = [w.get("title_ja") or w.get("key") for w in v.get("warnings") or [] if w.get("code") == "C4"]
-    if v.get("audited") is None:
-        reasons.append("監査の有無が未確認")
-    return _view("mid", reasons) if reasons else _view("high", ["契約はすべて確認済み・警告なし"])
+        return {**base, "status": "unregistered",
+                "reason": f"会場の登録に、住所を確かめられていない契約がある（{len(unverified)}件）"}
+    return {**base, "status": "verified", "reason": "会場の登録の住所（すべて出典つきで確かめ済み）"}
 
 
-def opportunity(o: dict[str, Any], venue: dict[str, Any] | None) -> dict[str, Any]:
-    """入れる先の安全度（Opportunity.to_dict の中身から）。理由は下げたものから順に並べる。"""
-    level = (venue or {}).get("level") or "mid"
-    reasons: list[str] = []
-    if venue and venue["level"] != "high":
-        reasons += [f"会場: {r}" for r in venue["reasons"] if not r.startswith(UNCERTAIN_MATCH)]
-    excl = [f["text"] for f in o.get("flags") or [] if f["level"] == "exclude"]
-    if excl:
-        level = "low"
-        reasons = excl + reasons
-    warn = [f["text"] for f in o.get("flags") or [] if f["level"] == "warn"]
-    if warn:
-        level = _cap(level, "mid")
-        reasons += warn
-    moves = [u for u in o.get("unprotected") or [] if "預かり証" not in u]
-    if moves:
-        level = _cap(level, "mid")
-        reasons.append("保険で守れない値動きがある: " + "、".join(moves))
-    left = o.get("days_left")
-    if left is not None and left < SHORT_DAYS_LEFT:
-        level = _cap(level, "mid")
-        reasons.append(f"配る期間の残りが {left:.1f} 日（{SHORT_DAYS_LEFT:g}日未満）")
-    if o.get("new_pool"):
-        level = _cap(level, "mid")
-        reasons.append("始まったばかりで、預かり額がまだ小さい")
-    if o.get("over_cap"):
-        level = _cap(level, "mid")
-        reasons.append("入れる額が、入れてよい上限より多い")
-    if not reasons:
-        reasons.append("下げる印がない")
-    return _view(level, reasons, uncertain=bool((venue or {}).get("uncertain_match")))
+def registry_facts(v: dict[str, Any], llama: dict[str, Any] | None) -> dict[str, Any]:
+    """自分で読む会場の情報: 登録（監査・始まった日・警告）に、DefiLlama の会場（登録に書いた slug）を足す。"""
+    f = dict(llama or {})
+    if not f.get("listed_at") and v.get("launch_date"):
+        try:
+            d = date.fromisoformat(str(v["launch_date"]))
+            f["listed_at"] = datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp()
+            f["age_source"] = "会場の登録の始まった日"
+        except ValueError:
+            pass
+    if v.get("audited") is True:
+        f["audits"] = max(1, f.get("audits") or 0)
+    if v.get("admin"):
+        f["admin"] = v["admin"]
+    if v.get("bug_bounty"):
+        f["bug_bounty"] = v["bug_bounty"]
+    return f
+
+
+def venue_from_registry(v: dict[str, Any], llama: dict[str, Any] | None = None,
+                        now: datetime | None = None) -> dict[str, Any]:
+    """自分で読む会場（up. など）。会場の警告 C4（運営が手で配り先を決めるなど）は運営の鍵の材料に書く。"""
+    now = now or datetime.now(UTC)
+    identity = registry_identity(v)
+    facts = registry_facts(v, llama)
+    c4 = [w.get("title_ja") or w.get("key") for w in v.get("warnings") or [] if w.get("code") == "C4"]
+    if c4 and not facts.get("admin"):
+        facts["admin"] = {"type": "multisig", "note_ja": "運営が手で決める部分がある: " + "、".join(map(str, c4))}
+    verified = identity["status"] == "verified"
+    return riskscore.view(riskscore.venue_parts(identity, facts if verified else None, now), identity)
+
+
+def opportunity(o: dict[str, Any], venue: dict[str, Any] | None, limits: dict[str, Any] | None = None,
+                pool_cap_usd: float | None = None) -> dict[str, Any]:
+    """入れる先の危なさ（Opportunity.to_dict の中身から）: 会場の点 + 入れる先の印の点。"""
+    parts = list((venue or {}).get("parts") or riskscore.venue_parts(None, None, datetime.now(UTC)))
+    parts += riskscore.opportunity_parts(o)
+    hint = [r for r in (venue or {}).get("reasons") or [] if r.startswith("参考（点には使わない）")]
+    return riskscore.view(parts, (venue or {}).get("identity"), limits, pool_cap_usd, hint[0] if hint else None)

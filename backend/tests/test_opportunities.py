@@ -361,7 +361,8 @@ def test_own_venue_reuses_the_approved_model_with_the_split(tmp_path):
 
 def test_unknown_bonus_coin_gets_a_provisional_drop_in_the_cautious_case(cfg):
     o = _collect(cfg)["o-guess"]
-    assert "RWD_GUESS" in {f.code for f in o.flags} and "値下がり未計算（仮の値で計算）" in o.flags[0].text
+    guess = next(f for f in o.flags if f.code == "RWD_GUESS")
+    assert "値下がり未計算（仮の値で計算）" in guess.text
     nor, cau = o.calc["1000"]["normal"]["no_hedge"], o.calc["1000"]["cautious"]["no_hedge"]
     assert nor.haircut == 0                                                     # ふつうは引かない（記録がない）
     s = cfg.opportunities
