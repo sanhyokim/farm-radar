@@ -4,6 +4,8 @@
 - 会場: 自分で読む会場は会場の登録（未確認の契約・警告 C4・監査の有無）、Merkl の会場は Merkl が載せている
   会場の情報（事件の数・監査の数・載ってからの日数・会場全体の預かり額）。Merkl の会場の情報は DefiLlama のものを
   写していて、名前の似た別の会場のものが混ざることがある（例: Hyperdrive）。仮の目安として使う。
+  この会場の情報は名前で結びついていて、契約の住所では確かめていないので、「仮・会場の見分けが不確か」の印を付ける
+  （2026-10-02 17:07 JST オーナー依頼。N4 で契約の住所で見分ける形にする）。
 - 入れる先: 会場の安全度から始めて、印で下げる。外す印 → 低い。注意の印・保険で守れない値動き・残りの日数が短い・
   始まったばかり・入れる額が上限より多い → ふつうまで。
 区切りの数字（90日・7日）は仮。N4 で危なさの点数に置きかえる。
@@ -21,8 +23,21 @@ SHORT_DAYS_LEFT = 7.0        # 配る期間の残りがこの日数より短い�
 SMALL_VENUE_TVL = 1_000_000  # 会場全体の預かり額がこれより小さいと「ふつう」まで（仮）
 
 
-def _view(level: str, reasons: list[str]) -> dict[str, Any]:
-    return {"level": level, "label": LABEL[level], "provisional": True, "reasons": reasons}
+UNCERTAIN_MATCH = "仮・会場の見分けが不確か"
+
+
+def _view(level: str, reasons: list[str], uncertain: bool = False) -> dict[str, Any]:
+    return {"level": level, "label": LABEL[level], "provisional": True, "reasons": reasons,
+            "uncertain_match": uncertain}
+
+
+def match_note(trust: dict[str, Any] | None) -> str | None:
+    """会場の情報が名前だけで結びついているときの説明（Merkl の会場の情報はすべてこれ。N4 まで）。"""
+    if not trust:
+        return None
+    slug = f"「{trust['slug']}」" if trust.get("slug") else ""
+    return (f"{UNCERTAIN_MATCH}: 会場の情報{slug}は Merkl が名前で結びつけたもので、契約の住所では確かめていない。"
+            "名前の似た別の会場の情報かもしれない")
 
 
 def _cap(level: str, at_most: str) -> str:
@@ -35,7 +50,7 @@ def venue_from_merkl(trust: dict[str, Any] | None, now: datetime) -> dict[str, A
         return _view("mid", ["会場の情報がない（Merkl に会場の記録が載っていない）"])
     hacks, audits, listed = trust.get("hacks"), trust.get("audits"), trust.get("listed_at")
     if hacks:
-        return _view("low", [f"過去に事件の記録がある（{hacks}件）"])
+        return _view("low", [f"過去に事件の記録がある（{hacks}件）", match_note(trust)], uncertain=True)
     level, reasons = "high", []
     if not audits:
         level, reasons = "mid", reasons + ["監査の記録がない"]
@@ -50,7 +65,7 @@ def venue_from_merkl(trust: dict[str, Any] | None, now: datetime) -> dict[str, A
         level, reasons = "mid", reasons + [f"会場全体の預かり額が小さい（${tvl / 1e3:,.0f}K。${SMALL_VENUE_TVL / 1e6:g}M 未満）"]
     if level == "high":
         reasons.append(f"監査 {audits}件・事件の記録なし・載ってから {days / 365:.1f} 年")
-    return _view(level, reasons)
+    return _view(level, reasons + [match_note(trust)], uncertain=True)
 
 
 def venue_from_registry(v: dict[str, Any]) -> dict[str, Any]:
@@ -69,7 +84,7 @@ def opportunity(o: dict[str, Any], venue: dict[str, Any] | None) -> dict[str, An
     level = (venue or {}).get("level") or "mid"
     reasons: list[str] = []
     if venue and venue["level"] != "high":
-        reasons += [f"会場: {r}" for r in venue["reasons"]]
+        reasons += [f"会場: {r}" for r in venue["reasons"] if not r.startswith(UNCERTAIN_MATCH)]
     excl = [f["text"] for f in o.get("flags") or [] if f["level"] == "exclude"]
     if excl:
         level = "low"
@@ -94,4 +109,4 @@ def opportunity(o: dict[str, Any], venue: dict[str, Any] | None) -> dict[str, An
         reasons.append("入れる額が、入れてよい上限より多い")
     if not reasons:
         reasons.append("下げる印がない")
-    return _view(level, reasons)
+    return _view(level, reasons, uncertain=bool((venue or {}).get("uncertain_match")))

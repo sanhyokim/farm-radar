@@ -419,6 +419,8 @@ class OpportunitySettings:
     unknown_reward_drop_monthly_pct: float = 30.0
     receipt_stable_drop_monthly_pct: float = 3.0     # 中身がステーブルの預かり証（2026-10-02 オーナー決定）
     receipt_price_alert_pct: float = 2.0             # 預かり証の値段が中身から外れたら知らせる線（仮）
+    # N3: 幅に配るプールのチェーンの記録（流動性）を、何時間前まで使うか（1時間に1回読む。読めない回が続いたら使わない）
+    pool_state_max_age_hours: float = 3.0
 
 
 def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
@@ -447,6 +449,7 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             receipt_stable_drop_monthly_pct=float(o.get("receipt_stable_drop_monthly_pct",
                                                         d.receipt_stable_drop_monthly_pct)),
             receipt_price_alert_pct=float(o.get("receipt_price_alert_pct", d.receipt_price_alert_pct)),
+            pool_state_max_age_hours=float(o.get("pool_state_max_age_hours", d.pool_state_max_age_hours)),
         )
     except (TypeError, ValueError, AttributeError) as exc:
         raise ConfigError(f"config.yaml の opportunities の書き方を確かめてください（{exc}）。") from None
@@ -454,7 +457,7 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             or out.cautious_tvl_multiple < 1 or out.stay_days <= 0 or not 0 < out.merkl_range_pct < 100 \
             or not 0 < out.hedge_withstand_rise_pct <= 500 or any(v < 0 for v in out.reserve_usd.values()) \
             or not 0 <= out.unknown_reward_drop_monthly_pct < 100 or not 0 <= out.receipt_stable_drop_monthly_pct < 100 \
-            or out.receipt_price_alert_pct <= 0:
+            or out.receipt_price_alert_pct <= 0 or out.pool_state_max_age_hours <= 0:
         raise ConfigError("config.yaml の opportunities の数字を確かめてください（金額は正、割合は0〜1、倍率は1以上）。")
     return out
 
@@ -523,7 +526,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         rpc=rpc,
         venues=tuple(raw.get("venues") or ()),
         stale_after_minutes=int(raw.get("stale_after_minutes", 45)),
-        limits=dict(raw.get("limits") or {}),
+        limits=_limits(raw),
         epoch_fresh_minutes=int((raw.get("rewards") or {}).get("epoch_fresh_minutes", 120)),
         reward_drop_alert_pct=float((raw.get("alerts") or {}).get("reward_rate_drop_pct", 30)),
         scoring=_scoring(raw),
@@ -539,6 +542,23 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         chains=_chains(raw),
         root=root,
     )
+
+
+def _limits(raw: dict[str, Any]) -> dict[str, Any]:
+    """リスク上限（limits）。値はオーナーが config.yaml で決める（エージェントは変えない。絶対ルール5）。
+
+    ここでは形だけ確かめる（数字であること・0 より大きいこと・会場の割合は 0〜1）。範囲の上は決めない
+    （はじめは $100〜$1,000、のちに $10,000、作りは $100,000 まで。SPEC 13.1）。
+    """
+    lim = dict(raw.get("limits") or {})
+    for k in ("position_usd", "total_usd", "trades_per_day"):
+        if k in lim and (isinstance(lim[k], bool) or not isinstance(lim[k], (int, float)) or lim[k] <= 0):
+            raise ConfigError(f"limits.{k} は 0 より大きい数字にしてください（カンマや $ は付けない。例: 10000）。今: {lim[k]!r}")
+    if "per_venue_share" in lim:
+        v = lim["per_venue_share"]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= 1:
+            raise ConfigError(f"limits.per_venue_share は 0 より大きく 1 以下の数字にしてください（例: 0.5）。今: {v!r}")
+    return lim
 
 
 def chain_reads_enabled(env: dict[str, str] | None = None) -> bool:

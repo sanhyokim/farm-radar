@@ -3,7 +3,7 @@ import { useApi, type OpportunitiesResp, type Opportunity } from "../api";
 import { bigUsd, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Folds, Line, Loading, Note, PageHead, Segmented, Term, useWide } from "../ui";
-import { CHAINS, GuessPill, SafetyPill, TargetEdit, apr, days, isGuess, type Chain } from "./opp";
+import { CHAINS, GuessPill, SafetyPill, TargetEdit, VenueMatchPill, apr, days, isGuess, isUncertainVenue, type Chain } from "./opp";
 
 /**
  * 探す（N2c。SPEC 13.1 の追加の決定 2）: 「機会」と「プール」をまとめた、入れる先の1行ずつの表。
@@ -80,6 +80,10 @@ export default function Explore() {
             安全度は、N4 で「危なさの点数」ができるまでの仮の3段階です。会場の情報と、今ある印（外す・注意・保険で守れない値動き・
             残りの日数）から出しています。行を押すと理由が見られます。
           </Note>
+          <Note>
+            「仮・会場の見分けが不確か」は、会場の情報（監査・事件・預かり額）が名前だけで結びついていて、契約の住所では確かめていない印です。
+            名前の似た別の会場の情報かもしれません。N4 で契約の住所で見分ける形にします。
+          </Note>
         </Fold>
         <Fold title={`計算できなかったもの（${c.not_computable}件）`}>
           {data.not_computable.length === 0 ? <span className="cap">ありません。</span> : data.not_computable.map(([r, n]) => (
@@ -92,7 +96,7 @@ export default function Explore() {
           <Line k="1つの入れる先に入れてよい上限" v={`預かり額の ${(data.settings.max_pool_share * 100).toFixed(0)}%`} />
           <Line k="小さすぎて外す預かり額" v={`${bigUsd(data.settings.min_tvl_usd)} 未満`} note="始まったばかりのプールは外さず「新しい」の印" />
           <Line k="いる日数（入る・出る費用を割る）" v={`${data.settings.stay_days}日`} note="配る期間が短ければ、その残りの日数" />
-          <Line k="幅に配るプールの幅" v={`±${data.settings.merkl_range_pct}%`} />
+          <Line k="幅に配るプールの幅" v="±0.5%〜±15% から選ぶ" note={`チェーンの記録（1時間に1回）がないときは ±${data.settings.merkl_range_pct}%`} />
           <Line k={<Term k="保険の預け金">保険の預け金</Term>} v={`${data.settings.hedge_withstand_rise_pct}% 上がっても耐える額`} />
           <Note>これらは仮の数字で、試し（N5）で決め直します。手数料の収入は分からないので数えていません（安全側）。</Note>
         </Fold>
@@ -124,6 +128,7 @@ function Row({ o, wide, back }: { o: Opportunity; wide: boolean; back: string })
   const style = { background: hit ? HIT_BG : undefined, borderTop: "1px solid var(--line-soft)",
     boxShadow: hit ? "inset 3px 0 0 var(--g)" : undefined };
   const guess = isGuess(o);
+  const unsure = isUncertainVenue(o);
   if (wide) {
     return (
       <Link to={to} className="grid items-center gap-4 px-6 py-4 hover:bg-white/[0.02]"
@@ -131,7 +136,9 @@ function Row({ o, wide, back }: { o: Opportunity; wide: boolean; back: string })
         <span className="flex min-w-0 flex-col gap-1">
           <span className="bold truncate">{o.name ?? o.key}</span>
           <span className="cap truncate">{where}</span>
-          {(guess || o.excluded) && <span className="flex flex-wrap gap-2">{guess && <GuessPill />}{o.excluded && <ExcludedNote o={o} />}</span>}
+          {(guess || unsure || o.excluded) && (
+            <span className="flex flex-wrap gap-2">{guess && <GuessPill />}{unsure && <VenueMatchPill />}{o.excluded && <ExcludedNote o={o} />}</span>
+          )}
         </span>
         <span className="t20 num text-right">{apr(b?.apr_pct)}</span>
         <span className="num text-right">{usd(b?.net_after_move ?? null)}</span>
@@ -157,6 +164,7 @@ function Row({ o, wide, back }: { o: Opportunity; wide: boolean; back: string })
         <SafetyPill s={o.safety} />
         <span className="cap">残り {days(o.days_left)}</span>
         {guess && <GuessPill />}
+        {unsure && <VenueMatchPill />}
         {o.excluded && <ExcludedNote o={o} />}
       </div>
     </Link>

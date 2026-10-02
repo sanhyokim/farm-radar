@@ -157,3 +157,23 @@ CREATE TABLE IF NOT EXISTS receipt_checks (
   error TEXT,
   PRIMARY KEY (chain_id, address)
 );
+
+-- N3: 幅に配るプール（Uniswap v3 / v4 の形）の今の状態（チェーンの公開の読み取り口で読む。1時間に1回）
+CREATE TABLE IF NOT EXISTS pool_state_snaps (
+  chain_id INTEGER NOT NULL,
+  pool_id TEXT NOT NULL,               -- v3 はプールの住所、v4 は poolId（どちらも小文字）
+  checked_at TEXT NOT NULL,
+  kind TEXT NOT NULL,                  -- "v3" / "v4"
+  block INTEGER,
+  sqrt_price_x96 TEXT,                 -- 大きな整数なので文字で
+  tick INTEGER,
+  liquidity TEXT,                      -- 今の値段のところの流動性（幅の中にいる人の合計）
+  lp_fee INTEGER,                      -- 手数料の段（100万分の1。500 = 0.05%）
+  price REAL,                          -- token0 1個あたりの token1（桁を調整した値）
+  official INTEGER,                    -- 1 = 公式の住所（chains/*.yaml の uniswap）と確かめた
+  error TEXT,
+  hooks TEXT,                          -- v4 のフックの住所（0x000… = フックなし。PositionManager.poolKeys。分からなければ NULL）
+  tick_spacing INTEGER,
+  PRIMARY KEY (chain_id, pool_id, checked_at)
+);
+CREATE INDEX IF NOT EXISTS pool_state_snaps_latest ON pool_state_snaps(chain_id, pool_id, checked_at);

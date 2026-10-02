@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from ..config import FeedSettings
 from ..external.http import ExternalError, JsonGetter
-from . import receipts, store
+from . import pools, receipts, store
 from .sources import SOURCES, Item, Source
 
 log = logging.getLogger(__name__)
@@ -76,7 +76,8 @@ def _read_token_prices(conn: sqlite3.Connection, source: Source, fetcher: Fetche
 
 @dataclass
 class ReceiptContext:
-    """預かり証の中身を読むのに使うもの（チェーンの登録・値動きしないコイン・読み取り口の作り方）。"""
+    """チェーンの公開の読み取り口で読むものに使う（預かり証の中身 N2c・幅に配るプールの状態 N3）。
+    チェーンの登録・値動きしないコイン・読み取り口の作り方。"""
     chains: dict[int, dict[str, Any]] = field(default_factory=dict)
     stables: dict[int, dict[str, str]] = field(default_factory=dict)
     rpc_factory: Callable[[dict[str, Any]], Any] | None = None
@@ -94,6 +95,18 @@ def _read_receipts(conn: sqlite3.Connection, fetcher: Fetcher, coin_chains: dict
         kw["sleep"] = ctx.sleep
     data = receipts.read(conn, ctx.chains, coin_chains, ctx.stables, fetcher.text, now or datetime.now(UTC), **kw)
     return data, json.dumps(data, ensure_ascii=False).encode("utf-8"), len(data)
+
+
+def _read_pools(conn: sqlite3.Connection, ctx: ReceiptContext | None, now: datetime | None) -> tuple[Any, bytes, int]:
+    if ctx is None or not ctx.chains:
+        return {}, b"{}", 0
+    kw: dict[str, Any] = {}
+    if ctx.rpc_factory:
+        kw["rpc_factory"] = ctx.rpc_factory
+    if ctx.sleep:
+        kw["sleep"] = ctx.sleep
+    data = pools.read(conn, ctx.chains, now or datetime.now(UTC), **kw)
+    return data, json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"), len(data)
 
 
 def _read(source: Source, fetcher: Fetcher) -> tuple[Any, bytes, int]:
@@ -127,6 +140,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
             data, raw, pages = _read_token_prices(conn, source, fetcher, coin_chains or {})
         elif source.id == "receipts":
             data, raw, pages = _read_receipts(conn, fetcher, coin_chains or {}, receipt_ctx, now)
+        elif source.id == "pool_states":
+            data, raw, pages = _read_pools(conn, receipt_ctx, now)
         else:
             data, raw, pages = _read(source, fetcher)
         items: list[Item] = source.parse(data)
@@ -163,6 +178,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = store.write_token_prices(conn, seen_at, data)
     elif source.id == "receipts":
         extra = store.write_receipts(conn, seen_at, data)
+    elif source.id == "pool_states":
+        extra = store.write_pool_states(conn, seen_at, data)
     store.finish_run(conn, run_id, datetime.now(UTC), "ok", items=len(items), new_items=new if prev else 0,
                      gone_items=gone, pages=pages, bytes=len(raw), raw_path=raw_path)
     log.info("feed saved", extra={"data": {"source": source.id, "items": len(items), "new": new if prev else 0,
@@ -181,6 +198,14 @@ def daily_due(conn: sqlite3.Connection, source: Source, settings: FeedSettings, 
     today = now.astimezone(store.JST).date()
     last_day = datetime.fromisoformat(last["started_at"]).astimezone(store.JST).date()
     return last_day < today and now.astimezone(store.JST).hour >= settings.daily_hour_jst
+
+
+def every_due(conn: sqlite3.Connection, source: Source, now: datetime) -> bool:
+    """every_minutes の一覧を、今読むべきか（前に読めてから every_minutes たったか。一度も読めていなければすぐ）。"""
+    last = store.last_ok(conn, source.id)
+    if last is None:
+        return True
+    return now - datetime.fromisoformat(last["started_at"]) >= timedelta(minutes=source.every_minutes)
 
 
 class FeedRunner:
@@ -203,6 +228,8 @@ class FeedRunner:
                 if s.cadence != cadence:
                     continue
                 if cadence == "daily" and not daily_due(conn, s, self.settings, now or datetime.now(UTC)):
+                    continue
+                if s.every_minutes and not every_due(conn, s, now or datetime.now(UTC)):
                     continue
                 out.append(run_source(conn, s, self.fetcher, self.settings, now, self.coin_chains, self.receipt_ctx))
             return out

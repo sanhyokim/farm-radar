@@ -30,6 +30,10 @@ export function SafetyPill({ s, short = false }: { s: Safety | null | undefined;
 export const isGuess = (o: Opportunity) => o.flags.some((f) => f.code === "RWD_GUESS");
 export const GuessPill = () => <Pill tone="y" icon="alert">値下がり未計算（仮の値で計算）</Pill>;
 
+/** 会場の情報が名前だけで結びついている印（オーナー依頼 2026-10-02 17:07 JST。N4 で契約の住所で見分ける） */
+export const isUncertainVenue = (o: Opportunity) => !!o.safety?.uncertain_match;
+export const VenueMatchPill = () => <Pill icon="info">仮・会場の見分けが不確か</Pill>;
+
 /** 狙い利回りを変える（設定。リスク上限とは別のもの） */
 export function TargetEdit({ current, onSaved }: { current: number; onSaved: () => void }) {
   const [open, setOpen] = useState(false);
@@ -101,6 +105,12 @@ export function Side({ title, c, k, empty }: { title: string; c: { normal: OppCa
   );
 }
 
+/** とても小さい割合も読めるように（0.0123% など） */
+function sharePct(x: number): string {
+  const p = x * 100;
+  return `${p >= 1 ? p.toFixed(1) : p >= 0.01 ? p.toFixed(3) : p.toPrecision(2)}%`;
+}
+
 /** 計算の内訳（控えめ・1日あたり） */
 export function Breakdown({ v }: { v: OppVariant }) {
   const minus = (x: number) => (x > 0 ? `−${usd(x, 3)}` : usd(0, 3));
@@ -111,6 +121,10 @@ export function Breakdown({ v }: { v: OppVariant }) {
       <Line k="予備" v={usd(v.split.reserve, 0)} note="ガス代の分（チェーンごとの決まった額）" />
       <Line k="受け取る分" v={usd(v.income, 3)} note={`ボーナスの取り分（預けるだけの型は、預け先の利息も）${v.points ? "。ポイントは0として数えた" : ""}`} />
       {v.in_range_ratio != null && <Line k="幅の中にいる時間" v={`${(v.in_range_ratio * 100).toFixed(0)}%`} note={v.range_pct != null ? `幅 ±${v.range_pct.toFixed(1)}%` : undefined} />}
+      {v.liquidity_share != null && (
+        <Line k={<Term k="流動性の割合">流動性の取り分</Term>} v={sharePct(v.liquidity_share)}
+          note={`幅 ±${(v.range_pct ?? 0).toFixed(1)}% に置いたとき（チェーンの記録）`} />
+      )}
       <Line k={<Term k="ガンマ損失">値動きの目減り</Term>} v={minus(v.gamma)} />
       <Line k={<Term k="置き直し">置き直し</Term>} v={minus(v.rebalance)} />
       <Line k="保険の費用" v={minus(v.hedge_cost)} />

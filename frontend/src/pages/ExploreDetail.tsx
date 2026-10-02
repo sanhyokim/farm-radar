@@ -3,7 +3,7 @@ import { useApi, type OppCampaign, type OppDetailResp, type Safety } from "../ap
 import { bigUsd, jst, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Folds, Line, Loading, Note, PageHead, Pill, Segmented, Term } from "../ui";
-import { Breakdown, GuessPill, KIND, SafetyPill, Side, apr, days, isGuess } from "./opp";
+import { Breakdown, GuessPill, KIND, SafetyPill, Side, VenueMatchPill, apr, days, isGuess, isUncertainVenue } from "./opp";
 
 /**
  * 入れる先の詳しい画面（N2c）: 計算の内訳、保険あり・なし、印、この会場の安全度、「$1,000 を試す」。
@@ -42,6 +42,7 @@ export default function ExploreDetail() {
             : o.above_target ? <Pill tone="g" icon="check">狙い以上</Pill> : <Pill>狙いより低い</Pill>}
           <SafetyPill s={o.safety} />
           {isGuess(o) && <GuessPill />}
+          {isUncertainVenue(o) && <VenueMatchPill />}
           {o.new_pool && <Pill tone="y" icon="info">始まったばかり</Pill>}
         </div>
         <div className="flex items-end justify-between gap-4">
@@ -118,9 +119,9 @@ export default function ExploreDetail() {
             {data.campaigns.map((c) => <CampaignLine key={c.campaign_id} c={c} />)}
           </Fold>
         )}
-        {info.filter((f) => f.code !== "RECEIPT").length > 0 && (
-          <Fold title={`印（${info.filter((f) => f.code !== "RECEIPT").length}）`}>
-            {info.filter((f) => f.code !== "RECEIPT").map((f) => (
+        {info.filter((f) => !["RECEIPT", "VENUE_MATCH"].includes(f.code)).length > 0 && (
+          <Fold title={`印（${info.filter((f) => !["RECEIPT", "VENUE_MATCH"].includes(f.code)).length}）`}>
+            {info.filter((f) => !["RECEIPT", "VENUE_MATCH"].includes(f.code)).map((f) => (
               <span key={f.code} className="cap flex items-start gap-2"><Icon name="info" size={16} /><span>{f.text}</span></span>
             ))}
           </Fold>

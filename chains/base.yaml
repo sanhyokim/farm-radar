@@ -34,3 +34,16 @@ geckoterminal_network: base        # https://api.geckoterminal.com/api/v2/networ
 defillama_name: Base               # https://api.llama.fi/v2/chains の name（chainId 8453。2026-10-02 確認）
 defillama_coins_key: base         # https://coins.llama.fi の値段の名前（"base:<住所>"。2026-10-02 に USDC・WETH で確認）
 lists_checked_at: "2026-10-02"     # Merkl・Across・Relay・LI.FI の一覧に chain_id 8453 があることを確認
+
+# Uniswap の公式の住所（N3。幅に配るプールを読むときに、Merkl の書く住所がこれと同じか確かめる）。
+# 出典: https://developers.uniswap.org/docs/protocols/v4/deployments 、
+#       https://developers.uniswap.org/docs/protocols/v3/deployments/v3-base-deployments 、
+#       https://developers.uniswap.org/deployments.json（id v4-poolmanager-base・v3-uniswapv3factory-base）、
+#       https://raw.githubusercontent.com/Uniswap/contracts/main/deployments/json/8453.json 。
+# Sourcify で契約の中身が公開・確認済み（PoolManager・PositionManager・UniswapV3Factory）。確認日 2026-10-02
+uniswap:
+  v4_pool_manager: "0x498581fF718922c3f8e6A244956aF099B2652b2b"
+  v4_position_manager: "0x7C5f5A4bBd8fD63184577525326123B519429bDc"   # プールの組み合わせ（フック・tick の間隔）を poolKeys で読む
+  v3_factory: "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
+  source_url: https://developers.uniswap.org/deployments.json
+  checked_at: "2026-10-02"

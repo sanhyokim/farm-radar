@@ -96,6 +96,7 @@ export interface OppVariant {
   income: number; points: boolean; gamma: number; rebalance: number; hedge_cost: number; haircut: number;
   direction: number; net: number; move_cost: number; stay_days: number; net_after_move: number; apr_pct: number;
   payback_days: number | null; in_range_ratio: number | null; range_pct: number | null;
+  liquidity_share?: number | null;   // 幅に配るプールで、チェーンの記録の流動性から出した取り分（N3）
 }
 export interface OppFlag { code: string; level: "exclude" | "warn" | "info"; text: string }
 export type OppCase = { no_hedge: OppVariant | null; hedge: OppVariant | null };
@@ -111,7 +112,10 @@ export interface Opportunity {
   safety: Safety; venue_safety: Safety | null;
 }
 /** 安全度（仮の3段階。N2c。N4 で危なさの点数に置きかえる） */
-export interface Safety { level: "high" | "mid" | "low"; label: string; provisional: boolean; reasons: string[] }
+export interface Safety {
+  level: "high" | "mid" | "low"; label: string; provisional: boolean; reasons: string[];
+  uncertain_match?: boolean;   // 会場の情報が名前だけで結びついている（N4 で契約の住所で見分ける）
+}
 export interface OppCampaign {
   campaign_id: string; distribution_type: string | null; distribution_method: string | null; reward_symbol: string | null;
   reward_type: string | null; daily_rewards: number | null; apr: number | null; start_ts: number | null; end_ts: number | null;

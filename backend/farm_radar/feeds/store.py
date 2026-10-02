@@ -6,7 +6,7 @@ import gzip
 import json
 import sqlite3
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -22,6 +22,7 @@ _ADD_COLUMNS = {
     "merkl_opportunity_snaps": {"max_daily_rewards": "REAL"},
     "merkl_campaigns": {"distribution_method": "TEXT", "settings_json": "TEXT", "restricted": "INTEGER",
                         "hidden": "INTEGER", "reward_type": "TEXT", "reward_verified": "INTEGER"},
+    "pool_state_snaps": {"hooks": "TEXT", "tick_spacing": "INTEGER"},   # N3（フックと tick の間隔）
 }
 
 
@@ -200,6 +201,27 @@ def write_receipts(conn: sqlite3.Connection, ts: str, rows: dict[str, Any]) -> i
                       r.get("asset"), r.get("asset_symbol"), r.get("assets_per_share"), r.get("verified"),
                       r.get("verified_by"), r.get("error")))
         n += 1
+    return n
+
+
+def write_pool_states(conn: sqlite3.Connection, ts: str, rows: dict[str, Any], keep_days: int = 60) -> int:
+    """幅に配るプールの状態（feeds/pools.py の結果）を書く。読み取り口の失敗（failed）は書かない。"""
+    n = 0
+    for key, r in rows.items():
+        if not isinstance(r, dict) or r.get("failed"):
+            continue
+        cid, _, pid = key.partition(":")
+        sp, liq = r.get("sqrt_price_x96"), r.get("liquidity")
+        conn.execute("""INSERT OR REPLACE INTO pool_state_snaps(chain_id, pool_id, checked_at, kind, block, sqrt_price_x96,
+                        tick, liquidity, lp_fee, price, official, error, hooks, tick_spacing)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (int(cid), pid.lower(), ts, r.get("kind") or "?", r.get("block"),
+                      None if sp is None else str(sp), r.get("tick"), None if liq is None else str(liq),
+                      r.get("lp_fee"), r.get("price"), r.get("official"), r.get("error"), r.get("hooks"),
+                      r.get("tick_spacing")))
+        n += 1
+    cutoff = (datetime.fromisoformat(ts) - timedelta(days=keep_days)).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM pool_state_snaps WHERE checked_at < ?", (cutoff,))
     return n
 
 
