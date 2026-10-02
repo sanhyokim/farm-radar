@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\feeds\pools.py', 'backend\farm_radar\safety.py', 'docker-compose.yml')
+$MustHave = @('backend\farm_radar\feeds\pools.py', 'backend\farm_radar\safety.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -41,9 +41,14 @@ function Step([string]$text) { Write-Host ''; Write-Host "== $text" -ForegroundC
 function Ok([string]$text) { Write-Host "   OK: $text" -ForegroundColor Green }
 
 function Compose([string[]]$Rest) {
-    # 新しい版だけを動かす（-p で名前を決めるので、今の版には届かない）
-    & $Docker compose -f (Join-Path $V2 'docker-compose.yml') --project-directory $V2 -p farm-radar-v2 @Rest
-    if ($LASTEXITCODE -ne 0) { throw "docker compose $($Rest -join ' ') がうまくいきませんでした（終わりの番号 $LASTEXITCODE）。" }
+    # 新しい版だけを動かす（-p で名前を決めるので、今の版には届かない）。
+    # Windows PowerShell 5.1 は docker の進み具合の表示を受け取ると「インデックスが配列の境界外です」で止まることがあるので
+    # （2026-10-02 オーナーのパソコンで起きた）、PowerShell を通さずに docker を直接動かして、終わりの番号だけを見る
+    $all = @('compose', '-f', (Join-Path $V2 'docker-compose.yml'), '--project-directory', $V2, '-p', 'farm-radar-v2') + $Rest
+    $argLine = ($all | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+    $exe = (Get-Command $Docker -ErrorAction Stop).Source
+    $p = Start-Process -FilePath $exe -ArgumentList $argLine -NoNewWindow -Wait -PassThru
+    if ($p.ExitCode -ne 0) { throw "docker compose $($Rest -join ' ') がうまくいきませんでした（終わりの番号 $($p.ExitCode)）。" }
 }
 
 function Restore {
