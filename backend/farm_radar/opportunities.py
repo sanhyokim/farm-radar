@@ -14,7 +14,8 @@
   今の版で承認された式（scoring/model.py。2026-09-27・09-29 オーナー承認）をそのまま使う。
 - 全体に配るプールの目減りは、値動き σ の2乗 ÷ 8（50:50 のプールの1日の目減りの近似）。
 - ボーナスのコインの値下がり: ふつうは記録の7日の傾きで1日分を引く（今の版と同じ）。控えめは、記録がないコインに仮の値下がり
-  （月 −30%。2026-10-02 オーナー決定）を当て、いる日数のあいだに下がる分も数える（stay_factor。引き方はオーナーに確認中）。
+  （月 −30%。2026-10-02 オーナー決定）を当て、いる日数のあいだに下がる分も数える（stay_factor。2026-10-02 オーナー決定）。
+  中身がステーブルの預かり証（チェーンの記録で確かめたもの）は月 −3%（2026-10-02 オーナー決定。SPEC 13.1 の5）。
 - 予備はガス代の分だけ（チェーンごとのドル。2026-10-02 オーナー決定）。残りを機会と保険に分ける。
 - 自分で読んだ会場（up. など）は、今の版の計算（scoring/model.py の evaluate）を、金額と分け方だけ変えて使い直す。
 仮の数字（幅 ±15%、控えめの 1.5 倍、5% の上限など）は config.yaml の opportunities にあり、N5 の試しで決め直す（13.3）。
@@ -31,7 +32,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .config import Config, ConfigError, OpportunitySettings, load_venue, mechanic_value
-from .registry import coin_chains, load_chain
+from .registry import coin_chains, load_chain, receipt_chains, stable_addresses
 from .scoring import model as m
 from .scoring import volatility as vol
 from .standard import StandardOpportunity, _days_left, _feeds_conn, from_merkl, from_own
@@ -147,8 +148,17 @@ class FeedData:
         self.coin_keys = coin_chains(config.chains, config.root)
         self._tokens: dict[str, TokenStat | None] = {}
         self.perps: dict[str, dict[str, Any]] = {}
+        self.receipts: dict[tuple[int, str], dict[str, Any]] = {}
+        try:
+            self.stables = {cid: stable_addresses(c, config.root)
+                            for cid, c in receipt_chains(config.chains, config.root).items()}
+        except Exception:  # noqa: BLE001  登録が読めなくても計算は止めない（預かり証を見分けないだけ）
+            self.stables = {}
         if conn is None:
             return
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='receipt_checks'").fetchone():
+            for r in conn.execute("SELECT * FROM receipt_checks WHERE is_vault=1"):
+                self.receipts[(int(r["chain_id"]), str(r["address"]).lower())] = {k: r[k] for k in r.keys()}
         since = (now - timedelta(days=7)).isoformat(timespec="seconds")
         funding = {r[0]: r[1] for r in conn.execute(
             "SELECT market_id, AVG(rate_8h) FROM lighter_funding_snaps WHERE ts >= ? GROUP BY market_id", (since,))}
@@ -213,6 +223,33 @@ class FeedData:
         sym = aliases.get(symbol.upper(), symbol) if alias else symbol
         p = self.perps.get(sym.upper())
         return p if p and p.get("funding_daily") is not None and p.get("mmf") is not None else None
+
+    def stable_receipt(self, chain_id: int | None, address: str | None) -> dict[str, Any] | None:
+        """中身がステーブルの預かり証なら、その確かめの記録（SPEC 13.1 の5）。
+
+        条件: チェーンの記録で asset() と convertToAssets() に答えた（金庫の形）、中身の住所が登録したステーブルコイン、
+        契約の中身が公開・確認済み（Blockscout か Sourcify）。どれかが欠けたら None（ほかのコインと同じく仮の値下がり）。
+        """
+        if chain_id is None or not address:
+            return None
+        r = self.receipts.get((int(chain_id), address.lower()))
+        if not r or not r.get("asset") or r.get("verified") != 1:
+            return None
+        sym = self.stables.get(int(chain_id), {}).get(str(r["asset"]).lower())
+        return dict(r, stable_symbol=sym) if sym else None
+
+    def receipt_note(self, chain_id: int | None, address: str | None) -> str | None:
+        """金庫の預かり証だが、中身がステーブルと言えない理由（印に書く）。預かり証でなければ None。"""
+        if chain_id is None or not address:
+            return None
+        r = self.receipts.get((int(chain_id), address.lower()))
+        if not r:
+            return None
+        if r.get("asset") and str(r["asset"]).lower() not in self.stables.get(int(chain_id), {}):
+            return f"金庫の預かり証だが、中身（{r.get('asset_symbol') or '不明なコイン'}）がステーブルではない"
+        if r.get("verified") != 1:
+            return "金庫の預かり証だが、契約の中身が公開・確認済みか分からない"
+        return None
 
     def is_stable(self, t: TokenStat | None, symbol: str | None) -> bool | None:
         """値動きしないコインか。記録があれば記録で決め、無ければ記号で決める（どちらでもなければ None）。"""
@@ -327,6 +364,11 @@ def provisional_trend(s: OpportunitySettings) -> float:
     return (1 - s.unknown_reward_drop_monthly_pct / 100) ** (1 / 30) - 1
 
 
+def receipt_trend(s: OpportunitySettings) -> float:
+    """中身がステーブルの預かり証の仮の値下がり（1日あたり）。月 −3%（2026-10-02 14:00 JST オーナー決定）。"""
+    return (1 - s.receipt_stable_drop_monthly_pct / 100) ** (1 / 30) - 1
+
+
 def stay_factor(trend_daily: float | None, days: float) -> float:
     """いる日数のあいだのボーナスのコインの平均の値段 ÷ 今の値段（下がるときだけ。2026-10-02 オーナー決定待ちの案）。
 
@@ -357,7 +399,8 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
         if c.get("_volatile"):
             trend = c.get("_trend")
             if cautious:
-                trend = trend if trend is not None else provisional_trend(s)
+                if trend is None:
+                    trend = receipt_trend(s) if c.get("_receipt") else provisional_trend(s)
                 inc *= stay_factor(trend, stay_days)
             if trend is not None and trend < 0:
                 haircut += inc * -trend
@@ -475,26 +518,43 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
             op.computable, op.reason = False, "2つのコインの比率の値動きが分からない"
             return op
     # ボーナスのコインの値動き（同じチェーンで値段の記録があるときだけ）。キャンペーンごとに印を付けて _variant で使う
-    reward_syms, guessed = set(), set()
+    reward_syms, guessed, receipt_syms = set(), set(), set()
+    guess_notes: dict[str, str] = {}
+    receipt_flags: dict[str, list[Flag]] = {}
     marked = []
     for c in live:
-        c = dict(c, _volatile=False, _trend=None)
+        c = dict(c, _volatile=False, _trend=None, _receipt=False)
         if (c.get("reward_type") or "TOKEN").upper() == "TOKEN":
-            rs = data.token(data.coin(c.get("distribution_chain_id"), c.get("reward_address")))
+            dcid, raddr = c.get("distribution_chain_id"), c.get("reward_address")
+            rs = data.token(data.coin(dcid, raddr))
             if not data.is_stable(rs, c.get("reward_symbol")):
                 sym = c.get("reward_symbol") or "?"
-                reward_syms.add(sym)
                 c["_volatile"] = True
                 c["_trend"] = rs.trend_daily if rs is not None else None
-                if c["_trend"] is None:
-                    guessed.add(sym)
+                rec = data.stable_receipt(dcid, raddr) if c["_trend"] is None else None
+                if rec is not None:
+                    c["_receipt"] = True
+                    receipt_syms.add(sym)
+                    receipt_flags.setdefault(sym, _receipt_flags(sym, rec, c.get("reward_price"), s))
+                else:
+                    reward_syms.add(sym)
+                    if c["_trend"] is None:
+                        guessed.add(sym)
+                        note = data.receipt_note(dcid, raddr)
+                        if note:
+                            guess_notes[sym] = note
         marked.append(c)
     live = marked
     op.unprotected = [f"ボーナスのコイン（{x}）の値下がり" for x in sorted(reward_syms)]
+    op.unprotected += [f"ボーナスの預かり証（{x}）の金庫の損・引き出しの待ち" for x in sorted(receipt_syms)]
+    for sym in sorted(receipt_flags):
+        op.flags.extend(receipt_flags[sym])
+
     op.unprotected += [f"{lg.symbol} の値下がり（保険の売り場がない）" for lg in legs if not lg.stable and lg.perp is None]
     if guessed:
+        notes = "".join(f"（{x}: {guess_notes[x]}）" for x in sorted(guess_notes))
         op.flags.append(Flag("RWD_GUESS", LEVEL_WARN, f"値下がり未計算（仮の値で計算）: ボーナスのコイン（{'・'.join(sorted(guessed))}）の"
-                             f"値段の記録がない。控えめの見込みは月 −{s.unknown_reward_drop_monthly_pct:g}% とみなした"))
+                             f"値段の記録がない。控えめの見込みは月 −{s.unknown_reward_drop_monthly_pct:g}% とみなした{notes}"))
     base_apr = (_float(info.get("native_apr")) or 0.0) if op.kind == "hold" else 0.0
     gas = s.gas_usd_per_tx.get(base.chain or "", max(s.gas_usd_per_tx.values(), default=0.2))
     fee = s.pool_fee_pct / 100
@@ -525,6 +585,26 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     if b is not None and days_left is not None and (b.payback_days is None or b.payback_days > days_left):
         op.flags.append(Flag("PAYBACK", LEVEL_EXCLUDE, "残りの日数で、入る・出る費用を取り返せない"))
     return op
+
+
+def _receipt_flags(sym: str, rec: dict[str, Any], reward_price: float | None, s: OpportunitySettings) -> list[Flag]:
+    """中身がステーブルの預かり証の印（見分けた理由）と、値段が中身から外れたときの知らせ（SPEC 13.1 の5）。"""
+    per = rec.get("assets_per_share")
+    day = str(rec.get("checked_at") or "")[:10]
+    by = {"blockscout": "Blockscout", "sourcify": "Sourcify"}.get(rec.get("verified_by") or "", "公開の記録")
+    name = rec.get("name") or sym
+    inside = f"1枚 = {per:.4f} {rec['stable_symbol']}" if per else rec["stable_symbol"]
+    out = [Flag("RECEIPT", LEVEL_INFO,
+                f"預かり証と見分けた: {sym} は「{name}」の金庫の預かり証。中身は {rec['stable_symbol']}（{inside}）。"
+                f"チェーンの記録で確かめた（{day}。契約の中身は {by} で公開・確認済み）。"
+                f"控えめの見込みは月 −{s.receipt_stable_drop_monthly_pct:g}% とみなした")]
+    if per and reward_price:
+        gap = (reward_price - per) / per * 100      # 中身のステーブルは $1 とみなす
+        if abs(gap) >= s.receipt_price_alert_pct:
+            out.append(Flag("RECEIPT_OFF", LEVEL_WARN,
+                            f"値段が中身から外れている: {sym} の Merkl の値段 ${reward_price:.4f} と中身の値段 ${per:.4f} の差が "
+                            f"{gap:+.1f}%（知らせの線 {s.receipt_price_alert_pct:g}%）"))
+    return out
 
 
 def _campaign_view(c: dict[str, Any]) -> dict[str, Any]:

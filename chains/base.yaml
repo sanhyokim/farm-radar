@@ -18,6 +18,17 @@ note: "公式の資料の値: Network Name Base Mainnet、Chain ID 8453、RPC ht
 # コインの一覧（安定コイン・ヘッジ先）は、Base の会場を足すとき（N3）に venues/tokens-base.yaml として作る
 tokens_file: null
 
+# 値動きしないコイン（預かり証の中身の見分けに使う。2026-10-02 オーナー決定 SPEC 13.1 の5）。公式の資料で確かめたものだけ
+stablecoins:
+  USDC:
+    address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    source_url: https://developers.circle.com/stablecoins/usdc-contract-addresses
+    checked_at: "2026-10-02"
+
+# 契約の中身が公開・確認済みかを調べる Blockscout（公式の一覧は basescan だけ。Blockscout の住所は Blockscout の
+# チェーン一覧 https://chains.blockscout.com/api/chains の chainId 8453 で確認。2026-10-02）
+blockscout: https://base.blockscout.com
+
 # 外の一覧での名前
 geckoterminal_network: base        # https://api.geckoterminal.com/api/v2/networks で確認（2026-10-02）
 defillama_name: Base               # https://api.llama.fi/v2/chains の name（chainId 8453。2026-10-02 確認）
