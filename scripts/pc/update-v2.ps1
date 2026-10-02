@@ -176,6 +176,7 @@ try {
 
     # --- 7. 組み立てて起動 ----------------------------------------------------------------------
     Step '7/9 新しい版を組み立てて起動する（数分〜10分）'
+    $since = (Get-Date).ToUniversalTime().AddMinutes(-1)     # 8 で「起動のあとに会場の見分けを読んだか」を見るため
     Compose @('up', '-d', '--build', 'api', 'feeds')
     $state.started = $true
     Ok '起動しました。'
@@ -188,7 +189,11 @@ try {
         Start-Sleep -Seconds 30
         try { $fs = Invoke-RestMethod "$NewApi/api/feeds/status" -TimeoutSec 30 } catch { $fs = $null; Say '   まだ画面が起動していません……'; continue }
         $busy = @($fs.sources | Where-Object { $_.status -eq 'running' -or $_.status -eq 'none' })
-        if ($busy.Count -eq 0) { break }
+        # 会場の見分け（venue_checks）は、起動のあとに1回読み終わるまで待つ（前の回の数がまとめに出ないように）
+        $vcs = @($fs.sources | Where-Object { $_.id -eq 'venue_checks' })
+        $vcFresh = ($vcs.Count -eq 0) -or ($vcs[0].last_run_at -and ([datetime]$vcs[0].last_run_at).ToUniversalTime() -ge $since)
+        if ($busy.Count -eq 0 -and $vcFresh) { break }
+        if (-not $vcFresh) { $busy += $vcs[0] }
         Say "   読んでいる途中: $(($busy | ForEach-Object { $_.id }) -join ', ')"
     }
     if ($null -eq $fs) { throw "$NewApi が答えません。" }
@@ -201,7 +206,9 @@ try {
     $o = Invoke-RestMethod "$NewApi/api/opportunities?amount=1000&show_excluded=true&limit=300" -TimeoutSec 120
     Say "[入れる先] total: $($o.counts.total) / computed: $($o.counts.computed) / listed: $($o.counts.listed) / above_target: $($o.counts.above_target) / recommended: $($o.counts.recommended) / target: $($o.target_apr_pct)"
     $dg = $o.counts.danger
-    if ($dg) { Say "[危なさ] low: $($dg.low) / mid: $($dg.mid) / high: $($dg.high) / very_high: $($dg.very_high) / venue_verified: $($o.counts.venue_verified)" }
+    # 0件の区分は空欄ではなく 0 と出す（2026-10-03 オーナー）
+    function N0($x) { if ($null -eq $x) { 0 } else { $x } }
+    if ($dg) { Say "[危なさ] low: $(N0 $dg.low) / mid: $(N0 $dg.mid) / high: $(N0 $dg.high) / very_high: $(N0 $dg.very_high) / venue_verified: $(N0 $o.counts.venue_verified)" }
     foreach ($x in @($o.items | Where-Object { $_.recommended })) {
         Say ("   おすすめ: {0}  年利 {1}%  危なさ {2}" -f $x.name, [math]::Round($x.best.apr_pct, 1), $x.safety.level)
     }
@@ -216,10 +223,13 @@ try {
     }
     $g = Invoke-RestMethod "$NewApi/api/guard" -TimeoutSec 60
     Say "[守る] placed: $($g.placed_usd) / left: $($g.total_left_usd) / loss_line: $($g.loss_line.state) / venues: $(@($g.venues).Count) / chains: $(@($g.chains).Count)"
-    Say "[守る] loss_lines: $(@($g.loss_lines.periods).Count) / level: $($g.loss_lines.level) / stages: $(@($g.stages).Count) / lighter: $(@($g.venues | Where-Object { $_.venue_id -eq 'lighter' }).Count)"
-    $vs = @($fs.sources | Where-Object { $_.id -eq 'vault_states' })
-    $vc = @($fs.sources | Where-Object { $_.id -eq 'venue_checks' })
-    Say "[見張り] vault_states: $($vs.status) $($vs.items) / venue_checks: $($vc.status) $($vc.items)"
+    $lv = if ($g.loss_lines.level) { $g.loss_lines.level } else { 'なし' }     # 線を越えていなければ「なし」
+    Say "[守る] loss_lines: $(@($g.loss_lines.periods).Count) / level: $lv / stages: $(@($g.stages).Count) / lighter: $(@($g.venues | Where-Object { $_.venue_id -eq 'lighter' }).Count)"
+    $vs = @($fs.sources | Where-Object { $_.id -eq 'vault_states' })[0]
+    $vc = @($fs.sources | Where-Object { $_.id -eq 'venue_checks' })[0]
+    # 「今回」は最後の回に読んだ数。答えが出たものは読み直さないので、たまった数（確かめ済み・金庫）も出す
+    Say "[見張り] venue_checks: $($vc.status) 今回 $(N0 $vc.items) / 確かめ済み $(N0 $vc.stored.checked)（公式の工場が作った $(N0 $vc.stored.verified)）"
+    Say "[見張り] vault_states: $($vs.status) 今回 $(N0 $vs.items) / 見張っている金庫 $(N0 $vs.stored.vaults)"
 
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
     Say "[今の版] 前: eval: $($before.eval) / open: $($before.open) / last_ok_at: $($before.last)"

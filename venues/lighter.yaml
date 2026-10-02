@@ -58,6 +58,20 @@ margin:
     - url: https://docs.lighter.xyz/trading/liquidations-and-llp-insurance-fund
       checked_at: '2026-10-02'
       quote: Maintenance Margin Requirement を下回ると一部の強制決済が始まる
+  # 練習（paper）とスコアも 2026-10-03 から同じ式（execution/hedge_guard.py の margin_need・split。前は総額の40%決め打ち）
+  minimums:
+    # 最低の預け金と、1回の注文の最小額（2026-10-03 オーナーの質問「Lighter の最低の預け金はいくらか」）
+    deposit_usd: {ethereum_mainnet: 1, other_evm_cctp: 5, first_deposit_new_account: 5, existing_account_uda: 3}
+    withdraw_usd: {secure: 1, fast_usdc_only: 4}
+    order_min_quote_usd: 10       # /api/v1/orderBookDetails の min_quote_amount（ETH・NVDA・SPY とも 10.000000）
+  minimums_sources:
+    - url: https://apidocs.lighter.xyz/docs/deposits-transfers-and-withdrawals
+      checked_at: '2026-10-03'
+      quote: Ethereum mainnet "1 USDC, or equivalent, minimum per deposit"。CCTP（Arbitrum・Base など）"Minimum deposit is 5 USDC"。
+        新しい口座の最初の預け入れは $5、今ある口座は $3（EVM・Solana）。引き出しは 1 USDC（速い引き出しは 4 USDC）
+    - url: https://mainnet.zklighter.elliot.ai/api/v1/orderBookDetails
+      checked_at: '2026-10-02'
+      quote: min_quote_amount "10.000000"（ETH・NVDA・SPY）。ETH は最初に要る割合 500・維持の割合 120（5%・1.2%）
 
 account:
   # 担保の残高と建玉の読み取り（SPEC 5.2.1章。読み取りのみ。backend/farm_radar/hedges/lighter.py）

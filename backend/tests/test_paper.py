@@ -1,6 +1,7 @@
 """練習（ペーパートレード。M5a）のテスト。M2 のテストと同じ偽の記録を使い、建玉を作って記録を足していく。"""
 
 import dataclasses
+import json
 import math
 from datetime import timedelta
 
@@ -141,7 +142,15 @@ def test_open_records_position_ledger_and_red_start(world):
     score = conn.execute("SELECT * FROM scores WHERE pool_id=? ORDER BY ts DESC LIMIT 1", (WETH_POOL,)).fetchone()
     assert p["status"] == "open" and p["is_paper"] == 1
     assert p["r"] * 100 == pytest.approx(score["best_r"])
-    assert p["c_lp"] == pytest.approx(1000 * 0.55, rel=1e-9)           # LP に置くのは総資産の55%
+    # 分け方（2026-10-03 直し）: 保険の預け金 = 売る量 × 0.575（値段が50%上がっても強制決済されない。維持の割合は仮の5%）、
+    # 予備 = ガス代の分（$20）、残りがプール。前の決め打ち（LP 55%・保険 40%）より、プールに多く置く
+    st = json.loads(p["state_json"])
+    h = json.loads(p["hedges_json"])
+    sp = st["split"]
+    assert sp["pool"] + st["hedge_margin"] + sp["reserve"] == pytest.approx(1000.0)
+    assert sp["reserve"] == pytest.approx(20.0)
+    assert st["hedge_margin"] == pytest.approx(sum(x["size"] * x["entry"] for x in h) * 0.575, rel=1e-6)
+    assert p["c_lp"] == pytest.approx(sp["pool"], rel=1e-6) and p["c_lp"] > 1000 * 0.55
     assert p["started_red"] == (1 if score["signal"] == "red" else 0)
     kinds = [r["kind"] for r in conn.execute("SELECT kind FROM ledger WHERE position_id=?", (ref.position_id,))]
     assert kinds.count("deposit") == 2 and "hedge_open" in kinds and "cost" in kinds   # WETH は perp でヘッジ
@@ -170,14 +179,14 @@ def test_limits_come_from_config_and_are_enforced(world):
     ex = PaperExecutor(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW)
     with pytest.raises(PaperError, match="1つの建玉の上限"):
         ex.open_position("up-robinhood:p-nvda", 5000.0)
-    # 1会場あたり合計の50%（$1,500）まで。N4b から保険に預けるお金（$1,000 の 40% = $400）は Lighter に数えるので、
-    # 会場には1つ $600。2つ目（会場 $1,200）は入り、3つ目（会場 $1,800）は入れられない
-    ex.open_position("up-robinhood:p-nvda", 1000.0)
+    # 1会場あたり合計の50%（$1,500）まで。保険に預けるお金は Lighter に数えるので、会場には「総額 − 保険の預け金」。
+    # WETH/USDG の $1,000 は保険が約 $217 なので会場に約 $783。同じ会場にもう1つ $1,000 は入らない
     with pytest.raises(PaperError, match="1つの会場に置ける上限"):
-        ex.check_can_open("up-robinhood", 1000.0, hedge_margin=400.0)
-    # Lighter も1つの置き場所として上限に入る（今 $800 ＋ $800 = $1,600 > $1,500）
+        ex.open_position("up-robinhood:p-nvda", 1000.0)
+    ex.check_can_open("up-robinhood", 700.0)                      # $783 ＋ $700 = $1,483 は入る
+    # Lighter も1つの置き場所として上限に入る（今 約 $217 ＋ $1,300 > $1,500）
     with pytest.raises(PaperError, match="Lighter"):
-        ex.check_can_open("other-venue", 1000.0, hedge_margin=800.0)
+        ex.check_can_open("other-venue", 1000.0, hedge_margin=1300.0)
 
 
 # --- 毎回の計算 -----------------------------------------------------------------------------
@@ -314,10 +323,8 @@ def test_api_open_detail_close(client):
     r = c.post("/api/paper/positions", json={"pool_id": WETH_POOL})
     assert r.status_code == 200
     pid = r.json()["position_id"]
-    # 2つ目は入り（保険の預け金は Lighter に数える。N4b）、3つ目は会場の上限で断られ、理由が日本語で返る
+    # 同じ会場の2つ目は会場の上限で断られ、理由が日本語で返る（会場には $1,000 − 保険の預け金 ≒ $783 を数える）
     r2 = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-nvda"})
-    assert r2.status_code == 200
-    r2 = c.post("/api/paper/positions", json={"pool_id": "up-robinhood:p-up"})
     assert r2.status_code == 400 and "上限" in r2.json()["detail"]
     # 同じプールは「すでに練習中」で断られる（上限より先に調べる）
     r3 = c.post("/api/paper/positions", json={"pool_id": WETH_POOL})

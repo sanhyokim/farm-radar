@@ -1,5 +1,6 @@
 """ボーナスが減ったときの比べ方（2026-09-30 オーナー決定③。記録と知らせだけ）のテスト。"""
 
+import dataclasses
 from datetime import timedelta
 
 from farm_radar.execution import bonus_drop
@@ -27,9 +28,11 @@ def _flip(conn, rate: int, *, fresh_hours: float = 1.0):
     conn.commit()
 
 
-def _setup(world, rate, hours_after=6):  # noqa: F811
+def _setup(world, rate, hours_after=6, action="record"):  # noqa: F811
     path, conn = world
     cfg = _config(path)
+    # config.yaml は 2026-10-03 から exit（オーナー決定①A）。ここでは「記録と知らせだけ」の動きを確かめる
+    cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, bonus_drop_action=action))
     _open(conn, path)
     _extend(conn, 2 + hours_after)
     _flip(conn, rate)

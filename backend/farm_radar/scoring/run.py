@@ -15,12 +15,14 @@ import sqlite3
 import statistics
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..config import ScoringSettings, contract_address, mechanic_value
 from ..db import database as db
+from ..execution import hedge_guard
 from ..external.geckoterminal import GeckoTerminal, PoolMarket
 from .. import hedges as hedge_mod
 from ..external.lighter import Lighter
@@ -42,6 +44,21 @@ REWARD_DECIMALS = 18   # 既定値。会場ファイルの contracts.reward_toke
 
 
 @dataclass
+class MarginBasis:
+    """保険に預けるお金を「探す」と同じ自動の計算で決めるための数字（2026-10-03 直し。前は総額の 55% / 40% / 5% 決め打ち）。
+
+    - withstand_rise: 値段がこれだけ上がっても強制決済されない額を預ける（opportunities.hedge_withstand_rise_pct。仮 50%）
+    - reserve_usd: 予備（チェーンのガス代の分。opportunities.reserve_usd。2026-10-02 13:44 JST オーナー決定）
+    - mmf_fallback: Lighter の維持の割合が読めないときの仮の値（guard.hedge_mmf_fallback）
+    - lighter_db: Lighter の銘柄ごとの証拠金の割合を読む feeds の保存（無ければ仮の値）
+    """
+    withstand_rise: float = 0.5
+    reserve_usd: float = 20.0
+    mmf_fallback: float = 0.05
+    lighter_db: Path | None = None
+
+
+@dataclass
 class ScoreContext:
     venue: dict[str, Any]
     tokens: TokenBook
@@ -51,6 +68,7 @@ class ScoreContext:
     gt: GeckoTerminal | None = None
     lighter: Lighter | None = None         # 古い呼び方（hedges がなければ Lighter のアダプターに包む）
     hedges: dict[str, Any] | None = None   # ヘッジ先アダプター（SPEC 5.2.1章）。hedge_id → アダプター
+    margin: MarginBasis = field(default_factory=MarginBasis)   # 保険に預けるお金の決め方（2026-10-03）
 
 
 def model_params(s: ScoringSettings, gas_usd_per_tx: float) -> ModelParams:
@@ -322,6 +340,7 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
             log.warning("gas price failed", extra={"data": {"error": str(exc)}})
 
     params = model_params(s, gas_usd)
+    margin_table = hedge_guard.lighter_margin_table(ctx.margin.lighter_db) if ctx.margin.lighter_db else {}
     sparams = signal_params(s)
     base_warns = venue_warnings(ctx.venue)
     if reward_change is not None and reward_change * 100 <= s.reward_token_7d_major_pct:
@@ -335,7 +354,7 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
         row = _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok[r["pool_id"]], token_grid,
                           pool_own, markets, funding, reward_usd, reward_trend_daily, reward_change,
                           reward_volume.volume_24h_usd if reward_volume else None, stale, age_min, now_s, days,
-                          liq_med.get(r["pool_id"]), reward_decimals)
+                          liq_med.get(r["pool_id"]), reward_decimals, margin_table)
         row.update({"pool_id": r["pool_id"], "ts": ts, "venue_id": venue_id, "block_number": run["block_number"]})
         is_stock = row.pop("_is_stock")
         db.insert_score(conn, row)
@@ -349,6 +368,26 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
     log.info("scoring finished", extra={"data": {"venue": venue_id, "pools": len(out), "signals": dict(counts),
                                                  "gas_usd_per_tx": round(gas_usd, 4)}})
     return out
+
+
+def _split_for(m: MarginBasis, c_total: float, table: dict[int, tuple[float | None, float | None]],
+               hedged: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """プール・保険・予備の分け方。hedged = 保険を掛けるコインごとの (記号, 選んだヘッジ先)。"""
+    needs: dict[str, dict[str, Any]] = {}
+    for sym, ch in hedged:
+        imf = mmf = None
+        mid = ch.get("market_id")
+        if ch.get("hedge_id") == "lighter" and mid is not None and int(mid) in table:
+            imf, mmf = table[int(mid)]
+        from_lighter = mmf is not None
+        mmf = mmf if mmf is not None else m.mmf_fallback
+        needs[sym] = {"need": hedge_guard.margin_need(imf, mmf, m.withstand_rise), "imf": imf, "mmf": mmf,
+                      "from_lighter": from_lighter, "hedge_id": ch.get("hedge_id")}
+    sp = hedge_guard.split(c_total, m.reserve_usd, [(0.5, n["need"]) for n in needs.values()])
+    return {"lp": sp["pool"] / c_total, "hedge_margin": sp["hedge_margin"] / c_total, "reserve": sp["reserve"] / c_total,
+            "lp_usd": sp["pool"], "hedge_margin_usd": sp["hedge_margin"], "reserve_usd": sp["reserve"],
+            "margin_per_pool": sp["margin_per_pool"], "withstand_rise_pct": m.withstand_rise * 100, "needs": needs,
+            "basis": "auto"}
 
 
 def liquidity_medians(conn: sqlite3.Connection, venue_id: str, since: datetime) -> dict[str, tuple[int, int]]:
@@ -375,7 +414,8 @@ def others_liquidity(latest: int, median: int | None) -> int:
 
 def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid, pool_own, markets, funding,
                 reward_usd, reward_trend_daily, reward_change, reward_volume, stale, age_min, now_s, days,
-                liq_med: tuple[int, int] | None = None, reward_decimals: int = REWARD_DECIMALS) -> dict[str, Any]:
+                liq_med: tuple[int, int] | None = None, reward_decimals: int = REWARD_DECIMALS,
+                margin_table: dict[int, tuple[float | None, float | None]] | None = None) -> dict[str, Any]:
     tokens = ctx.tokens
     t0, t1 = r["token0"].lower(), r["token1"].lower()
     src = "own" if own_ok else "external"
@@ -404,6 +444,12 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
                          taker_fee=taker / 100 if fund is not None and taker is not None else None)
 
     s0, s1 = side(t0, sig0, r["token0_decimals"]), side(t1, sig1, r["token1_decimals"])
+    # プール・保険・予備の分け方（2026-10-03 直し。「探す」と同じ自動の計算）: 保険を掛ける値動きするコインごとに、
+    # プールの中身の約半分（幅の真ん中に置くと半分ずつ）× 売り1ドルあたりに預けるお金
+    split_info = _split_for(ctx.margin, params.c_total, margin_table or {},
+                            [(r[f"token{i}_symbol"], funding.get(t) or {}) for i, (t, sd) in enumerate(((t0, s0), (t1, s1)))
+                             if sd is not None and not sd.stable and sd.hedgeable])
+    params = replace(params, lp_share=split_info["lp"])
     market = markets.get((r["address"] or "").lower())
     fee = (r["fee"] or 0) / 1e6
     tvl = market.reserve_usd if market else None
@@ -473,6 +519,8 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     j: Judgement = judge(ev, sparams, warnings=pool_warns, tvl_usd=tvl, missing=missing, notes=notes)
 
     details = {
+        # プール・保険・予備の分け方（割合とドル。練習を始めるときも同じ決め方で分ける）
+        "split": split_info,
         "inputs": {
             "price": r["price"], "usd": {r["token0_symbol"]: prices.get(t0), r["token1_symbol"]: prices.get(t1)},
             "sigma_token": {r["token0_symbol"]: sig0, r["token1_symbol"]: sig1}, "sigma_pair": sig_pair,

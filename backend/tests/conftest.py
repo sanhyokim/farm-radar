@@ -17,6 +17,13 @@ def _no_better_place(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_workspace_lighter(monkeypatch):
+    """テストの設定は作業場所の data/feeds.sqlite3 を指すので、Lighter の証拠金の割合を読まない（仮の値 5% で計算する）。"""
+    from farm_radar.execution import hedge_guard
+    monkeypatch.setattr(hedge_guard, "lighter_margin_table", lambda path: {})
+
+
+@pytest.fixture(autouse=True)
 def _fresh_rate_limits():
     ratelimit.reset()
     ratelimit.set_sink(None)

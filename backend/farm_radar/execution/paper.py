@@ -39,6 +39,7 @@ from ..fx import Frankfurter, rate_for
 from ..scoring.prices import PoolPrice, usd_prices
 from ..tokens import TokenBook
 from .base import ClaimResult, CloseResult, HedgeResult, PositionRef, SwapResult
+from . import hedge_guard
 from .hedge_guard import edge_zone, track_zone
 
 log = logging.getLogger(__name__)
@@ -183,6 +184,16 @@ def _range_row(details: dict[str, Any], r_pct: float) -> dict[str, Any] | None:
     return None
 
 
+def _reserve_usd(config: Config, venue_id: str | None) -> float:
+    """予備のドル（その会場のチェーンのガス代の分。opportunities.reserve_usd。2026-10-02 13:44 JST オーナー決定）。"""
+    r = config.opportunities.reserve_usd
+    try:
+        chain = ((load_venue(venue_id, config.root) or {}).get("chain") or {}).get("id") if venue_id else None
+    except (OSError, ConfigError):
+        chain = None
+    return float(r.get(chain or "", max(r.values(), default=0.0)))
+
+
 class PaperExecutor:
     """練習の建玉を作る・閉じる・受け取る（SPEC 12.1章の形）。"""
 
@@ -321,7 +332,27 @@ class PaperExecutor:
             raise PaperError("トークンのドル価格が分からないので、練習を始められません。")
         d0, d1 = int(pool["token0_decimals"]), int(pool["token1_decimals"])
         s = self.config.scoring
-        c_lp = capital * s.allocation_lp
+        # プール・保険・予備の分け方（2026-10-03 直し。前は総額の 55% / 40% / 5% 決め打ちで、保険に預けすぎていた）:
+        # 保険を掛けるコインごとに「プールの中身のうちそのコインの割合 × 売り1ドルあたりに預けるお金」を足し、
+        # プール ＋ 保険 ＋ 予備（ガス代の分）＝ 総額 になるようにプールの額を決める（「探す」・スコアと同じ決め方）
+        liq1 = _liquidity_for_range(1.0, price, lower, upper, u0, u1, d0, d1)
+        x1, y1 = lp_amounts(liq1, price, lower, upper, d0, d1)
+        legs = []
+        for tok, amt, usd, sym in ((t0, x1, u0, pool["token0_symbol"]), (t1, y1, u1, pool["token1_symbol"])):
+            # ヘッジ先: スコア計算が選んだ一番安いところ（SPEC 5.2.1章）。なければトークンの対応表の1つ目
+            chosen = ((inp.get("hedge") or {}).get(sym) or {})
+            perp = self.tokens.perp_for(tok)
+            if self.tokens.is_stable(tok) or amt <= 0 or (perp is None and not chosen):
+                continue
+            leg = {"token": tok, "symbol": sym,
+                   "hedge_id": chosen.get("hedge_id") or perp.venue,
+                   "hedge_name": chosen.get("name") or perp.venue.capitalize(),
+                   "perp": chosen.get("symbol") or perp.symbol,
+                   "market_id": int(chosen["market_id"]) if chosen.get("market_id") is not None else perp.market_id}
+            legs.append((leg, amt * usd, hedge_guard.need_for(self.config, leg["hedge_id"], leg["market_id"])))
+        reserve_usd = float((details.get("split") or {}).get("reserve_usd") or _reserve_usd(self.config, pool["venue_id"]))
+        split = hedge_guard.split(capital, reserve_usd, [(share, nd["need"]) for _, share, nd in legs])
+        c_lp = split["pool"]
         liq = _liquidity_for_range(c_lp, price, lower, upper, u0, u1, d0, d1)
         x0, y0 = lp_amounts(liq, price, lower, upper, d0, d1)
         c_lp_open = x0 * u0 + y0 * u1
@@ -331,22 +362,11 @@ class PaperExecutor:
         slip = float(inp.get("slippage") or 0.0)
         gas = float(inp.get("gas_usd_per_tx") or 0.0)
         swap_cost = c_lp * s.swap_ratio * (fee + slip)
-        hedges = []
-        for tok, amt, usd, sym in ((t0, x0, u0, pool["token0_symbol"]), (t1, y0, u1, pool["token1_symbol"])):
-            # ヘッジ先: スコア計算が選んだ一番安いところ（SPEC 5.2.1章）。なければトークンの対応表の1つ目
-            chosen = ((inp.get("hedge") or {}).get(sym) or {})
-            perp = self.tokens.perp_for(tok)
-            if self.tokens.is_stable(tok) or amt <= 0 or (perp is None and not chosen):
-                continue
-            hedges.append({"token": tok, "symbol": sym,
-                           "hedge_id": chosen.get("hedge_id") or perp.venue,
-                           "hedge_name": chosen.get("name") or perp.venue.capitalize(),
-                           "perp": chosen.get("symbol") or perp.symbol,
-                           "market_id": int(chosen["market_id"]) if chosen.get("market_id") is not None else perp.market_id,
-                           "size": amt, "entry": usd})
+        amounts = {t0: (x0, u0), t1: (y0, u1)}
+        hedges = [{**leg, "size": amounts[leg["token"]][0], "entry": amounts[leg["token"]][1]} for leg, _, _ in legs]
         hedge_fee = sum(h["size"] * h["entry"] * self.taker_fee(h["market_id"], h.get("hedge_id") or "lighter") for h in hedges)
         costs = swap_cost + 2 * gas + hedge_fee
-        hedge_margin = capital * s.allocation_hedge_margin if hedges else 0.0
+        hedge_margin = split["hedge_margin"] if hedges else 0.0
         self.check_can_open(pool["venue_id"], capital, reference=reference, hedge_margin=hedge_margin)
         for h in hedges:
             h["size_open"] = h["size"]
@@ -366,6 +386,9 @@ class PaperExecutor:
         up_price = self._reward_price(prices, pool["venue_id"])
         state = _new_state(snap, costs, up_price, gas)
         state["hedge_margin"] = hedge_margin       # 保険に預けたお金（Lighter に置いているお金。N4b）
+        # 分け方の内訳（2026-10-03）: プール・保険・予備のドルと、保険の売り1ドルあたりに預けた割合とその元の数字
+        state["split"] = {"pool": c_lp, "hedge_margin": hedge_margin, "reserve": split["reserve"],
+                          "needs": {leg["symbol"]: nd for leg, _, nd in legs}}
         # 始めた費用の内訳（2026-09-29 オーナー追加: 両替のずれがいくら含まれるかを画面に出す）
         state["open_breakdown"] = {
             "swap_usd": c_lp * s.swap_ratio, "fee_pct": fee * 100, "slippage_pct": slip * 100,

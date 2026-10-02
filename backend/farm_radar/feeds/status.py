@@ -41,6 +41,24 @@ def status(settings: FeedSettings, now: datetime | None = None, new_limit: int =
         conn.close()
 
 
+def _stored(conn: sqlite3.Connection, source_id: str) -> dict[str, int] | None:
+    """一覧の中身を表に積み上げる読み取り（会場の見分け・金庫の見張り）の、今までにたまった数。
+
+    この2つは、答えが出たものを次の回に読み直さない（会場の見分けは30日）ので、「最後の回に読んだ数」は0になることがある。
+    たまった数を別に出す（2026-10-03 オーナー: venue_checks 0 の意味が分からない）。
+    """
+    table = {"venue_checks": "venue_checks", "vault_states": "vault_states"}.get(source_id)
+    if table is None or not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                                         (table,)).fetchone():
+        return None
+    if table == "venue_checks":
+        n, ok = conn.execute("SELECT COUNT(*), COALESCE(SUM(verified = 1), 0) FROM venue_checks "
+                             "WHERE verified IS NOT NULL").fetchone()
+        return {"checked": int(n), "verified": int(ok)}
+    n, err = conn.execute("SELECT COUNT(*), COALESCE(SUM(error IS NOT NULL), 0) FROM vault_states").fetchone()
+    return {"vaults": int(n), "errors": int(err)}
+
+
 def _status(conn: sqlite3.Connection, settings: FeedSettings, now: datetime, new_limit: int) -> dict[str, Any]:
     today_start = now.astimezone(store.JST).replace(hour=0, minute=0, second=0, microsecond=0)
     since_new = store.iso(now - timedelta(hours=48))
@@ -66,6 +84,7 @@ def _status(conn: sqlite3.Connection, settings: FeedSettings, now: datetime, new
             "items": ok["items"] if ok else None, "new_today": new_today,
             "gone_last": ok["gone_items"] if ok else None,
             "error": last["error"] if last and state in ("error", "rate_limited") else None,
+            "stored": _stored(conn, s.id),
         })
     marks = ",".join("?" for _ in LIST_SOURCES)
     new = []

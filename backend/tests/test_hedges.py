@@ -89,13 +89,18 @@ def test_collateral_status(tmp_path, monkeypatch):
     v = s["venues"][0]
     assert v["address"] == "0x1111…1111" and addr not in str(s)          # アドレスは省略形だけ
     assert v["real"]["state"] == "waiting"
+    orig = hstatus.planned_margin
+    monkeypatch.setattr(hstatus, "planned_margin", lambda conn, config: 400.0)   # 開いている建玉の保険の預け金の合計
     for coll, want in ((0.0, "none"), (100.0, "short"), (400.0, "ok")):
         conn.execute("INSERT OR REPLACE INTO hedge_accounts(hedge_id, ts, collateral_usd, available_usd, positions_json, "
                      "error) VALUES ('lighter','2026-09-29T00:00:00+00:00',?,?, '[]', NULL)", (coll, coll))
         assert hstatus.summary(conn, cfg)["venues"][0]["status"]["state"] == want
     paper = dataclasses.replace(cfg, mode="paper")
+    monkeypatch.setattr(hstatus, "planned_margin", orig)
     st = hstatus.summary(conn, paper)["venues"][0]["status"]
-    assert st["paper"] and st["state"] == "ok" and st["collateral_usd"] == pytest.approx(400.0)   # 総資産の40%
+    # 練習では、開いている練習の保険の預け金の合計を預けたものとして扱う（2026-10-03。前は総資産の40%決め打ち）
+    assert st["paper"] and st["state"] == "ok" and st["collateral_usd"] == pytest.approx(0.0)
+    assert "保険のある練習の建玉はありません" in st["note"]
 
 
 def test_card_labels():
