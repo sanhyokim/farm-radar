@@ -18,6 +18,9 @@
   中身がステーブルの預かり証（チェーンの記録で確かめたもの）は月 −3%（2026-10-02 オーナー決定。SPEC 13.1 の5）。
 - 予備はガス代の分だけ（チェーンごとのドル。2026-10-02 オーナー決定）。残りを機会と保険に分ける。
 - 自分で読んだ会場（up. など）は、今の版の計算（scoring/model.py の evaluate）を、金額と分け方だけ変えて使い直す。
+- 幅に配るプール（Merkl の UNISWAP_V3・UNISWAP_V4）で、チェーンの記録（feeds/pools.py。公式の住所と確かめたプール）があるときは、
+  ボーナスの取り分を預かり額の割合ではなく流動性の割合にする（N3）: 自分の流動性 ÷（今の値段のところの流動性 × 控えめの倍数 ＋ 自分の流動性）。
+  幅は今の版の承認済みの候補（±0.5%〜±15%）から、入る・出る費用のあとに残る額がいちばん多いものを選ぶ（今の版と同じ選び方）。
 仮の数字（幅 ±15%、控えめの 1.5 倍、5% の上限など）は config.yaml の opportunities にあり、N5 の試しで決め直す（13.3）。
 """
 
@@ -32,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import safety
+from .feeds import pools as feed_pools
 from .config import Config, ConfigError, OpportunitySettings, load_venue, mechanic_value
 from .registry import coin_chains, load_chain, receipt_chains, stable_addresses
 from .scoring import model as m
@@ -79,9 +83,26 @@ class Variant:
     payback_days: float | None       # 入る・出る費用を取り返す日数（残る額が0以下なら None）
     in_range_ratio: float | None = None
     range_pct: float | None = None
+    liquidity_share: float | None = None   # 幅に配るプールで、チェーンの記録の流動性から出した取り分（N3）
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class ClPool:
+    """チェーンの記録で読んだ、幅に配るプールの今の状態（N3。feeds/pools.py）。"""
+    chain_id: int
+    pool_id: str
+    kind: str                        # "v3" / "v4"
+    price: float                     # token0 1個あたりの token1
+    liquidity: float                 # 今の値段のところの流動性（幅の中にいる人の合計）
+    dec0: int
+    dec1: int
+    usd0: float
+    usd1: float
+    checked_at: str
+    lp_fee: int | None
 
 
 @dataclass
@@ -153,6 +174,7 @@ class FeedData:
         self._tokens: dict[str, TokenStat | None] = {}
         self.perps: dict[str, dict[str, Any]] = {}
         self.receipts: dict[tuple[int, str], dict[str, Any]] = {}
+        self.pools: dict[tuple[int, str], dict[str, Any]] = {}
         try:
             self.stables = {cid: stable_addresses(c, config.root)
                             for cid, c in receipt_chains(config.chains, config.root).items()}
@@ -160,6 +182,7 @@ class FeedData:
             self.stables = {}
         if conn is None:
             return
+        self.pools = feed_pools.latest(conn, self.s.pool_state_max_age_hours, now)
         if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='receipt_checks'").fetchone():
             for r in conn.execute("SELECT * FROM receipt_checks WHERE is_vault=1"):
                 self.receipts[(int(r["chain_id"]), str(r["address"]).lower())] = {k: r[k] for k in r.keys()}
@@ -384,9 +407,21 @@ def stay_factor(trend_daily: float | None, days: float) -> float:
     return math.expm1(g * days) / (g * days)
 
 
+def cl_share(c_pos: float, r: float, cl: ClPool, crowd: float) -> tuple[float, float]:
+    """幅 ±r に c_pos ドル置いたときの (自分の流動性, ボーナスの取り分)。取り分 = 自分 ÷ (今の流動性 × crowd ＋ 自分)。
+
+    今の版の Alandale（幅の中の流動性で分ける会場）と同じ考え方（scoring/model.py の evaluate）。
+    """
+    t0 = m.TokenSide(usd=cl.usd0, decimals=cl.dec0, sigma_usd=0.0)
+    t1 = m.TokenSide(usd=cl.usd1, decimals=cl.dec1, sigma_usd=0.0)
+    mine = m.liquidity_for_usd(c_pos, cl.price, r, t0, t1)
+    return mine, (mine / (cl.liquidity * crowd + mine) if mine > 0 else 0.0)
+
+
 def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, legs: list[Leg], sigma_pair: float | None,
              campaigns: list[dict[str, Any]], tvl: float, base_apr_pct: float, cautious: bool,
-             s: OpportunitySettings, config: Config, gas: float, fee: float, stay_days: float) -> Variant:
+             s: OpportunitySettings, config: Config, gas: float, fee: float, stay_days: float,
+             cl: ClPool | None = None, r: float | None = None, crowd: float = 1.0) -> Variant:
     """campaigns の各キャンペーンには evaluate_merkl が `_volatile`（ボーナスのコインが値動きする）と
     `_trend`（そのコインの7日の傾き。記録がなければ None）を付けておく。
 
@@ -394,12 +429,28 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
     控えめは、記録がなければ仮の値下がり（月 −30%）を当て、いる日数のあいだに下がる分も数える（stay_factor）。
     """
     c_pos = amount * split["pool"]
+    r = r if r is not None else s.merkl_range_pct / 100
+    lshare = cl_share(c_pos, r, cl, crowd)[1] if cl is not None and kind == "pool_range" else None
     income, points, haircut = 0.0, False, 0.0
     for c in campaigns:
         if (c.get("reward_type") or "TOKEN").upper() != "TOKEN":
             points = True
             continue
-        inc, _ = campaign_income(c, c_pos, tvl)
+        if lshare is not None and c.get("_cl") and (c.get("distribution_type") or "").upper() == "DUTCH_AUCTION":
+            # 幅に配る山分け（N3。Merkl の資料 concentrated-liquidity-mechanisms）: 予算を重みで3つに分ける。
+            # 手数料の重み（流動性への貢献 = 今の値段のところの流動性の割合）は流動性の割合で分ける。
+            # コイン0・コイン1の重みは「プールの中のそのコインの量の割合」。分母（幅の中の人だけか、全員か）が資料で分からないので、
+            # 控えめに預かり額の割合（全員の中の割合。幅が狭い人には小さく出る）で分ける
+            d = c.get("daily_rewards") if c.get("daily_rewards") is not None else budget_daily(c)
+            st = _settings(c)
+            w_fee = float(st.get("weightFees") or 0) / 10000
+            w_tok = float(st.get("weightToken0") or 0) / 10000 + float(st.get("weightToken1") or 0) / 10000
+            if w_fee + w_tok <= 0:
+                w_fee = 1.0
+            dshare = c_pos / (max(tvl, 0.0) + c_pos) if c_pos > 0 else 0.0
+            inc = (d or 0.0) * (w_fee * lshare + w_tok * dshare) / (w_fee + w_tok)
+        else:
+            inc, _ = campaign_income(c, c_pos, tvl)
         if c.get("_volatile"):
             trend = c.get("_trend")
             if cautious:
@@ -409,7 +460,6 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
             if trend is not None and trend < 0:
                 haircut += inc * -trend
         income += inc
-    r = s.merkl_range_pct / 100
     irr = None
     gamma_day = reb = 0.0
     swap_ratio = config.scoring.swap_ratio
@@ -450,7 +500,7 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
                    points=points, gamma=gamma_day, rebalance=reb, hedge_cost=hedge_cost, haircut=haircut,
                    direction=direction, net=net, move_cost=move, stay_days=stay_days, net_after_move=after,
                    apr_pct=after / amount * 365 * 100, payback_days=(move / net) if net > 0 else None,
-                   in_range_ratio=irr, range_pct=s.merkl_range_pct if kind == "pool_range" else None)
+                   in_range_ratio=irr, range_pct=r * 100 if kind == "pool_range" else None, liquidity_share=lshare)
 
 
 def _kind(info: dict[str, Any]) -> str:
@@ -574,6 +624,10 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     if volatile and not can_hedge:
         op.flags.append(Flag("NO_HEDGE", LEVEL_INFO, "保険の売り場（Lighter）がないので、保険なしだけ"))
     op.cap_usd = tvl * s.max_pool_share if tvl else None
+    cl = _cl_pool(op, base, live, legs, data) if op.kind == "pool_range" else None
+    ranges = RANGES if cl is not None else (s.merkl_range_pct / 100,)
+    if cl is not None and cl.lp_fee is not None and 0 < cl.lp_fee < 1_000_000:
+        fee = cl.lp_fee / 1_000_000            # このプールの手数料の段（チェーンの記録。両替・置き直しの費用に使う）
     expo = 0.5 if op.kind.startswith("pool") else 1.0
     margin_per_pool = sum(expo * margin_need(lg.perp, s.hedge_withstand_rise_pct / 100) for lg in volatile if lg.perp)
     for amount in s.amounts_usd:
@@ -583,9 +637,14 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
                       tvl=tvl * mult, base_apr_pct=base_apr, cautious=case == "cautious", s=s, config=config,
                       gas=gas, fee=fee, stay_days=stay)
             res = reserve_usd(s, base.chain) / amount
+            kw.update(cl=cl, crowd=mult)
+
+            def best_range(**v: Any) -> Variant:
+                # 幅は承認済みの候補から、入る・出る費用のあとに残る額がいちばん多いもの（記録がなければ ±15% だけ）
+                return max((_variant(r=r, **v) for r in ranges), key=lambda x: x.net_after_move)
             row[case] = {
-                "no_hedge": _variant(hedge=False, split=_split(False, reserve=res), **kw),
-                "hedge": _variant(hedge=True, split=_split(True, margin_per_pool, res), **kw) if can_hedge else None,
+                "no_hedge": best_range(hedge=False, split=_split(False, reserve=res), **kw),
+                "hedge": best_range(hedge=True, split=_split(True, margin_per_pool, res), **kw) if can_hedge else None,
             }
         op.calc[_akey(amount)] = row
     # 残りの日数で入る・出る費用を取り返せない（$1,000・控えめ・良い方で判断）
@@ -593,6 +652,59 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     if b is not None and days_left is not None and (b.payback_days is None or b.payback_days > days_left):
         op.flags.append(Flag("PAYBACK", LEVEL_EXCLUDE, "残りの日数で、入る・出る費用を取り返せない"))
     return op
+
+
+RANGES = m.ModelParams().ranges          # 幅の候補（今の版で承認済み: ±0.5%〜±15%）
+
+
+def _cl_pool(op: Opportunity, base: StandardOpportunity, live: list[dict[str, Any]], legs: list[Leg],
+             data: FeedData) -> ClPool | None:
+    """幅に配るキャンペーンのプールの、チェーンの記録（N3）。使えないときは印に理由を書いて None。"""
+    params = None
+    for c in live:
+        st = _settings(c)
+        if (str(c.get("type") or "").upper() in feed_pools.POOL_TYPES and st.get("poolId")
+                and st.get("decimalsCurrency0") is not None and "weightFees" in st):
+            c["_cl"] = True
+            params = params or st
+    if params is None or base.evm_chain_id is None:
+        op.flags.append(Flag("RANGE", LEVEL_INFO, f"幅に配るプール。幅 ±{data.s.merkl_range_pct:g}% で計算（仮。"
+                             "このプールの読み方がまだ無いので、預かり額の割合で分けた）"))
+        return None
+    state = data.pools.get((int(base.evm_chain_id), str(params["poolId"]).lower()))
+    why = None
+    if state is None:
+        why = "チェーンの記録がまだ無い（1時間に1回読む）"
+    elif state.get("official") != 1:
+        why = state.get("error") or "公式の住所と確かめられない"
+    elif state.get("hooks") is None:
+        why = "このプールに追加の仕組み（フック）があるか分からない"
+    elif str(state["hooks"]).lower() != feed_pools.ZERO:
+        # フック付きのプールは、流動性を自動で置き直すなど置き方が違うことがあるので、流動性の割合では計算しない
+        why = "このプールには追加の仕組み（フック）があり、置き方が違うことがある"
+    if why is None:
+        usd = {}
+        for i in (0, 1):
+            addr, sym = params.get(f"currency{i}"), params.get(f"symbolCurrency{i}")
+            stat = data.token(data.coin(base.evm_chain_id, addr)) or data.token_by_symbol(base.evm_chain_id, sym)
+            stable = data.is_stable(stat, sym)
+            usd[i] = stat.price if stat is not None else (1.0 if stable else None)
+        if usd[0] is None or usd[1] is None:
+            why = "コインのドルの値段が分からない"
+    if why is not None:
+        op.flags.append(Flag("RANGE", LEVEL_INFO, f"幅に配るプール。幅 ±{data.s.merkl_range_pct:g}% で計算（仮。{why}ので、"
+                             "預かり額の割合で分けた）"))
+        return None
+    cl = ClPool(chain_id=int(base.evm_chain_id), pool_id=str(params["poolId"]).lower(), kind=state["kind"],
+                price=float(state["price"]), liquidity=float(state["liquidity"]), dec0=int(params["decimalsCurrency0"]),
+                dec1=int(params["decimalsCurrency1"]), usd0=float(usd[0]), usd1=float(usd[1]),
+                checked_at=state["checked_at"], lp_fee=state.get("lp_fee"))
+    w = [params.get(k) for k in ("weightFees", "weightToken0", "weightToken1")]
+    weights = "・".join(f"{x / 100:g}%" for x in w if x is not None)
+    op.flags.append(Flag("RANGE_CHAIN", LEVEL_INFO,
+                         f"幅に配るプール。ボーナスの取り分は、チェーンの記録の流動性（{cl.checked_at[11:16]} UTC に読んだ、"
+                         f"今の値段のところの流動性）で計算。幅は ±0.5%〜±15% から選んだ。Merkl の重み（手数料・コイン0・コイン1）{weights}"))
+    return cl
 
 
 def _receipt_flags(sym: str, rec: dict[str, Any], reward_price: float | None, s: OpportunitySettings) -> list[Flag]:
@@ -650,8 +762,6 @@ def _flags(op: Opportunity, info: dict[str, Any], live: list[dict[str, Any]], ba
         op.flags.append(Flag("TOP_UP", LEVEL_INFO, "上乗せ型（目標の年利までの差だけもらえる。粗い見込み）"))
     if any((c.get("distribution_method") or "").upper() == "AIRDROP" for c in live):
         op.flags.append(Flag("AIRDROP", LEVEL_INFO, "一度きりの配布があり、数えていない"))
-    if op.kind == "pool_range":
-        op.flags.append(Flag("RANGE", LEVEL_INFO, f"幅に配るプール。幅 ±{s.merkl_range_pct:g}% で計算（仮。自分で読む N3 までの見込み）"))
     if op.kind.startswith("pool"):
         op.flags.append(Flag("NO_FEES", LEVEL_INFO, "プールの手数料の収入は数えていない（分からないため。安全側）"))
 

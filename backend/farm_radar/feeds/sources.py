@@ -39,6 +39,7 @@ class Source:
     page_size: int = 0                             # 0 = ページに分かれていない。>0 = page=0,1,... を少なくなるまで読む
     max_pages: int = 40
     raw_every_minutes: int = 0                     # 0 = 毎回残す。>0 = この分数に1回だけ元の応答を残す
+    every_minutes: int = 0                         # 0 = cadence ごとに毎回読む。>0 = 前に読めてからこの分数たつまで読まない
 
 
 def _num(v: Any) -> float | None:
@@ -128,6 +129,10 @@ def merkl_campaigns(o: dict[str, Any]) -> list[dict[str, Any]]:
 # 配り方の細かい設定のうち、自分の利回りの計算に使うもの（N2b。research/redesign-merkl-2026-10-01.md の 1-1・3章）
 _TERM_KEYS = ("apr", "targetAPR", "mode", "rewardTokenPricing", "targetTokenPricing", "side")
 _WEIGHT_KEYS = ("weightFees", "weightToken0", "weightToken1")
+# 幅に配るプール（CL）の読み方に使うもの（N3）: どのプールか（v4 は poolId と PoolManager、v3 は poolId がプールの住所）、
+# 2つのコインと桁、手数料の段、幅の外にもボーナスを配るか
+_POOL_KEYS = ("poolId", "poolManager", "currency0", "currency1", "decimalsCurrency0", "decimalsCurrency1",
+              "symbolCurrency0", "symbolCurrency1", "lpFee", "isOutOfRangeIncentivized")
 
 
 def campaign_terms(c: dict[str, Any]) -> dict[str, Any]:
@@ -137,6 +142,8 @@ def campaign_terms(c: dict[str, Any]) -> dict[str, Any]:
     settings = dmp.get("distributionSettings") if isinstance(dmp.get("distributionSettings"), dict) else {}
     terms = {k: settings[k] for k in _TERM_KEYS if k in settings}
     terms.update({k: params[k] for k in _WEIGHT_KEYS if k in params})
+    if any(k in params for k in _WEIGHT_KEYS):
+        terms.update({k: params[k] for k in _POOL_KEYS if k in params})
     tok = c.get("rewardToken") if isinstance(c.get("rewardToken"), dict) else {}
     whitelist = params.get("whitelist") or []
     return {
@@ -256,6 +263,13 @@ def receipts(data: Any) -> list[Item]:
             for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
 
 
+def pool_states(data: Any) -> list[Item]:
+    """run が feeds/pools.py で読んだ {"<チェーン番号>:<プール>": {...}} を一覧の形にする（N3）。"""
+    return [Item(k, None, k.partition(":")[0], {"kind": v.get("kind"), "official": v.get("official"),
+                                                "tick": v.get("tick"), "price": v.get("price"), "error": v.get("error")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
 # --- Aero の公式のお知らせ ------------------------------------------------------------------------
 
 _AERO_ENTRY = re.compile(r"^#{2,3} \[(?P<title>[^\]]+)\]\((?P<path>/articles/[^)\s]+)\)\s*$", re.M)
@@ -306,6 +320,10 @@ SOURCES: tuple[Source, ...] = (
     # N2c: 値段の記録がないボーナスのコインが、中身のある預かり証か（チェーンの公開の読み取り口で読む。SPEC 13.1 の5）。
     # コインの値段のあとに読む（記録がないものだけ確かめるため、この順番のまま）
     Source("receipts", "預かり証の中身（チェーンの記録）", "eth_call", "daily", receipts),
+    # N3: 幅に配るプール（Uniswap v3 / v4）の今の値段と流動性（チェーンの公開の読み取り口。公式の住所と確かめたものだけ）。
+    # Merkl のあと（キャンペーンのプールを知るため）、1時間に1回。今の版（18000）の 0・15・30・45 分を避ける（Merkl の分と同じ）
+    Source("pool_states", "幅に配るプールの値段と流動性（チェーンの記録）", "eth_call", "15min", pool_states,
+           every_minutes=55),
 )
 
 BY_ID = {s.id: s for s in SOURCES}

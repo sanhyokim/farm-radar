@@ -419,6 +419,8 @@ class OpportunitySettings:
     unknown_reward_drop_monthly_pct: float = 30.0
     receipt_stable_drop_monthly_pct: float = 3.0     # 中身がステーブルの預かり証（2026-10-02 オーナー決定）
     receipt_price_alert_pct: float = 2.0             # 預かり証の値段が中身から外れたら知らせる線（仮）
+    # N3: 幅に配るプールのチェーンの記録（流動性）を、何時間前まで使うか（1時間に1回読む。読めない回が続いたら使わない）
+    pool_state_max_age_hours: float = 3.0
 
 
 def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
@@ -447,6 +449,7 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             receipt_stable_drop_monthly_pct=float(o.get("receipt_stable_drop_monthly_pct",
                                                         d.receipt_stable_drop_monthly_pct)),
             receipt_price_alert_pct=float(o.get("receipt_price_alert_pct", d.receipt_price_alert_pct)),
+            pool_state_max_age_hours=float(o.get("pool_state_max_age_hours", d.pool_state_max_age_hours)),
         )
     except (TypeError, ValueError, AttributeError) as exc:
         raise ConfigError(f"config.yaml の opportunities の書き方を確かめてください（{exc}）。") from None
@@ -454,7 +457,7 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             or out.cautious_tvl_multiple < 1 or out.stay_days <= 0 or not 0 < out.merkl_range_pct < 100 \
             or not 0 < out.hedge_withstand_rise_pct <= 500 or any(v < 0 for v in out.reserve_usd.values()) \
             or not 0 <= out.unknown_reward_drop_monthly_pct < 100 or not 0 <= out.receipt_stable_drop_monthly_pct < 100 \
-            or out.receipt_price_alert_pct <= 0:
+            or out.receipt_price_alert_pct <= 0 or out.pool_state_max_age_hours <= 0:
         raise ConfigError("config.yaml の opportunities の数字を確かめてください（金額は正、割合は0〜1、倍率は1以上）。")
     return out
 

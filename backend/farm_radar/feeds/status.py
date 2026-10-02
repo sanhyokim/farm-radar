@@ -53,12 +53,14 @@ def _status(conn: sqlite3.Connection, settings: FeedSettings, now: datetime, new
         state = last["status"] if last else "none"
         if state == "running" and now - _ts(last["started_at"]) > STUCK_AFTER:
             state = "stuck"
-        late = ok is None or now - _ts(ok["started_at"]) > LATE_AFTER[s.cadence]
+        late_after = max(LATE_AFTER[s.cadence], timedelta(minutes=2 * s.every_minutes + 40)) if s.every_minutes \
+            else LATE_AFTER[s.cadence]
+        late = ok is None or now - _ts(ok["started_at"]) > late_after
         new_today = conn.execute("SELECT COUNT(*) FROM feed_items WHERE source=? AND baseline=0 AND first_seen>=?",
                                  (s.id, store.iso(today_start))).fetchone()[0]
         any_problem = any_problem or late or state in ("error", "rate_limited", "stuck")
         rows.append({
-            "id": s.id, "label": s.label_ja, "cadence": s.cadence, "cadence_ja": CADENCE_JA[s.cadence],
+            "id": s.id, "label": s.label_ja, "cadence": s.cadence, "cadence_ja": CADENCE_JA["hourly"] if s.every_minutes >= 55 else CADENCE_JA[s.cadence],
             "status": state, "status_ja": STATUS_JA[state], "late": late,
             "last_run_at": last["started_at"] if last else None, "last_ok_at": ok["started_at"] if ok else None,
             "items": ok["items"] if ok else None, "new_today": new_today,

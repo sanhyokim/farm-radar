@@ -28,3 +28,16 @@ geckoterminal_network: robinhood   # https://api.geckoterminal.com/api/v2/networ
 defillama_name: Robinhood Chain    # https://api.llama.fi/v2/chains の name（chainId 4663。2026-10-02 確認）
 defillama_coins_key: robinhood    # https://coins.llama.fi の値段の名前（"robinhood:<住所>"。2026-10-02 に USDe で確認）
 lists_checked_at: "2026-10-02"     # Merkl・Across・Relay・LI.FI の一覧に chain_id 4663 があることを確認
+
+# Uniswap の公式の住所（N3。幅に配るプールを読むときに、Merkl の書く住所がこれと同じか確かめる）。
+# 出典: https://developers.uniswap.org/docs/protocols/v4/deployments 、
+#       https://developers.uniswap.org/docs/protocols/v3/deployments/v3-robinhood-chain-deployments 、
+#       https://developers.uniswap.org/deployments.json（id v4-poolmanager-robinhood-chain・v3-uniswapv3factory-robinhood-chain）、
+#       https://raw.githubusercontent.com/Uniswap/contracts/main/deployments/json/4663.json 。
+# Sourcify で契約の中身が公開・確認済み（PoolManager・PositionManager・UniswapV3Factory）。確認日 2026-10-02
+uniswap:
+  v4_pool_manager: "0x8366a39CC670B4001A1121B8F6A443A643e40951"
+  v4_position_manager: "0x58daec3116aae6D93017bAAea7749052E8a04fA7"   # プールの組み合わせ（フック・tick の間隔）を poolKeys で読む
+  v3_factory: "0x1f7d7550B1b028f7571E69A784071F0205FD2EfA"
+  source_url: https://developers.uniswap.org/deployments.json
+  checked_at: "2026-10-02"

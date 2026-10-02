@@ -96,7 +96,7 @@ export default function Explore() {
           <Line k="1つの入れる先に入れてよい上限" v={`預かり額の ${(data.settings.max_pool_share * 100).toFixed(0)}%`} />
           <Line k="小さすぎて外す預かり額" v={`${bigUsd(data.settings.min_tvl_usd)} 未満`} note="始まったばかりのプールは外さず「新しい」の印" />
           <Line k="いる日数（入る・出る費用を割る）" v={`${data.settings.stay_days}日`} note="配る期間が短ければ、その残りの日数" />
-          <Line k="幅に配るプールの幅" v={`±${data.settings.merkl_range_pct}%`} />
+          <Line k="幅に配るプールの幅" v="±0.5%〜±15% から選ぶ" note={`チェーンの記録（1時間に1回）がないときは ±${data.settings.merkl_range_pct}%`} />
           <Line k={<Term k="保険の預け金">保険の預け金</Term>} v={`${data.settings.hedge_withstand_rise_pct}% 上がっても耐える額`} />
           <Note>これらは仮の数字で、試し（N5）で決め直します。手数料の収入は分からないので数えていません（安全側）。</Note>
         </Fold>
