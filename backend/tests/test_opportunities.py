@@ -419,3 +419,19 @@ def test_api_opportunities_and_settings(cfg, monkeypatch):
     r = c.put("/api/settings", json={"target_apr_pct": 0})
     assert r.status_code == 400 and "狙い利回り" in r.json()["detail"]
     api._opps_cache.clear()
+
+
+def test_uncertain_venue_is_listed_but_not_recommended(cfg):
+    # オーナー 2026-10-02 23:15 JST: 会場の見分けが不確かな行は、一覧には出すが練習のおすすめに入れない
+    ops = [o for o in _collect(cfg).values() if o.computable and not o.excluded]
+    target = min(o.best(1000.0).apr_pct for o in ops)    # 全部を狙い以上にする
+    sure, unsure = ops[0], ops[1]
+    sure.venue_safety = {"level": "high", "uncertain_match": False}
+    unsure.venue_safety = {"level": "high", "uncertain_match": True}
+    assert sure.recommended(1000.0, target) and not unsure.recommended(1000.0, target)
+    d = unsure.to_dict(1000.0, target)
+    assert d["above_target"] is True and d["recommended"] is False and d["safety"]["uncertain_match"] is True
+    ranked = opps.rank(ops, 1000.0, target)
+    assert unsure in ranked
+    flags = [o.recommended(1000.0, target) for o in ranked]
+    assert flags == sorted(flags, reverse=True)

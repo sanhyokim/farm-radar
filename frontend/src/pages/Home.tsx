@@ -6,6 +6,7 @@ import { Icon } from "../icons";
 import { Fold, Folds, Line, Loading, PageHead, Pill, Spark, Term, usePulse, useWide } from "../ui";
 import { EvalProgress, TodoCard } from "./parts";
 import { FeedsCard } from "./Feeds";
+import { VenueMatchPill, isUncertainVenue } from "./opp";
 
 // ホーム（SPEC 7.1章・13.1 の追加の決定 2。N2c で形を変えた）
 // スマホ: 全体の損益と損失ライン → 持っている建玉 → 知らせ → 探す（狙い以上の数）→ 一覧の保存 → 1時間ごとのグラフ
@@ -102,7 +103,7 @@ function ExploreTile() {
     <section className="card flex flex-col gap-2 px-2 pt-6 pb-2">
       <div className="flex items-center justify-between gap-2 px-4 pb-2">
         <span className="label flex items-center gap-2"><Icon name="search" size={16} />探す</span>
-        {data && <span className="cap">狙い（年{+data.target_apr_pct.toFixed(2)}%）以上 {data.counts.above_target}件</span>}
+        {data && <span className="cap">おすすめ {data.counts.recommended ?? 0}件（狙い 年{+data.target_apr_pct.toFixed(2)}% 以上 {data.counts.above_target}件）</span>}
       </div>
       {!data ? <p className="cap px-4 pb-4">読み込み中…</p> : data.items.length === 0 ? <p className="cap px-4 pb-4">一覧に出せる入れる先はまだありません。</p>
         : data.items.map((o) => (
@@ -110,6 +111,7 @@ function ExploreTile() {
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="truncate">{o.name ?? o.key}</span>
               <span className="cap truncate">{[o.chain_name, o.venue_name ?? o.venue].filter(Boolean).join(" · ")}</span>
+              {isUncertainVenue(o) && <span className="flex"><VenueMatchPill /></span>}
             </span>
             <span className="bold num shrink-0">{o.best ? `${o.best.apr_pct.toFixed(1)}%` : "—"}</span>
           </Link>

@@ -32,7 +32,9 @@ export const GuessPill = () => <Pill tone="y" icon="alert">値下がり未計算
 
 /** 会場の情報が名前だけで結びついている印（オーナー依頼 2026-10-02 17:07 JST。N4 で契約の住所で見分ける） */
 export const isUncertainVenue = (o: Opportunity) => !!o.safety?.uncertain_match;
-export const VenueMatchPill = () => <Pill icon="info">仮・会場の見分けが不確か</Pill>;
+export const VenueMatchPill = () => <Pill tone="y" icon="alert">仮・会場の見分けが不確か</Pill>;
+/** おすすめ（狙い以上で会場の見分けが確か）。見分けが不確かな行はおすすめに入れない（オーナー 2026-10-02 23:15 JST） */
+export const isRecommended = (o: Opportunity) => !o.excluded && !!o.recommended;
 
 /** 狙い利回りを変える（設定。リスク上限とは別のもの） */
 export function TargetEdit({ current, onSaved }: { current: number; onSaved: () => void }) {

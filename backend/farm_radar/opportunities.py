@@ -124,6 +124,17 @@ class Opportunity:
     def excluded(self) -> bool:
         return any(f.level == LEVEL_EXCLUDE for f in self.flags)
 
+    @property
+    def uncertain_venue(self) -> bool:
+        """会場の情報が名前だけで結びついている（「仮・会場の見分けが不確か」。N4 で契約の住所で見分ける）"""
+        return bool((self.venue_safety or {}).get("uncertain_match"))
+
+    def recommended(self, amount: float, target_apr_pct: float) -> bool:
+        """練習のおすすめに入れるか: 外していない・狙い利回り以上・会場の見分けが確か（オーナー 2026-10-02 23:15 JST）。
+        見分けが不確かな行も一覧には出し、自分で選んで練習はできる。"""
+        b = self.best(amount)
+        return not self.excluded and not self.uncertain_venue and b is not None and b.apr_pct >= target_apr_pct
+
     def best(self, amount: float, case: str = "cautious") -> Variant | None:
         vs = [v for v in (self.calc.get(_akey(amount)) or {}).get(case, {}).values() if v is not None]
         return max(vs, key=lambda v: v.net_after_move) if vs else None
@@ -141,6 +152,7 @@ class Opportunity:
             b = self.best(amount)
             out["best"] = b.to_dict() if b else None
             out["above_target"] = (b.apr_pct >= target_apr_pct) if b and target_apr_pct is not None else None
+            out["recommended"] = self.recommended(amount, target_apr_pct) if target_apr_pct is not None else None
             out["over_cap"] = bool(self.cap_usd is not None and amount > self.cap_usd)
         out["venue_safety"] = self.venue_safety
         out["safety"] = safety.opportunity(out, self.venue_safety)
@@ -919,11 +931,13 @@ def collect(conn: sqlite3.Connection, config: Config, now: datetime | None = Non
 
 def rank(ops: list[Opportunity], amount: float, target_apr_pct: float, include_excluded: bool = False
          ) -> list[Opportunity]:
-    """並べ替え: 計算できたもの → 狙い利回り以上 → 控えめの見込みの年利の高い順。外したものは include_excluded のときだけ。"""
+    """並べ替え: 計算できたもの → おすすめ（狙い利回り以上で会場の見分けが確か）→ 狙い利回り以上 →
+    控えめの見込みの年利の高い順。外したものは include_excluded のときだけ。"""
     def key(o: Opportunity) -> tuple:
         b = o.best(amount)
         apr = b.apr_pct if b else -1e18
-        return (not o.computable, o.excluded, not (b is not None and apr >= target_apr_pct), -apr)
+        return (not o.computable, o.excluded, not o.recommended(amount, target_apr_pct),
+                not (b is not None and apr >= target_apr_pct), -apr)
     return sorted((o for o in ops if include_excluded or not o.excluded), key=key)
 
 

@@ -243,11 +243,13 @@ def opportunities_api(amount: float = 1000.0, chain: str | None = None, kind: st
     sel = [o for o in ops if (chain is None or o.base.chain == chain) and (kind is None or o.kind.startswith(kind))]
     ranked = opps.rank([o for o in sel if o.computable], amount, target, include_excluded=show_excluded)
     above = sum(1 for o in ranked if not o.excluded and (b := o.best(amount)) and b.apr_pct >= target)
+    recommended = sum(1 for o in ranked if o.recommended(amount, target))
     return {
         "computed_at": hit[0].isoformat(timespec="seconds"), "target_apr_pct": target, "amount": amount,
         "amounts": amounts, "counts": {
             "total": len(sel), "computed": sum(1 for o in sel if o.computable),
             "listed": sum(1 for o in sel if o.computable and not o.excluded), "above_target": above,
+            "recommended": recommended, "uncertain_venue": sum(1 for o in ranked if not o.excluded and o.uncertain_venue),
             "excluded": sum(1 for o in sel if o.computable and o.excluded),
             "not_computable": sum(1 for o in sel if not o.computable)},
         "not_computable": Counter(o.reason for o in sel if not o.computable).most_common(10),

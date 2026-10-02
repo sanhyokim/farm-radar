@@ -109,6 +109,7 @@ export interface Opportunity {
   flags: OppFlag[]; excluded: boolean; unprotected: string[]; cap_usd: number | null; new_pool: boolean;
   calc: Record<string, { normal: OppCase; cautious: OppCase }>;
   best: OppVariant | null; above_target: boolean | null; over_cap: boolean;
+  recommended?: boolean | null;   // 練習のおすすめ（狙い以上で、会場の見分けが確か。2026-10-02 23:15 JST）
   safety: Safety; venue_safety: Safety | null;
 }
 /** 安全度（仮の3段階。N2c。N4 で危なさの点数に置きかえる） */
@@ -141,7 +142,7 @@ export interface Guard {
 }
 export interface OpportunitiesResp {
   computed_at: string; target_apr_pct: number; amount: number; amounts: number[];
-  counts: { total: number; computed: number; listed: number; above_target: number; excluded: number; not_computable: number };
+  counts: { total: number; computed: number; listed: number; above_target: number; recommended?: number; uncertain_venue?: number; excluded: number; not_computable: number };
   not_computable: [string, number][];
   settings: { max_pool_share: number; cautious_tvl_multiple: number; min_tvl_usd: number; stay_days: number;
     merkl_range_pct: number; hedge_withstand_rise_pct: number };
