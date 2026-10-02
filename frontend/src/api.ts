@@ -97,6 +97,8 @@ export interface OppVariant {
   direction: number; net: number; move_cost: number; stay_days: number; net_after_move: number; apr_pct: number;
   payback_days: number | null; in_range_ratio: number | null; range_pct: number | null;
   liquidity_share?: number | null;   // 幅に配るプールで、チェーンの記録の流動性から出した取り分（N3）
+  sigma_pct?: number | null;         // 計算に使った1日の値動き（%。N4b）
+  jumps_per_day?: number | null;     // 幅を飛び越える飛び（市場が閉まっていたあとなど）の1日あたりの回数（N4b）
 }
 export interface OppFlag { code: string; level: "exclude" | "warn" | "info"; text: string }
 export type OppCase = { no_hedge: OppVariant | null; hedge: OppVariant | null };

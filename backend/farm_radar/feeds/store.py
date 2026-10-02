@@ -219,6 +219,30 @@ def write_venue_checks(conn: sqlite3.Connection, ts: str, rows: dict[str, Any]) 
     return n
 
 
+def write_vault_states(conn: sqlite3.Connection, ts: str, rows: dict[str, Any]) -> int:
+    """金庫の運用先（feeds/vaults.py の結果）を書く。前の回と違えば vault_changes に記録する。失敗（failed）は書かない。"""
+    n = 0
+    for key, r in rows.items():
+        if not isinstance(r, dict) or r.get("failed"):
+            continue
+        cid, _, addr = key.partition(":")
+        prev = conn.execute("SELECT state_json, digest FROM vault_states WHERE chain_id=? AND address=?",
+                            (int(cid), addr.lower())).fetchone()
+        state = json.dumps(r.get("state"), sort_keys=True) if r.get("state") is not None else None
+        if prev is not None and r.get("digest") and prev[1] and prev[1] != r["digest"]:
+            conn.execute("INSERT OR REPLACE INTO vault_changes(chain_id, address, detected_at, before_json, after_json) "
+                         "VALUES (?,?,?,?,?)", (int(cid), addr.lower(), ts, prev[0], state))
+        if r.get("state") is None and prev is not None and prev[0]:
+            state, digest_ = prev[0], prev[1]        # 答えなかった回は、前の状態を残す（error だけ書く）
+        else:
+            digest_ = r.get("digest")
+        conn.execute("""INSERT OR REPLACE INTO vault_states(chain_id, address, venue_id, kind, checked_at, state_json, digest,
+                        error) VALUES (?,?,?,?,?,?,?,?)""",
+                     (int(cid), addr.lower(), r.get("venue_id"), r.get("kind"), ts, state, digest_, r.get("error")))
+        n += 1
+    return n
+
+
 def write_pool_states(conn: sqlite3.Connection, ts: str, rows: dict[str, Any], keep_days: int = 60) -> int:
     """幅に配るプールの状態（feeds/pools.py の結果）を書く。読み取り口の失敗（failed）は書かない。"""
     n = 0

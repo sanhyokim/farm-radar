@@ -127,6 +127,10 @@ export function Breakdown({ v }: { v: OppVariant }) {
       <Line k="予備" v={usd(v.split.reserve, 0)} note="ガス代の分（チェーンごとの決まった額）" />
       <Line k="受け取る分" v={usd(v.income, 3)} note={`ボーナスの取り分（預けるだけの型は、預け先の利息も）${v.points ? "。ポイントは0として数えた" : ""}`} />
       {v.in_range_ratio != null && <Line k="幅の中にいる時間" v={`${(v.in_range_ratio * 100).toFixed(0)}%`} note={v.range_pct != null ? `幅 ±${v.range_pct.toFixed(1)}%` : undefined} />}
+      {v.sigma_pct != null && <Line k="1日の値動き" v={`${v.sigma_pct.toFixed(2)}%`} note={v.range_pct != null ? "なめらかな動き。控えめは7日と30日の大きい方" : "控えめは7日と30日の大きい方"} />}
+      {v.jumps_per_day != null && v.jumps_per_day > 0 && (
+        <Line k="幅を飛び越える飛び" v={`1日 ${v.jumps_per_day.toFixed(2)}回`} note="値段が止まっていたあと（株の週末など）。そのたびに置き直しと損を数える" />
+      )}
       {v.liquidity_share != null && (
         <Line k={<Term k="流動性の割合">流動性の取り分</Term>} v={sharePct(v.liquidity_share)}
           note={`幅 ±${(v.range_pct ?? 0).toFixed(1)}% に置いたとき（チェーンの記録）`} />

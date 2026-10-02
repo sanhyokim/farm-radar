@@ -190,3 +190,24 @@ CREATE TABLE IF NOT EXISTS venue_checks (
   error TEXT,
   PRIMARY KEY (chain_id, address, factory)
 );
+
+-- N4b: 金庫の運用先の見張り（feeds/vaults.py。2026-10-03 オーナー）。今の状態と、変わったときの記録
+CREATE TABLE IF NOT EXISTS vault_states (
+  chain_id INTEGER NOT NULL,
+  address TEXT NOT NULL,               -- 金庫の住所（小文字）
+  venue_id TEXT,
+  kind TEXT,                           -- 読み方（morpho_vault_v2）
+  checked_at TEXT NOT NULL,
+  state_json TEXT,                     -- 運用先の一覧・すぐ引き出せる運用先・運用者・持ち主
+  digest TEXT,
+  error TEXT,
+  PRIMARY KEY (chain_id, address)
+);
+CREATE TABLE IF NOT EXISTS vault_changes (
+  chain_id INTEGER NOT NULL,
+  address TEXT NOT NULL,
+  detected_at TEXT NOT NULL,           -- 変わったのに気づいた時刻（前の回との間のどこかで変わった）
+  before_json TEXT,
+  after_json TEXT,
+  PRIMARY KEY (chain_id, address, detected_at)
+);
