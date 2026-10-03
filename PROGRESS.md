@@ -54,7 +54,8 @@
   N3 は PR #21・#22（1行の更新）で取り込み済み。PR #23（おすすめと印）・#24（片付けの1行）もマージ済み。
   **N4a（会場を契約の住所で見分ける・危なさの点数・推奨金額）は PR #25（2026-10-03 00:39 JST オーナーがマージ）。1行の更新も済み（00:47 JST。下の「N4b の実装メモ」の最初）。**
   **N4b（損の線・早く出る4段階・保険の守り）は PR #26（2026-10-03 08:34 JST オーナーがマージ）。1行の更新も済み（2330 の控えは消えた）。**
-  **N4b のあとの直し（下の「N4b のあとの直し」）を作業場所で作った。PR とオーナーの1行の更新待ち。そのあと報告して、N5 に進む前に承認を待つ。**
+  **N4b のあとの直し（下の「N4b のあとの直し」）は PR #27（2026-10-03 09:00 JST オーナーがマージ）。1行の更新も済み（あなたのパソコンで確かめた値: venue_checks 今回 61 / 確かめ済み 61（工場 15）、vault_states 1、level なし）。**
+  **N5（試す）: 2026-10-03 09:07 JST オーナー「最初に、N5 の計画を見せてください」。計画書 docs/n5-plan-2026-10-03.md を出した。判断①〜⑤の答えと承認待ち（下の「N5 の計画のための調べ」）。0040 の控えは片付けの1行で消す（オーナー許可済み）。**
 - ~~評価中の1回の更新（10/2〜10/3）~~ **→ 見送り（2026-10-01 21:49 JST オーナー）。PR #14 はパソコンに入れない。** 元の内容: 参考の練習（案B。合否に使わない。上限の外・$1,000・同時に3つまで）、週ごとの見込みでの合否、文字化け（charset=utf-8）、C2 のランプ、PR #14 の文。
   参考の3プール: aUSD/USDG `up-robinhood:0x29e3f3d9891cacf213361bcbcb7728970d53baa8`、USDG/AAPL `up-robinhood:0x19d55aba3e5d2c389b7011c634725136dfdcae33`、
   USDG/GLD `up-robinhood:0xc9dc17b3fa4d12022e980b1e8ed118d29c58f2a8`。作業場所の値（10/1 19:45 JST のスコア）では3つとも🔴で、ステークしない形（手数料だけ）が選ばれる
@@ -154,6 +155,30 @@
   最後の「今の版（18000）の前後の比べ」だけが 30 秒で時間切れになり「止めました」と出た（起動の後なので戻しはしていない）。
   直し: 今の版を読むときは 90 秒まで待ち、だめなら 20 秒あけて 3 回まで試す。最後の比べで読めなくても止めずに注意だけ出す。
   作業場所で「ずっと答えない／1回目だけ遅い／すぐ答える」の3つの偽の今の版で試した。
+
+## N5 の計画のための調べ（2026-10-03 JST。作業場所から公開の API と公式の記事を確認）
+計画書: docs/n5-plan-2026-10-03.md。承認まで実装しない。
+
+### Merkl の配った額（https://api.merkl.xyz/docs/json、2026-10-03 確認）
+- `GET /v4/rewards/?chainId=&campaignId=&page=&items=`: 受け取った人×reason ごとの `amount`（累計、claimed 込み）/ `claimed` / `pending`（まだ root に入っていない分）。
+  **chainId は配る側のチェーン（distributionChainId）。** 例: Base の Uniswap V3 キャンペーン `0x980deb…dc65` は computeChainId 8453 / distributionChainId 1 で、chainId=8453 は 404。campaignId はチェーン上の32バイトの hash。
+- reason は `UNISWAP_V3_<pool>_<positionTokenId>`（預け方の NFT 番号。tick の幅は入っていない → チェーンで読む）。
+- `GET /v4/rewards/total?chainId=&campaignId=`: 配った合計。予算はキャンペーンの `amount`（手数料の前か後かは未確認）。
+- 期間ごとの差 `GET /v4/historical/campaign/{id}`・`/v4/historical/tree` は x-api-key が必要（401。BETA、区切りの日より前はない）。
+  → 公開の代わり: `/v4/roots/?chainId=&fromTimestamp=&toTimestamp=` の root ごとに `/v4/rewards/` を保存して差を取る（資料にある手順ではない。推測ではなく差を取るだけ）。
+- 幅の外に配るかはキャンペーンの params `isOutOfRangeIncentivized`。資料（https://docs.merkl.xyz/merkl-mechanisms/campaign-types/concentrated-liquidity-mechanisms.md）: "By default, only in-range positions receive rewards."（Fixed APR は帯と重なれば幅の外でも）
+- 更新の間隔: 資料は計算 約2時間・root 約8時間（4〜12）。Base の root は 2026-10-02 00:00〜10-03 00:00 UTC に 12回（111〜130分おき。作業場所で確認）。
+
+### Aero（公式の記事、2026-10-03 確認）
+- 開始 2026-10-22 00:00 UTC（https://aero.xyz/articles/aero-launch-update-all-systems-go/）。
+- 7チェーン: Base(8453)・Ethereum(1)・OP Mainnet(10)・Arc(5042)・Ink(57073)・Robinhood Chain(4663)・Arbitrum(42161)。
+  Arc は Aero Lite が 2026-09-16 から動いている（https://aero.xyz/articles/aero-lite-is-live-on-arc/）。
+- Merkl /v4/chains/ と DefiLlama /v2/chains は7つとも対応（DefiLlama に aero-lite（Arc）あり）。
+- 住所: https://github.com/dromos-labs/metadex-public の deployment-addresses/ に arc.json だけ（Aero Lite）。ほかは未公開。
+  **venues/*.yaml にはまだ書かない。** 使うときは Blockscout/Sourcify で確かめてから（絶対ルール3）。
+- 配り方（https://aero.xyz/articles/aero-the-aer-engine-faq/ ほか）: 秒ごとの決まった速さ、"Rewards accrue to active-tick LPs"、週の切り替えなし、プールの上限を約48時間ごとに見直し、全体の上限は年20%の予定。
+  くわしい計算は未公開 → 実装前にオーナーに確認（絶対ルール4）。
+- 古い Aerodrome/Velodrome の配り先は移る週に終わる（https://aero.xyz/articles/aero-economic-case/）。日付は未発表。
 
 ## N4b のあとの直し（2026-10-03 JST。オーナー 08:35「上の3つを直したら、N5 に進む前に報告してください」）
 
