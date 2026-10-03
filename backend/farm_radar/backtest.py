@@ -33,7 +33,7 @@ from .scoring import model as m
 from .scoring.run import own_series
 from .tokens import load_tokens
 
-VERSION = 1                     # 計算を変えたら上げる（とっておいた結果を使わない）
+VERSION = 2                     # 計算を変えたら上げる（とっておいた結果を使わない）
 STEP_MAX_S = 45 * 60            # 15分ごとの記録で、これより間があいたら、その間の時間は数えない（欠損）
 DAY_MIN_COVERAGE = 0.9          # 1日のうち、これ以上の時間の記録がある日だけ比べる
 PASS_REL = 0.30                 # 合格の目安: 差が見込みの30%以内（評価のときと同じ）
@@ -41,6 +41,11 @@ PASS_ABS_CAPITAL = 0.001        # または、資金の0.1%以内（1日あた�
 FUNDS_THRESHOLDS = (20, 30, 40, 50)          # 段階1 の線を変えたときの回数（%。今は config の値）
 REWARD_THRESHOLDS = (-10, -15, -20, -25)     # 段階2 の報酬のコインの線（%）
 EVENT_GAP_S = 6 * 3600          # 同じプール・同じコインの合図は、6時間あいたら別の出来事として数える
+SMALL_POOL_USD = 50_000.0       # 段階1 の中身を分ける: これより小さいプール（2026-10-03 オーナーの例）
+RECOVER_S = 6 * 3600            # 段階1 の中身を分ける: この時間のうちに、減る前の90%まで戻ったら「すぐ戻った」
+RECOVER_SHARE = 0.9
+BIG_DROP_PCT = -20.0            # 段階1 の中身を分ける: そのあと24時間で、プールのコインがこれ以上下がったら「大きな値下がり」
+KINDS = ("stock", "stable", "bonus", "coin")   # 株 / ステーブルどうし / ボーナスのコイン / ふつうのコイン
 
 
 # --- v3 の式（token1 建て。幅 [pa, pb]、流動性 L） --------------------------------------------------------
@@ -210,6 +215,27 @@ def _mean(xs: list[float]) -> float | None:
     return sum(xs) / len(xs) if xs else None
 
 
+def _median(xs: list[float]) -> float | None:
+    xs = sorted(xs)
+    if not xs:
+        return None
+    k = len(xs) // 2
+    return xs[k] if len(xs) % 2 else (xs[k - 1] + xs[k]) / 2
+
+
+def pool_kind(pool: sqlite3.Row, stables: frozenset[str], stocks: frozenset[str], rewards: frozenset[str]) -> str:
+    """プールの種類（2026-10-03 オーナー「株・ステーブル・ふつうのコイン・ボーナスのコインごとに」）。
+    株のトークンを含む → stock、ボーナスのコイン（会場の報酬のコイン）を含む → bonus、両方ステーブル → stable、ほか → coin。"""
+    toks = {pool["token0"].lower(), pool["token1"].lower()}
+    if toks & stocks or pool["is_stock_pair"]:
+        return "stock"
+    if toks & rewards:
+        return "bonus"
+    if toks <= stables:
+        return "stable"
+    return "coin"
+
+
 # --- ②③④ 幅に置いた建玉 ---------------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -321,15 +347,23 @@ def _summarize_ranges(rows: list[dict[str, Any]], s: BacktestSettings) -> list[d
 
         def avg(k: str) -> float | None:
             return _mean([x[k] for x in xs if x[k] is not None])
+
+        def med(k: str) -> float | None:
+            return _median([x[k] for x in xs if x[k] is not None])
         out.append({
             "r_pct": rp, "days": len(xs),
-            "rebalances": {"pred": avg("rebalances_pred"), "real": avg("rebalances_real"), "ok_share": share(ok_n)},
+            "rebalances": {"pred": avg("rebalances_pred"), "real": avg("rebalances_real"), "ok_share": share(ok_n),
+                           "pred_median": med("rebalances_pred"), "real_median": med("rebalances_real")},
             "in_range": {"pred": avg("in_range_pred"), "real": avg("in_range_real"), "ok_share": share(ok_irr)},
             "gamma": {"pred": avg("gamma_pred"), "real": avg("gamma_real"), "formula_real_sigma": avg("gamma_formula_real_sigma"),
-                      "ok_share": share(ok_g), "ok_share_real_sigma": share(ok_gf)},
+                      "ok_share": share(ok_g), "ok_share_real_sigma": share(ok_gf),
+                      "pred_median": med("gamma_pred"), "real_median": med("gamma_real"),
+                      "formula_real_sigma_median": med("gamma_formula_real_sigma")},
             "cost": {"pred": avg("cost_pred"), "real": avg("cost_real"), "ok_share": share(ok_c),
-                     "slip_pred": avg("slip_pred"), "slip_real": avg("slip_real")},
-            "sigma": {"pred": avg("sigma_pred"), "real": avg("sigma_real")},
+                     "slip_pred": avg("slip_pred"), "slip_real": avg("slip_real"),
+                     "pred_median": med("cost_pred"), "real_median": med("cost_real")},
+            "sigma": {"pred": avg("sigma_pred"), "real": avg("sigma_real"),
+                      "pred_median": med("sigma_pred"), "real_median": med("sigma_real")},
         })
     return out
 
@@ -480,6 +514,31 @@ def pool_funds(pts: list[tuple[int, float, float | None, sqlite3.Row]], usd: dic
     return out
 
 
+def stage1_detail(t: int, funds: list[tuple[int, float, float]], coins: list[list[tuple[int, float]]]) -> dict[str, Any]:
+    """段階1 の合図の中身（2026-10-03 オーナーの質問2）: プールの大きさ、すぐ戻ったか、そのあと大きく下がったか。"""
+    before = next((ago for tt, _, ago in funds if tt == t), None)
+    later = [(tt, now) for tt, now, _ in funds if t < tt <= t + RECOVER_S]
+    recovered = bool(before and any(now >= RECOVER_SHARE * before for _, now in later))
+    drops = []
+    for pts in coins:
+        p0 = _at_or_before(pts, t)
+        nxt = [pp for tt, pp in pts if t < tt <= t + 86400]
+        if p0 and nxt:
+            drops.append((min(nxt) / p0 - 1) * 100)
+    worst = min(drops) if drops else None
+    return {"funds_before_usd": before, "small": bool(before is not None and before < SMALL_POOL_USD),
+            "recovered_6h": recovered, "coin_min_24h_pct": worst,
+            "big_drop": worst is not None and worst <= BIG_DROP_PCT}
+
+
+def stage1_breakdown(evs: list[dict[str, Any]]) -> dict[str, int]:
+    """段階1 の合図を分ける（重なりあり）。「どれでもない」は、大きいプールで、すぐ戻らず、大きな値下がりもなかったもの。"""
+    return {"total": len(evs), "small": sum(1 for e in evs if e["small"]),
+            "recovered_6h": sum(1 for e in evs if e["recovered_6h"]),
+            "big_drop": sum(1 for e in evs if e["big_drop"]),
+            "none": sum(1 for e in evs if not (e["small"] or e["recovered_6h"] or e["big_drop"]))}
+
+
 # --- まとめ ----------------------------------------------------------------------------------------------
 
 def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | None = None,
@@ -488,24 +547,38 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
     s = s or BacktestSettings.from_config(config)
     pools = [p for p in _pools(conn) if p["n"] >= 96]
     venues = sorted({p["venue_id"] for p in pools})
+    tok_book = load_tokens(root=config.root)
+    reward_tokens: dict[str, str] = {}             # 会場 → 報酬のコイン（確認済みのアドレスだけ）
+    for v in venues:
+        try:
+            rt = (contract_address(load_venue(v, config.root), "reward_token") or "").lower()
+        except Exception:
+            rt = ""
+        if rt:
+            reward_tokens[v] = rt
+    rewards = frozenset(reward_tokens.values())
+    stocks = frozenset(tok_book.stock_tokens)
     rows: list[dict[str, Any]] = []
     fund_rows: list[dict[str, Any]] = []
     per_pool: list[dict[str, Any]] = []
+    kinds: dict[str, str] = {}
     for p in pools:
+        kinds[p["id"]] = kind = pool_kind(p, tok_book.stablecoins, stocks, rewards)
         ds = pool_days(conn, p, s)
-        rows += [{**x, "pool_id": p["id"], "stock": bool(p["is_stock_pair"])} for x in ds]
+        rows += [{**x, "pool_id": p["id"], "stock": kind == "stock", "kind": kind} for x in ds]
         fund_rows += hedge_days(conn, fconn, p, s)
         best = [x for x in ds if x["best_r_pct"] is not None and abs(x["r_pct"] - x["best_r_pct"]) < 1e-9]
         if best:
             per_pool.append({"pool_id": p["id"], "pair": f"{p['token0_symbol']}/{p['token1_symbol']}",
-                             "stock": bool(p["is_stock_pair"]), "days": len(best),
+                             "stock": kind == "stock", "kind": kind, "days": len(best), "r_pct": best[0]["r_pct"],
+                             "sigma_pred": _mean([x["sigma_pred"] for x in best]),
+                             "sigma_real": _mean([x["sigma_real"] for x in best]),
                              "gamma_pred": _mean([x["gamma_pred"] for x in best]),
                              "gamma_real": _mean([x["gamma_real"] for x in best]),
                              "rebalances_pred": _mean([x["rebalances_pred"] for x in best]),
                              "rebalances_real": _mean([x["rebalances_real"] for x in best])})
 
     # ⑤ 預け金・⑥ 早く出る決まり（会場ごとの値段の並び）
-    tok_book = load_tokens(root=config.root)
     since = datetime(2000, 1, 1, tzinfo=UTC)
     usd: dict[str, list[tuple[int, float]]] = {}
     for v in venues:
@@ -532,24 +605,22 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
         f = pool_funds(pts, usd, p)
         chs = [(t, now, now / ago - 1) for t, now, ago in f if ago > 0]
         prices = [(t, pr) for t, pr, _, _ in pts]
+        coins = [usd.get(tk, []) for tk in (p["token0"].lower(), p["token1"].lower()) if tk not in tok_book.stablecoins]
         for th in FUNDS_THRESHOLDS:
             for e in events(chs, lambda ch, th=th: ch * 100 <= -th, [(t, now) for t, now, _ in f]):
                 e["pool_id"] = p["id"]
                 e["pair"] = f"{p['token0_symbol']}/{p['token1_symbol']}"
+                e["kind"] = kinds.get(p["id"])
                 e["price_after_24h_pct"] = None
                 pr0 = _at_or_before(prices, e["at"])
                 pr24 = _at_or_before(prices, e["at"] + 86400, 3600)
                 if pr0 and pr24:
                     e["price_after_24h_pct"] = (pr24 / pr0 - 1) * 100
-                stage1[th].append(e)
+                stage1[th].append({**e, **stage1_detail(e["at"], f, coins)})
 
     reward = []
     for v in venues:
-        try:
-            venue = load_venue(v, config.root)
-        except Exception:
-            continue
-        rt = (contract_address(venue, "reward_token") or "").lower()
+        rt = reward_tokens.get(v, "")
         if not rt or rt not in usd:
             continue
         chs = changes(usd[rt], 24)
@@ -573,12 +644,20 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
         "days": sorted({x["day"] for x in rows}),
         "ranges": {"all": _summarize_ranges(rows, s),
                    "stock": _summarize_ranges([x for x in rows if x["stock"]], s),
-                   "crypto": _summarize_ranges([x for x in rows if not x["stock"]], s)},
+                   "crypto": _summarize_ranges([x for x in rows if not x["stock"]], s),
+                   **{f"kind_{k}": _summarize_ranges([x for x in rows if x["kind"] == k], s) for k in KINDS}},
+        "kinds": {k: sum(1 for v in kinds.values() if v == k) for k in KINDS},
         "per_pool_best": per_pool,
+        # 見込みと実際のずれが大きいプール（値動きの損の見込み ÷ 実際。大きい順に10）と、SPY のプール
+        "misses": sorted([x for x in per_pool if x["gamma_pred"] and x["gamma_real"] and x["gamma_real"] > 0],
+                         key=lambda x: -x["gamma_pred"] / x["gamma_real"])[:10],
+        "spy": [x for x in per_pool if "SPY" in x["pair"].upper()],
         "funding": _summarize_funding(fund_rows, s),
         "margins": margins,
         "stage1": {"threshold_pct": s.funds_drop_pct,
                    "counts": {str(th): len(e) for th, e in stage1.items()},
+                   "counts_big_pools": {str(th): sum(1 for x in e if not x["small"]) for th, e in stage1.items()},
+                   "breakdown": stage1_breakdown(stage1.get(int(s.funds_drop_pct), [])),
                    "events": stage1.get(int(s.funds_drop_pct), [])[:50]},
         "stage2_reward": {"threshold_pct": s.reward_drop_pct, "tokens": reward},
         "stage2_dump": {"threshold_1h_pct": s.dump_1h_pct, "threshold_24h_pct": s.dump_24h_pct, "tokens": dumps},

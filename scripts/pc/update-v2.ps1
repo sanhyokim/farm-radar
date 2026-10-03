@@ -268,8 +268,30 @@ try {
             }
             foreach ($x in @($r.funding)) { Say ("   資金調達 {0}（{1}日）: 見込み {2}/実際 {3} %/日（合 {4}%）" -f $x.perp, $x.days, (BtPct $x.pred 4), (BtPct $x.real 4), (BtPct $x.ok_share 0)) }
             foreach ($x in @($r.margins)) { Say ("   預け金 {0}: いちばんの上げ {1}%（{2}日の記録。耐える {3}%）/ 15分の飛び {4}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 1), $x.withstand_pct, (BtNum $x.jump_up_pct 1)) }
+            # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ
+            $kn = @{ kind_stock = '株'; kind_stable = 'ステーブル'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン' }
+            Say "[さかのぼり 種類] 株 $($r.kinds.stock) / ステーブル $($r.kinds.stable) / ふつうのコイン $($r.kinds.coin) / ボーナスのコイン $($r.kinds.bonus)（プールの数）"
+            foreach ($k in @('kind_stock', 'kind_stable', 'kind_coin', 'kind_bonus')) {
+                foreach ($g in @($r.ranges.$k | Where-Object { @(0.5, 2, 15) -contains [double]$_.r_pct })) {
+                    Say ("   {0} ±{1}%（{2}件）: 置き直し 中央値 {3}/{4} 回/日 / 値動きの損 中央値 {5}/{6}% / 値動き σ 中央値 {7}/{8}%" -f `
+                        $kn[$k], $g.r_pct, $g.days, (BtNum $g.rebalances.pred_median), (BtNum $g.rebalances.real_median), `
+                        (BtPct $g.gamma.pred_median 3), (BtPct $g.gamma.real_median 3), (BtPct $g.sigma.pred_median 1), (BtPct $g.sigma.real_median 1))
+                }
+            }
+            foreach ($x in @($r.misses | Select-Object -First 5)) {
+                Say ("   ずれの大きいプール {0}（{1}・±{2}%）: 値動き σ {3}/{4}% / 値動きの損 {5}/{6}%" -f $x.pair, $kn["kind_$($x.kind)"], $x.r_pct, `
+                    (BtPct $x.sigma_pred 1), (BtPct $x.sigma_real 1), (BtPct $x.gamma_pred 3), (BtPct $x.gamma_real 3))
+            }
+            foreach ($x in @($r.spy)) {
+                Say ("   SPY {0}（±{1}%）: 値動き σ {2}/{3}% / 値動きの損 {4}/{5}% / 置き直し {6}/{7} 回/日" -f $x.pair, $x.r_pct, `
+                    (BtPct $x.sigma_pred 1), (BtPct $x.sigma_real 1), (BtPct $x.gamma_pred 3), (BtPct $x.gamma_real 3), (BtNum $x.rebalances_pred), (BtNum $x.rebalances_real))
+            }
             $c1 = $r.stage1.counts
+            $c1b = $r.stage1.counts_big_pools
             Say "[さかのぼり 段階1] プールのお金 1時間で -20%: $($c1.'20') 回 / -30%: $($c1.'30') 回 / -40%: $($c1.'40') 回 / -50%: $($c1.'50') 回"
+            Say "   うち 5万ドル以上のプール: -20%: $($c1b.'20') / -30%: $($c1b.'30') / -40%: $($c1b.'40') / -50%: $($c1b.'50')"
+            $bd = $r.stage1.breakdown
+            Say "   -$($r.stage1.threshold_pct)% の $($bd.total) 回の中身（重なりあり）: 小さいプール $($bd.small) / 6時間以内に戻った $($bd.recovered_6h) / そのあと24時間でコインが -20% 以上 $($bd.big_drop) / どれでもない $($bd.none)"
             foreach ($x in @($r.stage2_reward.tokens)) {
                 $e = $x.events
                 Say "[さかのぼり 段階2] $($x.symbol) 24時間で -10%: $(@($e.'-10').Count) 回 / -15%: $(@($e.'-15').Count) 回 / -20%: $(@($e.'-20').Count) 回 / -25%: $(@($e.'-25').Count) 回"
