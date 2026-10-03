@@ -87,7 +87,8 @@ export interface FeedsStatus {
   enabled: boolean; text: string; started_at?: string | null; problem?: boolean; chain_reads?: boolean;
   sources: FeedSource[]; new: FeedNew[]; rate_limited_24h?: number; disk_bytes?: number;
   aero: { start: { jst: string; utc: string; source: string };
-    articles: { slug: string; title: string; date: string | null; url: string; new: boolean; first_seen: string }[] };
+    articles: { slug: string; title: string; date: string | null; url: string; new: boolean; first_seen: string }[];
+    addresses?: { name: string; first_seen: string; changed_at: string | null; url: string | null; new: boolean }[] };
 }
 
 /** 機会の一覧（N2b。SPEC 13.4）。金額はドル、1日あたり */

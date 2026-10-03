@@ -9,8 +9,10 @@ export function FeedsCard() {
   if (!data || !data.enabled) return null;
   const okCount = data.sources.filter((s) => s.status === "ok" && !s.late).length;
   const newArticle = data.aero.articles.find((a) => a.new);
+  const addrs = data.aero.addresses ?? [];
+  const newAddrs = addrs.filter((a) => a.new);
   const opps = data.new.filter((n) => n.source === "merkl_opportunities");
-  const others = data.new.filter((n) => n.source !== "merkl_opportunities" && n.source !== "aero_articles");
+  const others = data.new.filter((n) => n.source !== "merkl_opportunities" && n.source !== "aero_articles" && n.source !== "aero_addresses");
   return (
     <section className="card flex flex-col gap-4 p-6">
       <div className="flex items-center justify-between gap-2">
@@ -32,6 +34,16 @@ export function FeedsCard() {
           </a>
         ) : (
           <span className="cap">公式のお知らせは1時間ごとに確かめています。新しい記事が出たらここに出ます。</span>
+        )}
+        {newAddrs.length > 0 ? (
+          <span className="cap flex items-center gap-2" style={{ color: "var(--y)" }}>
+            <Icon name="alert" size={16} />
+            <span>Aero の公式の住所が新しく出ました: {newAddrs.map((a) => a.name).join("、")}。Claude に知らせてください（Aero の準備を前倒しします）。</span>
+          </span>
+        ) : (
+          <span className="cap">
+            公式の住所（公開のコード置き場）も1時間ごとに確かめています{addrs.length ? `（今あるのは ${addrs.map((a) => a.name).join("、")}）` : ""}。
+          </span>
         )}
       </div>
 

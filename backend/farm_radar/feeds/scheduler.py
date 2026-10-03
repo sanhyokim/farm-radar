@@ -2,7 +2,7 @@
 
 時刻（UTC の分）は、今の版（ポート 18000）の仕事（毎時 0・5・15・30・45 分）を避ける（SPEC 13.4）。
 - Merkl の機会: 毎時 7・22・37・52 分
-- Aero のお知らせ: 毎時 47 分
+- Aero のお知らせ・Aero の公式の住所・影の記録（N5a）: 毎時 47 分
 - 1日1回の一覧: 毎時 23 分に「今日まだ読めていないか」を確かめ、日本時間 4 時を過ぎていれば読む
 起動したときにも1回ずつ読む（パソコンの再起動のあと、すぐ保存を続けるため）。
 """
@@ -41,7 +41,13 @@ def main() -> None:
     from ..venue_match import load_known
     ctx = ReceiptContext(chains=rchains, stables={cid: stable_addresses(c, config.root) for cid, c in rchains.items()},
                          known=load_known(config.root))
-    runner = FeedRunner(fs, coin_chains=coins, receipt_ctx=ctx)
+    # N5a: 試すための記録（Merkl の配った額・DefiLlama と Lighter の過去・Aero の住所・影の記録）
+    from ..registry import llama_chain_names
+    from .shadow import make_recorder
+    from .trial import TrialContext
+    tctx = TrialContext(chain_ids=tuple(coins), llama_chains=llama_chain_names(config.chains, config.root),
+                        perp_alias=dict(config.opportunities.perp_alias), shadow=make_recorder(config))
+    runner = FeedRunner(fs, coin_chains=coins, receipt_ctx=ctx, trial_ctx=tctx)
     lock = threading.Lock()                            # 同時に2つ読まない（回数制限とパソコンの負荷のため）
 
     def job(cadence: str) -> None:
