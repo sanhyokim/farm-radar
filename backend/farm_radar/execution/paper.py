@@ -266,6 +266,27 @@ class PaperExecutor:
         if row is not None:
             raise PaperError("このプールはすでに練習中です。同じプールで2つ目の練習は開けません。")
 
+    def check_pool_funds_calm(self, pool_id: str) -> None:
+        """段階1（プールのお金が1時間で大きく減った）の合図が、直近 risk.pool_funds_block_hours 時間のうちに出たプールには
+        新しく入らない（2026-10-04 オーナー決定 A。持っていないプールでも、15分ごとの記録から調べる）。"""
+        s = self.config.risk
+        if s.pool_funds_block_hours <= 0:
+            return
+        from .risk_job import _hour_ago_row, pool_funds
+        pool = self.market.pool(pool_id)
+        d0, d1 = pool["token0_decimals"], pool["token1_decimals"]
+        since = (self.now - timedelta(hours=s.pool_funds_block_hours)).isoformat(timespec="seconds")
+        for snap in self.conn.execute("SELECT * FROM pool_snapshots WHERE pool_id=? AND ts>=? AND price IS NOT NULL "
+                                      "AND balance0_raw IS NOT NULL ORDER BY ts DESC", (pool_id, since)).fetchall():
+            now_v, then_v = pool_funds(snap, _hour_ago_row(self.conn, pool_id, snap["ts"], "balance0_raw"),
+                                       None if d0 is None else int(d0), None if d1 is None else int(d1))
+            if now_v is not None and then_v and then_v > 0 and (1 - now_v / then_v) * 100 >= s.emergency_pool_funds_drop_1h_pct:
+                until = _ts(snap["ts"]) + timedelta(hours=s.pool_funds_block_hours)
+                raise PaperError(
+                    f"このプールは {_ts(snap['ts']).astimezone(JST):%m/%d %H:%M}（日本時間）に、プールのお金が1時間で"
+                    f"{(1 - now_v / then_v) * 100:.0f}%減りました（段階1の合図）。"
+                    f"{until.astimezone(JST):%m/%d %H:%M} まで新しく入るのを止めています。")
+
     def check_not_in_evaluation(self) -> None:
         """2週間の評価の間は、新しい練習を始めない（2026-09-30 オーナー決定①。config.yaml の evaluation.block_new_practice）。
 
@@ -310,6 +331,7 @@ class PaperExecutor:
         pool = self.market.pool(pool_id)
         self.check_practice_venue(pool["venue_id"], pool["venue_name"])
         self.check_not_already_open(pool_id)
+        self.check_pool_funds_calm(pool_id)
         if reference:
             self.check_reference_room()
         else:

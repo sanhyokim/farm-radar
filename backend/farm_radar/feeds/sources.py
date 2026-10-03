@@ -418,6 +418,9 @@ SOURCES: tuple[Source, ...] = (
            llama_history, raw_every_minutes=10080),
     Source("lighter_funding_history", "Lighter の資金調達率の過去（試す）", "https://mainnet.zklighter.elliot.ai/api/v1/fundings",
            "daily", lighter_history, raw_every_minutes=10080),
+    # Lighter の値段の過去（1時間の足。保険の預け金の「50% に耐える」の見直し。2026-10-04 オーナーの質問4）
+    Source("lighter_price_history", "Lighter の値段の過去（試す）", "https://mainnet.zklighter.elliot.ai/api/v1/candles",
+           "daily", lighter_history, raw_every_minutes=10080),
 )
 
 BY_ID = {s.id: s for s in SOURCES}

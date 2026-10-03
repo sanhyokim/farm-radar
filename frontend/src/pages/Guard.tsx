@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useApi, type Guard as GuardData, type GuardVenue, type LossBreakdown, type LossPeriod } from "../api";
+import { useApi, type Guard as GuardData, type GuardVenue, type LossBreakdown, type LossPeriod, type Stage1Watch } from "../api";
 import { jst, signedUsd, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Line, Loading, Note, PageHead, Pill, Term, useWide } from "../ui";
@@ -112,6 +112,7 @@ function StagesCard({ data }: { data: GuardData }) {
             <span className="bold">{s.label}</span>
             <span className="flex gap-2">
               {s.auto ? <Pill tone="g">練習は自動で出る</Pill> : <Pill tone="y">今は知らせだけ</Pill>}
+              {s.auto && s.rules.some((r) => r.includes("自動では出ません")) && <Pill tone="y">一部は知らせだけ</Pill>}
               {!s.waits_for_gas && <Pill>ガス代が高くても出る</Pill>}
             </span>
           </div>
@@ -125,7 +126,30 @@ function StagesCard({ data }: { data: GuardData }) {
           <span className="sec">{e.message}</span>
         </div>
       ))}
+      <div className="label pt-2">段階1の合図のあと（出ていたら／残っていたら）</div>
+      {data.stage1_watch.length === 0 ? <Note>まだありません。プールのお金が1時間で大きく減ったときに記録します。</Note>
+        : data.stage1_watch.map((w) => <Stage1WatchRow key={w.id} w={w} />)}
+      <Note>
+        「出ていたら」は合図のときに出たら手もとに残った額（閉じる費用の見込みを引いた額）、「残っていたら」は 1・6・24 時間後に
+        出たときの同じ額です。途中で閉じたら、閉じたときの額です。あとで、自動で出るようにするかを数字で決めるための記録です。
+      </Note>
     </Card>
+  );
+}
+
+function Stage1WatchRow({ w }: { w: Stage1Watch }) {
+  const cell = (h: 1 | 6 | 24) => {
+    const v = w[`stay_${h}h_usd`];
+    const d = w[`diff_${h}h_usd`];
+    return `${h}時間後 ${v == null ? "まだ" : usd(v)}${d == null ? "" : `（${signedUsd(d)}）`}`;
+  };
+  return (
+    <div className="flex flex-col gap-1 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+      <span className="cap">{jst(w.ts)} · {w.pair ?? w.pool_id} · プールのお金 −{(w.drop_pct ?? 0).toFixed(0)}%/1時間</span>
+      <span className="num">出ていたら {w.exit_value_usd == null ? "—" : usd(w.exit_value_usd)}</span>
+      <span className="cap num">残っていたら: {cell(1)} · {cell(6)} · {cell(24)}</span>
+      {w.closed_at && <span className="cap">{jst(w.closed_at)} に閉じました</span>}
+    </div>
   );
 }
 

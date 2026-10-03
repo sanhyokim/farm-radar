@@ -21,6 +21,11 @@
   値段が動いただけでは変わらず、引き出されたときだけ減る
 - 今の値段のところの流動性（pool.liquidity()）は、値段が大きな建玉の範囲の端をまたぐだけで半分以下になるので、緊急離脱には使わない。
   ボーナスの取り分の計算に関わるので、急に減ったら「注意」（記録と表示だけ）
+
+2026-10-04 オーナー決定 A（段階1を2段にする。さかのぼりで、31回のうち27回が5万ドル未満の小さいプールだったため）:
+- プールのお金が1時間で大きく減った → risk.pool_funds_drop_action が notify なら「知らせる」だけ（level は caution、
+  知らせの強さは major）。そのプールに新しく入るのを止めるのは paper.py、出るのは手で。exit なら前と同じく緊急離脱
+- 自分の建玉の値打ちが1時間で大きく減った → 緊急離脱（その建玉だけ閉じる）
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ LEVELS = ("caution", "rebalance", "exit", "emergency")
 # 早く出る4段階（N4b。SPEC 13.2「早く出る4段階」と 13.1 の追加の決定 9）。どの決まりがどの段階かを記録と画面に出す
 # 段階1 すぐ逃げる（ガス代が高くても）/ 段階2 利益が消えた / 段階3 予定どおり / 段階4 もっと良い場所へ
 STAGE = {
-    "pool_funds_drop": 1, "contract_change": 1, "usdg_depeg": 1, "hedge_liquidation": 1,
+    "pool_funds_drop": 1, "own_value_drop": 1, "contract_change": 1, "usdg_depeg": 1, "hedge_liquidation": 1,
     "reward_token_drop": 2, "dump": 2, "signal_red": 2, "out_of_range_low_score": 2, "below_target": 2,
     "bonus_drop": 3,
     "better_place": 4,
@@ -75,6 +80,8 @@ class PositionInput:
     funds_now: float | None = None               # プールのお金（今。コインの量 × 今の値段。単位は funds_unit）
     funds_1h_ago: float | None = None            # プールのお金（1時間前のコインの量 × 今の値段）
     funds_unit: str = ""                         # プールのお金の単位（token1 の記号）
+    value_now: float | None = None               # 自分の建玉の値打ち（今。ドル。position_pnl の value_usd）
+    value_1h_ago: float | None = None            # 同じ（1時間前）
     # 値動きする側のトークンの変化（記号, 1時間の変化, 24時間の変化。−0.15 = −15%。分からなければ None）
     token_moves: tuple[tuple[str, float | None, float | None], ...] = ()
     hedge_cost_day: float | None = None          # ヘッジの1日あたりの費用（資金調達料。ドル）
@@ -101,17 +108,31 @@ def check_position(p: PositionInput, pf: PortfolioInput, s: RiskSettings) -> lis
     """1つの建玉の危険を調べる。強い順に並べて返す（何もなければ空）。"""
     out: list[Finding] = []
 
-    # 緊急離脱（その建玉だけ閉じる）: プールのお金が1時間で大きく減った（ラグプルの兆候。2026-10-01 オーナー決定 A+C）
+    # 段階1: プールのお金が1時間で大きく減った（ラグプルの兆候。2026-10-01 オーナー決定 A+C）。
+    # 2026-10-04 オーナー決定 A: ほかの人の引き出しでも出るので、ふつうは知らせて新しく入るのを止めるだけ（出るのは手で）
     funds_change = None
     if p.funds_now is not None and p.funds_1h_ago and p.funds_1h_ago > 0:
         funds_change = (p.funds_now / p.funds_1h_ago - 1) * 100
         if -funds_change >= s.emergency_pool_funds_drop_1h_pct:
-            out.append(Finding("emergency", "pool_funds_drop",
+            auto = s.pool_funds_drop_action == "exit"
+            what = ("" if auto else
+                    f"このプールに新しく入るのを{s.pool_funds_block_hours:g}時間止めます。建玉は自動では閉じません。"
+                    "様子を見て、出るときは「出る」ボタンで出てください。")
+            out.append(Finding("emergency" if auto else "caution", "pool_funds_drop",
                                f"{p.pair} のプールのお金（プールが持っているコインの量。1時間前も今の値段で数えて比べます）が"
                                f"1時間で{-funds_change:.0f}%減りました（基準は{s.emergency_pool_funds_drop_1h_pct:g}%）。"
-                               "お金が引き出された可能性があります。",
+                               "お金が引き出された可能性があります（ほかの人が大きく引き出しただけのこともあります）。" + what,
                                {"drop_pct": -funds_change, "funds_now": p.funds_now, "funds_1h_ago": p.funds_1h_ago,
-                                "unit": p.funds_unit}))
+                                "unit": p.funds_unit, "action": s.pool_funds_drop_action}))
+
+    # 緊急離脱（その建玉だけ閉じる）: 自分の建玉の値打ちが1時間で大きく減った（2026-10-04 オーナー決定 A）
+    if p.value_now is not None and p.value_1h_ago and p.value_1h_ago > 0:
+        vch = (p.value_now / p.value_1h_ago - 1) * 100
+        if -vch >= s.emergency_own_value_drop_1h_pct:
+            out.append(Finding("emergency", "own_value_drop",
+                               f"{p.pair} の自分の建玉の値打ちが1時間で{-vch:.1f}%減りました"
+                               f"（${p.value_1h_ago:,.2f} → ${p.value_now:,.2f}。基準は{s.emergency_own_value_drop_1h_pct:g}%）。",
+                               {"drop_pct": -vch, "value_now": p.value_now, "value_1h_ago": p.value_1h_ago}))
 
     # 注意（記録と表示だけ）: 今の値段のところの流動性が1時間で大きく減った（2026-10-01 オーナー決定。緊急離脱には使わない）
     if p.liquidity_now is not None and p.liquidity_1h_ago and p.liquidity_1h_ago > 0:

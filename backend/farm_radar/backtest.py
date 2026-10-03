@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,11 +33,14 @@ from .scoring import model as m
 from .scoring.run import own_series
 from .tokens import load_tokens
 
-VERSION = 2                     # 計算を変えたら上げる（とっておいた結果を使わない）
+VERSION = 3                     # 計算を変えたら上げる（とっておいた結果を使わない）
 STEP_MAX_S = 45 * 60            # 15分ごとの記録で、これより間があいたら、その間の時間は数えない（欠損）
 DAY_MIN_COVERAGE = 0.9          # 1日のうち、これ以上の時間の記録がある日だけ比べる
 PASS_REL = 0.30                 # 合格の目安: 差が見込みの30%以内（評価のときと同じ）
 PASS_ABS_CAPITAL = 0.001        # または、資金の0.1%以内（1日あたり）
+# 資金調達率だけは、資金の0.1%（$1/日）の余裕だと保険の額（数百ドル）の資金調達料がいつも収まってしまう
+# （2026-10-04 オーナーの質問3）。割合（30%）と、ごく小さい率のための余裕（1日 0.002%。年 0.73%）で見る
+FUNDING_ABS_DAY = 0.00002       # 1日 0.002%（割合。年 0.73%）
 FUNDS_THRESHOLDS = (20, 30, 40, 50)          # 段階1 の線を変えたときの回数（%。今は config の値）
 REWARD_THRESHOLDS = (-10, -15, -20, -25)     # 段階2 の報酬のコインの線（%）
 EVENT_GAP_S = 6 * 3600          # 同じプール・同じコインの合図は、6時間あいたら別の出来事として数える
@@ -415,9 +418,11 @@ def _summarize_funding(rows: list[dict[str, Any]], s: BacktestSettings) -> list[
         seen = {(x["day"]): x for x in xs}          # 同じ日に同じ銘柄を使うプールが複数あっても1日1回
         xs = list(seen.values())
         cap = PASS_ABS_CAPITAL * s.amount_usd
-        ok = [_within(x["real"] * x["notional"], x["pred"] * x["notional"], cap) for x in xs]
+        loose = [_within(x["real"] * x["notional"], x["pred"] * x["notional"], cap) for x in xs]
+        ok = [_within(x["real"], x["pred"], FUNDING_ABS_DAY) for x in xs]
         out.append({"perp": perp, "days": len(xs), "pred": _mean([x["pred"] for x in xs]),
-                    "real": _mean([x["real"] for x in xs]), "ok_share": sum(ok) / len(ok) if ok else 0.0})
+                    "real": _mean([x["real"] for x in xs]), "ok_share": sum(ok) / len(ok) if ok else 0.0,
+                    "ok_share_loose": sum(loose) / len(loose) if loose else 0.0})
     return out
 
 
@@ -440,6 +445,53 @@ def max_rise(points: list[tuple[int, float]], window_s: float) -> dict[str, Any]
                 if a[1] > 0 and 0 < b[0] - a[0] <= STEP_MAX_S), default=(0.0, None))
     return {"rise_pct": best[0] * 100, "from": best[1], "to": best[2], "jump_up_pct": jump[0] * 100, "jump_at": jump[1],
             "span_days": (points[-1][0] - points[0][0]) / 86400}
+
+
+def max_rise_hl(candles: list[tuple[int, float, float, float]], window_s: float) -> dict[str, Any] | None:
+    """1時間の足（時刻, 高値, 安値, 終値）で、window_s 以内に安値からいちばん上がった幅と、1時間でいちばん大きな上げ
+    （前の足の終値 → 高値。市場が開くときの飛びを含む）。"""
+    if len(candles) < 2:
+        return None
+    best = (0.0, None, None)
+    lows: deque[int] = deque()          # 窓の中の安値の候補（安い順に並ぶ添字。足が多いので O(n) で数える）
+    for j in range(1, len(candles)):
+        i = j - 1
+        while lows and candles[lows[-1]][2] >= candles[i][2]:
+            lows.pop()
+        lows.append(i)
+        while lows and candles[j][0] - candles[lows[0]][0] > window_s:
+            lows.popleft()
+        if not lows:
+            continue
+        low_t, _, low_p, _ = candles[lows[0]]
+        if low_p > 0:
+            rise = candles[j][1] / low_p - 1
+            if rise > best[0]:
+                best = (rise, low_t, candles[j][0])
+    jump = max(((b[1] / a[3] - 1, b[0]) for a, b in zip(candles, candles[1:])
+                if a[3] > 0 and 0 < b[0] - a[0] <= 2 * 3600), default=(0.0, None))
+    return {"rise_pct": best[0] * 100, "from": best[1], "to": best[2], "jump_up_pct": jump[0] * 100, "jump_at": jump[1],
+            "span_days": (candles[-1][0] - candles[0][0]) / 86400}
+
+
+def margins_long(fconn: sqlite3.Connection | None, markets: dict[int, str], s: "BacktestSettings") -> list[dict[str, Any]]:
+    """保険に使う Lighter の市場ごとに、値段の過去（最大90日。lighter_price_history）で預け金の目安を見る
+    （2026-10-04 オーナーの質問4。今の版の写しは7日ほどしかないため）。"""
+    if fconn is None:
+        return []
+    out = []
+    for mid, sym in sorted(markets.items(), key=lambda x: x[1] or ""):
+        try:
+            rows = fconn.execute("SELECT ts, high, low, close FROM lighter_price_history WHERE market_id=? "
+                                 "AND high IS NOT NULL AND low IS NOT NULL AND close IS NOT NULL ORDER BY ts",
+                                 (mid,)).fetchall()
+        except sqlite3.OperationalError:
+            return []
+        mr = max_rise_hl([(int(t), float(h), float(lo), float(c)) for t, h, lo, c in rows], s.stay_days * 86400)
+        if mr:
+            out.append({"market_id": mid, "symbol": sym, **mr, "withstand_pct": s.withstand_rise_pct,
+                        "enough": mr["rise_pct"] < s.withstand_rise_pct})
+    return out
 
 
 # --- ⑥ 早く出る決まり -------------------------------------------------------------------------------------
@@ -539,6 +591,13 @@ def stage1_breakdown(evs: list[dict[str, Any]]) -> dict[str, int]:
             "none": sum(1 for e in evs if not (e["small"] or e["recovered_6h"] or e["big_drop"]))}
 
 
+def miss(x: dict[str, Any]) -> dict[str, Any]:
+    """1つのプールの、1日の損（値動きの損 + 置き直しの費用）の見込みと実際（ドル）と、その差。"""
+    pred = (x["gamma_pred"] + (x.get("cost_pred") or 0.0)) * (x.get("c_lp") or 0.0)
+    real = (x["gamma_real"] + (x.get("cost_real") or 0.0)) * (x.get("c_lp") or 0.0)
+    return {**x, "loss_pred_usd_day": pred, "loss_real_usd_day": real, "gap_usd_day": abs(pred - real)}
+
+
 # --- まとめ ----------------------------------------------------------------------------------------------
 
 def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | None = None,
@@ -576,7 +635,10 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
                              "gamma_pred": _mean([x["gamma_pred"] for x in best]),
                              "gamma_real": _mean([x["gamma_real"] for x in best]),
                              "rebalances_pred": _mean([x["rebalances_pred"] for x in best]),
-                             "rebalances_real": _mean([x["rebalances_real"] for x in best])})
+                             "rebalances_real": _mean([x["rebalances_real"] for x in best]),
+                             "cost_pred": _mean([x["cost_pred"] for x in best]),
+                             "cost_real": _mean([x["cost_real"] for x in best]),
+                             "c_lp": _mean([x["c_lp"] for x in best])})
 
     # ⑤ 預け金・⑥ 早く出る決まり（会場ごとの値段の並び）
     since = datetime(2000, 1, 1, tzinfo=UTC)
@@ -648,16 +710,21 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
                    **{f"kind_{k}": _summarize_ranges([x for x in rows if x["kind"] == k], s) for k in KINDS}},
         "kinds": {k: sum(1 for v in kinds.values() if v == k) for k in KINDS},
         "per_pool_best": per_pool,
-        # 見込みと実際のずれが大きいプール（値動きの損の見込み ÷ 実際。大きい順に10）と、SPY のプール
-        "misses": sorted([x for x in per_pool if x["gamma_pred"] and x["gamma_real"] and x["gamma_real"] > 0],
-                         key=lambda x: -x["gamma_pred"] / x["gamma_real"])[:10],
+        # 見込みと実際のずれが大きいプール（1日の損 = 値動きの損 + 置き直しの費用 の、見込みと実際の差のドル。大きい順に10）。
+        # 前は割合（見込み ÷ 実際）の順で、値動きの小さいプールが上に来ていた（2026-10-04 オーナーの質問5）
+        "misses": sorted([miss(x) for x in per_pool if x["gamma_pred"] is not None and x["gamma_real"] is not None],
+                         key=lambda x: -x["gap_usd_day"])[:10],
         "spy": [x for x in per_pool if "SPY" in x["pair"].upper()],
         "funding": _summarize_funding(fund_rows, s),
         "margins": margins,
+        "margins_long": margins_long(fconn, {int(x["market_id"]): x["perp"] or x["symbol"] for x in fund_rows}, s),
         "stage1": {"threshold_pct": s.funds_drop_pct,
                    "counts": {str(th): len(e) for th, e in stage1.items()},
                    "counts_big_pools": {str(th): sum(1 for x in e if not x["small"]) for th, e in stage1.items()},
                    "breakdown": stage1_breakdown(stage1.get(int(s.funds_drop_pct), [])),
+                   "breakdown_big_pools": stage1_breakdown([x for x in stage1.get(int(s.funds_drop_pct), [])
+                                                            if not x["small"]]),
+                   "big_pool_events": [x for x in stage1.get(int(s.funds_drop_pct), []) if not x["small"]][:20],
                    "events": stage1.get(int(s.funds_drop_pct), [])[:50]},
         "stage2_reward": {"threshold_pct": s.reward_drop_pct, "tokens": reward},
         "stage2_dump": {"threshold_1h_pct": s.dump_1h_pct, "threshold_24h_pct": s.dump_24h_pct, "tokens": dumps},
@@ -667,13 +734,18 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
 # --- 写しの結果をとっておく（計算は数秒〜数十秒。写しが変わるか、計算を変えたら作り直す） ---------------------
 
 def _funding_rows(feeds_db: Path | None) -> int | None:
-    """Lighter の記録の数（1日1回増える。増えたら資金調達料の比べ方を作り直す）。"""
+    """Lighter の記録の数（資金調達率と値段。1日1回増える。増えたら資金調達料・預け金の比べ方を作り直す）。"""
     if feeds_db is None or not feeds_db.exists():
         return None
     try:
         c = sqlite3.connect(f"file:{feeds_db.as_posix()}?mode=ro", uri=True, timeout=10)
         try:
-            return c.execute("SELECT COUNT(*) FROM lighter_funding_history").fetchone()[0]
+            n = c.execute("SELECT COUNT(*) FROM lighter_funding_history").fetchone()[0]
+            try:
+                n += c.execute("SELECT COUNT(*) FROM lighter_price_history").fetchone()[0]
+            except sqlite3.OperationalError:
+                pass
+            return n
         finally:
             c.close()
     except sqlite3.Error:

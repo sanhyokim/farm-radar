@@ -17,7 +17,7 @@ from typing import Any
 
 from . import safety
 from .config import Config, ConfigError, load_venue
-from .execution import hedge_guard, loss_lines
+from .execution import hedge_guard, loss_lines, risk_job
 from .execution import views as paper_views
 from .execution.paper import OFFICIAL_SQL
 from .risk.rules import STAGE, STAGE_JA
@@ -107,6 +107,8 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         "loss_lines": loss,
         "stages": stage_table(config),
         "signals": recent_signals(conn),
+        # 段階1の合図のあとの「出ていたら／残っていたら」（2026-10-04 オーナー決定 A の追加1）
+        "stage1_watch": risk_job.stage1_watch_rows(conn),
         "hedges": [{"position_id": p["id"], "pair": c["pair"], "margin_usd": margins[p["id"]],
                     "status": hedge_guard.margin_status(conn, config, p)} for p, c in zip(rows, cards) if margins[p["id"]] > 0],
         "notes": ["チェーンごとの上限はまだ決めていません。全体の上限までの残りを出しています。",
@@ -122,7 +124,11 @@ def stage_table(config: Config) -> list[dict[str, Any]]:
     bonus_auto = r.bonus_drop_action == "exit"
     return [
         {"stage": 1, "label": STAGE_JA[1], "auto": True, "waits_for_gas": False,
-         "rules": [f"プールのお金が1時間で−{r.emergency_pool_funds_drop_1h_pct:g}%",
+         "rules": [f"自分の建玉の値打ちが1時間で−{r.emergency_own_value_drop_1h_pct:g}%",
+                   f"プールのお金が1時間で−{r.emergency_pool_funds_drop_1h_pct:g}%"
+                   + ("" if r.pool_funds_drop_action == "exit" else
+                      f"（自動では出ません。知らせて、そのプールに新しく入るのを{r.pool_funds_block_hours:g}時間止めます。"
+                      "出るのは手で。2026-10-04 オーナー決定）"),
                    "会場のプログラムの停止・持ち主の変更・入れ替え",
                    f"USDG の外部の価格が{r.emergency_usdg_times}回続けて ${r.emergency_usdg_below:g} 未満",
                    "保険（Lighter の売り）が強制決済の線に届いた",

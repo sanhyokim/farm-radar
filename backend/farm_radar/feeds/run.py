@@ -165,6 +165,8 @@ def _read_trial(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, ctx:
         data, pages = trial.read_llama_history(conn, fetcher.text, ctx, now)
     elif source.id == "lighter_funding_history":
         data, pages = trial.read_lighter_history(conn, fetcher.text, ctx, now)
+    elif source.id == "lighter_price_history":
+        data, pages = trial.read_lighter_prices(conn, fetcher.text, ctx, now)
     elif source.id == "aero_addresses":
         data, pages = trial.read_aero_addresses(fetcher.text)
     else:                                   # shadow_predictions
@@ -179,8 +181,8 @@ def _read_trial(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, ctx:
     return data, json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"), pages
 
 
-TRIAL_SOURCES = ("merkl_rewards", "llama_yield_history", "lighter_funding_history", "aero_addresses",
-                 "shadow_predictions")
+TRIAL_SOURCES = ("merkl_rewards", "llama_yield_history", "lighter_funding_history", "lighter_price_history",
+                 "aero_addresses", "shadow_predictions")
 
 
 def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, settings: FeedSettings,
@@ -251,6 +253,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = trial.write_llama_history(conn, now, data)
     elif source.id == "lighter_funding_history":
         extra = trial.write_lighter_history(conn, data)
+    elif source.id == "lighter_price_history":
+        extra = trial.write_lighter_prices(conn, data)
     elif source.id == "aero_addresses":
         extra = len(trial.write_aero_addresses(conn, seen_at, data))
     elif source.id == "shadow_predictions":

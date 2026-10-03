@@ -74,6 +74,8 @@ def feeds(feeds_db: Path) -> dict[str, Any]:
         llama = {"pools": r[0], "rows": r[1], "from": r[2], "to": r[3]} if r else None
         r = _count(conn, "SELECT COUNT(DISTINCT market_id), COUNT(*), MIN(ts), MAX(ts) FROM lighter_funding_history")
         lighter = {"markets": r[0], "rows": r[1], "from": r[2], "to": r[3]} if r else None
+        r = _count(conn, "SELECT COUNT(DISTINCT market_id), COUNT(*), MIN(ts), MAX(ts) FROM lighter_price_history")
+        lighter_prices = {"markets": r[0], "rows": r[1], "from": r[2], "to": r[3]} if r else None
         r = _count(conn, "SELECT COUNT(DISTINCT ts), COUNT(DISTINCT opp_key), COUNT(*), MIN(ts), MAX(ts) "
                          "FROM shadow_predictions")
         shadow = {"hours": r[0], "opportunities": r[1], "rows": r[2], "from": r[3], "to": r[4]} if r else None
@@ -83,7 +85,8 @@ def feeds(feeds_db: Path) -> dict[str, Any]:
                 "SELECT name, first_seen, changed_at FROM aero_address_files ORDER BY first_seen")]
         except sqlite3.OperationalError:
             pass
-        return {"merkl_rewards": rewards, "llama_history": llama, "lighter_history": lighter, "shadow": shadow,
+        return {"merkl_rewards": rewards, "llama_history": llama, "lighter_history": lighter, "lighter_prices": lighter_prices,
+                "shadow": shadow,
                 "aero_addresses": files}
     finally:
         conn.close()

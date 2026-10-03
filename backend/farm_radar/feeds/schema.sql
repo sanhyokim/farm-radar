@@ -267,6 +267,16 @@ CREATE TABLE IF NOT EXISTS lighter_funding_history (
   PRIMARY KEY (market_id, ts)
 );
 
+-- Lighter の値段の過去（1時間ごとのろうそく足。/api/v1/candles。1日1回、最初は90日分）。
+-- 保険の預け金の「50% に耐える」を、長い期間の大きな値上がりで見直すため（2026-10-04 オーナーの質問4）
+CREATE TABLE IF NOT EXISTS lighter_price_history (
+  market_id INTEGER NOT NULL,
+  ts INTEGER NOT NULL,                 -- 足の始まり（UNIX 秒）
+  symbol TEXT,
+  open REAL, high REAL, low REAL, close REAL,
+  PRIMARY KEY (market_id, ts)
+);
+
 -- Aero の公式の住所のファイル（公開のコード置き場の deployment-addresses。1時間に1回）
 CREATE TABLE IF NOT EXISTS aero_address_files (
   name TEXT PRIMARY KEY,

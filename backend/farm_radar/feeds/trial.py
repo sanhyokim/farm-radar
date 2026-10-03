@@ -5,6 +5,7 @@
   期間ごとの差は Merkl の API キーがないと読めないので、合計を保存して前の回との差を取る（PROGRESS「N5 の計画のための調べ」）
 - DefiLlama の利回りと預かり額の毎日の記録（数か月分）: 1日1回。登録したチェーンのプールだけ
 - Lighter の資金調達率の過去（1時間ごと）: 1日1回。登録したチェーンの機会に出てくるコインの銘柄と、取引の多い銘柄だけ
+- Lighter の値段の過去（1時間の足）: 1日1回。資金調達率と同じ銘柄（保険の預け金の見直し。2026-10-04）
 - Aero の公式の住所（公開のコード置き場の deployment-addresses）: 1時間に1回。新しいファイルが出たら印を付ける（判断④A）
 """
 
@@ -38,6 +39,7 @@ LLAMA_KEEP_DAYS = 400
 LIGHTER_DAYS = 90            # 資金調達率の過去を読む日数（最初の回）
 LIGHTER_PAGE = 750           # 1回の応答の点の数の上限（2026-10-03 に確かめた: 90日分を頼んでも最後の750点だけ返る）
 LIGHTER_TOP_VOLUME = 10
+LIGHTER_CANDLE_PAGE = 500    # 値段の足（/candles）は1回に最大500点（2026-10-04 に確かめた）
 
 
 @dataclass
@@ -252,6 +254,61 @@ def write_lighter_history(conn: sqlite3.Connection, data: dict[str, Any]) -> int
                                                   None if f.get("rate") is None else float(f["rate"]),
                                                   None if f.get("value") is None else float(f["value"]),
                                                   f.get("direction")))
+            n += 1
+    return n
+
+
+def read_lighter_prices(conn: sqlite3.Connection, text: Callable[..., str], ctx: TrialContext,
+                        now: datetime) -> tuple[dict[str, Any], int]:
+    """値段の過去（1時間の足）。読む銘柄は資金調達率と同じ。前に保存した最後の足から今まで（最初は90日分）を、
+    500点ずつ新しい方からさかのぼって読む（/api/v1/candles。認証なし。t はミリ秒、start/end は秒）。"""
+    out: dict[str, Any] = {}
+    calls = 0
+    end_all = int(now.timestamp())
+    for mid, sym in lighter_targets(conn, ctx):
+        last = conn.execute("SELECT MAX(ts) FROM lighter_price_history WHERE market_id=?", (mid,)).fetchone()[0]
+        start = int(last) if last else end_all - LIGHTER_DAYS * 86400     # 最後の足は読み直す（まだ途中だったかもしれない）
+        pts: dict[int, dict[str, Any]] = {}
+        end = end_all
+        try:
+            # 幅が1時間より短いと「end_timestamp must be greater than start_timestamp」（400）が返る（2026-10-04 確認。
+            # 90日より新しい市場で、いちばん古い足まで読んだとき）。そこで止める
+            while end - start >= 3600:
+                try:
+                    body = _json(text(f"{LIGHTER}/candles", {"market_id": str(mid), "resolution": "1h",
+                                                             "start_timestamp": str(start), "end_timestamp": str(end),
+                                                             "count_back": str(LIGHTER_CANDLE_PAGE)}))
+                except ExternalError as exc:
+                    if exc.status == 400 and pts:
+                        break                   # さかのぼりの終わり。読めた分は残す
+                    raise
+                calls += 1
+                rows = [c for c in (body or {}).get("c") or [] if isinstance(c, dict) and c.get("t")]
+                for c in rows:
+                    pts[int(c["t"]) // 1000] = c
+                if not rows:
+                    break
+                first = min(int(c["t"]) // 1000 for c in rows)
+                if first <= start or first >= end or calls > 600:
+                    break
+                end = first - 1
+        except ExternalError as exc:
+            if exc.status == 429:
+                raise
+            out[str(mid)] = {"symbol": sym, "error": str(exc)[:200]}
+            continue
+        out[str(mid)] = {"symbol": sym, "points": [{"ts": k, **{x: pts[k].get(x) for x in "ohlc"}}
+                                                   for k in sorted(pts) if k >= start]}
+    return out, calls
+
+
+def write_lighter_prices(conn: sqlite3.Connection, data: dict[str, Any]) -> int:
+    n = 0
+    for mid, d in data.items():
+        for c in (d or {}).get("points") or []:
+            vals = [None if c.get(x) is None else float(c[x]) for x in "ohlc"]
+            conn.execute("INSERT OR REPLACE INTO lighter_price_history(market_id, ts, symbol, open, high, low, close) "
+                         "VALUES (?,?,?,?,?,?,?)", (int(mid), int(c["ts"]), d.get("symbol"), *vals))
             n += 1
     return n
 

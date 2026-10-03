@@ -34,6 +34,9 @@ log = logging.getLogger(__name__)
 
 ALERT_LEVEL = {"caution": "warning", "rebalance": "info", "exit": "major", "emergency": "major", "info": "info"}
 EMOJI = {"caution": "⚠️", "rebalance": "🔁", "exit": "🚪", "emergency": "🚨", "info": "ℹ️"}
+# 記録の段階は「注意」でも、強く知らせるもの（2026-10-04 オーナー決定 A: 段階1のプールのお金の減りは知らせて手で出る）
+ALERT_KIND = {"pool_funds_drop": "major"}
+STAGE1_MARKS = (1, 6, 24)          # 段階1の合図のあと「残っていたら」を記録する時間
 
 
 def record_event(conn: sqlite3.Connection, now: datetime, position_id: int | None, level: str, kind: str,
@@ -48,7 +51,8 @@ def record_event(conn: sqlite3.Connection, now: datetime, position_id: int | Non
                                                   json.dumps(data or {}, default=str)))
     eid = int(cur.lastrowid)
     label = LEVEL_JA.get(level, level)
-    db.insert_alert(conn, ts=now, venue_id=venue_id, pool_id=pool_id, kind=f"paper_{level}", level=ALERT_LEVEL[level],
+    db.insert_alert(conn, ts=now, venue_id=venue_id, pool_id=pool_id, kind=f"paper_{level}",
+                    level=ALERT_KIND.get(kind, ALERT_LEVEL[level]),
                     message_ja=f"{EMOJI[level]} 練習（{label}）: {message_ja}{_action_ja(action)}",
                     data={"risk_event": eid}, dedupe_key=f"paper_risk:{eid}")
     conn.commit()
@@ -196,6 +200,7 @@ def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, to
                        (pos["id"], since)).fetchone()[0]
     funds_now, funds_then = pool_funds(snap, _hour_ago_row(conn, pos["pool_id"], snap["ts"], "balance0_raw"),
                                        pool["token0_decimals"] if pool else None, pool["token1_decimals"] if pool else None)
+    value_now, value_then = own_values(conn, pos["id"])
     return PositionInput(
         pair=f"{pool['token0_symbol']}/{pool['token1_symbol']}" if pool else pos["pool_id"],
         lower=pos["lower"], upper=pos["upper"], price=float(snap["price"]), started_red=bool(pos["started_red"]),
@@ -208,6 +213,7 @@ def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, to
         liquidity_now=float(int(snap["liquidity_total"])) if snap["liquidity_total"] is not None else None,
         liquidity_1h_ago=_liquidity_at(conn, pos["pool_id"], snap["ts"]),
         funds_now=funds_now, funds_1h_ago=funds_then, funds_unit=(pool["token1_symbol"] or "") if pool else "",
+        value_now=value_now, value_1h_ago=value_then,
         token_moves=token_moves(conn, pos, tokens, snap["ts"], own_tok or {}, own_pool or {}) if tokens else (),
         hedge_cost_day=(float(st.get("funding_paid", 0.0)) / hours * 24) if hours > 0 and pos["hedges_json"]
         and json.loads(pos["hedges_json"]) else None,
@@ -218,6 +224,85 @@ def position_input(conn: sqlite3.Connection, pos: sqlite3.Row, now: datetime, to
         started_below_target=pred.get("net_apr_pct") is not None and pred.get("target_apr_pct") is not None
         and float(pred["net_apr_pct"]) < float(pred["target_apr_pct"]),
     )
+
+
+def own_values(conn: sqlite3.Connection, position_id: int) -> tuple[float | None, float | None]:
+    """自分の建玉の値打ち（今と1時間前。position_pnl の value_usd）。1時間前は、1時間前かそれより前の最後の記録
+    （1時間20分より古ければ使わない。始めたばかりで1時間分の記録がないときも None）。"""
+    last = conn.execute("SELECT ts, value_usd FROM position_pnl WHERE position_id=? AND value_usd IS NOT NULL "
+                        "ORDER BY ts DESC LIMIT 1", (position_id,)).fetchone()
+    if last is None:
+        return None, None
+    t = datetime.fromisoformat(last["ts"])
+    then = conn.execute("SELECT ts, value_usd FROM position_pnl WHERE position_id=? AND value_usd IS NOT NULL AND ts<=? "
+                        "ORDER BY ts DESC LIMIT 1",
+                        (position_id, (t - timedelta(hours=1)).isoformat(timespec="seconds"))).fetchone()
+    if then is None or t - datetime.fromisoformat(then["ts"]) > timedelta(minutes=80):
+        return float(last["value_usd"]), None
+    return float(last["value_usd"]), float(then["value_usd"])
+
+
+def _exit_value(conn: sqlite3.Connection, ex: PaperExecutor, position_id: int) -> float | None:
+    """今出たら手もとに残る額（建玉の値打ち − 閉じる費用の見込み）。閉じた建玉は、閉じたときの値打ち（費用は引いてある）。"""
+    pos = conn.execute("SELECT status FROM positions WHERE id=?", (position_id,)).fetchone()
+    v, _ = own_values(conn, position_id)
+    if pos is None or v is None:
+        return None
+    if pos["status"] != "open":
+        return v
+    try:
+        return v - ex.estimate_close_cost(PositionRef(position_id))
+    except (PaperError, TypeError, ValueError, KeyError):
+        log.warning("close cost estimate failed", extra={"data": {"position": position_id}})
+        return None
+
+
+def start_stage1_watch(conn: sqlite3.Connection, ex: PaperExecutor, pos: sqlite3.Row, pair: str, f: Finding,
+                       now: datetime) -> None:
+    """段階1の合図（プールのお金の減り）のときに出ていたら、の額を記録する（2026-10-04 オーナー決定 A の追加1）。"""
+    v, _ = own_values(conn, pos["id"])
+    conn.execute("INSERT INTO stage1_watch(position_id, pool_id, pair, ts, drop_pct, funds_1h_ago, unit, value_usd, "
+                 "exit_value_usd) VALUES (?,?,?,?,?,?,?,?,?)",
+                 (pos["id"], pos["pool_id"], pair, now.astimezone(UTC).isoformat(timespec="seconds"),
+                  f.data.get("drop_pct"), f.data.get("funds_1h_ago"), f.data.get("unit"), v,
+                  _exit_value(conn, ex, pos["id"])))
+    conn.commit()
+
+
+def update_stage1_watch(conn: sqlite3.Connection, ex: PaperExecutor, now: datetime) -> None:
+    """合図のあと 1・6・24 時間たったら「残っていたら（そのときに出たら）」の額を書く。途中で閉じたら閉じたときの額。"""
+    rows = conn.execute("SELECT * FROM stage1_watch WHERE stay_24h_usd IS NULL").fetchall()
+    for w in rows:
+        pos = conn.execute("SELECT status, closed_at, close_reason FROM positions WHERE id=?",
+                           (w["position_id"],)).fetchone()
+        if pos is None:
+            continue
+        t0 = datetime.fromisoformat(w["ts"])
+        closed = pos["status"] != "open"
+        sets: dict[str, Any] = {}
+        for h in STAGE1_MARKS:
+            col = f"stay_{h}h_usd"
+            if w[col] is None and (closed or now >= t0 + timedelta(hours=h)):
+                sets[col] = _exit_value(conn, ex, w["position_id"])
+        if closed and w["closed_at"] is None:
+            sets["closed_at"], sets["close_reason"] = pos["closed_at"], pos["close_reason"]
+        if sets:
+            conn.execute(f"UPDATE stage1_watch SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?",
+                         (*sets.values(), w["id"]))
+    conn.commit()
+
+
+def stage1_watch_rows(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    """画面・まとめ用: 新しい順。差（残っていたら − 出ていたら）も付ける。"""
+    out = []
+    for w in conn.execute("SELECT * FROM stage1_watch ORDER BY ts DESC LIMIT ?", (limit,)).fetchall():
+        d = dict(w)
+        ex_v = d["exit_value_usd"]
+        for h in STAGE1_MARKS:
+            st = d[f"stay_{h}h_usd"]
+            d[f"diff_{h}h_usd"] = None if st is None or ex_v is None else st - ex_v
+        out.append(d)
+    return out
 
 
 # 段階2の「続けて下回った」は、15分ごとの見張り1回を1回と数える（市場が開くころの5分ごとの見張りで早く数えすぎないように）
@@ -353,6 +438,8 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
         return []
     now = now or datetime.now(UTC)
     s = config.risk
+    # 段階1の合図のあとの「残っていたら」（2026-10-04 オーナー決定 A の追加1）。建玉がなくなっても書く
+    update_stage1_watch(conn, ex, now)
     positions = conn.execute("SELECT * FROM positions WHERE is_paper=1 AND status='open' ORDER BY id").fetchall()
     if not positions:
         # 建玉がなくても、会場プログラムの変化は記録して、新しく始めるのを止める
@@ -475,6 +562,8 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
             if f.kind not in active_before:
                 events.append(record_event(conn, now, pos["id"], "caution", f.kind, f.message_ja, "none", f.data,
                                            pos["venue_id"], pos["pool_id"]))
+                if f.kind == "pool_funds_drop":
+                    start_stage1_watch(conn, ex, pos, inp.pair, f, now)
         # 置き直した建玉は state が新しくなっているので、読み直してから書く
         cur = conn.execute("SELECT status, state_json FROM positions WHERE id=?", (pos["id"],)).fetchone()
         if cur["status"] == "open":

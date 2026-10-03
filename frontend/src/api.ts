@@ -149,7 +149,7 @@ export interface Guard {
   chains: { chain: string; name: string; placed_usd: number; venues: number; cap_usd: number | null; left_usd: number | null }[];
   pnl: { open_change_usd: number; today_usd: number };
   loss_line: { pct: number; line_usd: number | null; today_usd: number; state: "none" | "ok" | "near" | "hit"; near_frac: number; used_frac: number };
-  loss_lines: LossLines; stages: StageRow[]; signals: RiskEvent[];
+  loss_lines: LossLines; stages: StageRow[]; signals: RiskEvent[]; stage1_watch: Stage1Watch[];
   hedges: { position_id: number; pair: string; margin_usd: number; status: HedgeMargin | null }[];
   notes: string[];
 }
@@ -532,4 +532,13 @@ export interface Discovery {
   chains: string[]; criteria_ja: string;
   venues: DiscoveryVenue[]; new_dexes: DiscoveryVenue[]; gt_dex_count: number; new_pools: DiscoveryPool[];
   decided_elsewhere: DiscoveryVenue[];
+}
+
+/** 段階1の合図（プールのお金の減り）のあとの「出ていたら／残っていたら」（2026-10-04 オーナー決定 A の追加1） */
+export interface Stage1Watch {
+  id: number; position_id: number; pool_id: string; pair: string | null; ts: string; drop_pct: number | null;
+  value_usd: number | null; exit_value_usd: number | null;
+  stay_1h_usd: number | null; stay_6h_usd: number | null; stay_24h_usd: number | null;
+  diff_1h_usd: number | null; diff_6h_usd: number | null; diff_24h_usd: number | null;
+  closed_at: string | null; close_reason: string | null;
 }
