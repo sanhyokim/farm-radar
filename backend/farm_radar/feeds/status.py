@@ -17,7 +17,7 @@ STATUS_JA = {"ok": "保存できた", "error": "失敗（次の回にもう一�
 LATE_AFTER = {"15min": timedelta(minutes=40), "hourly": timedelta(hours=2, minutes=30), "daily": timedelta(hours=50)}
 STUCK_AFTER = timedelta(minutes=30)
 # 「新しく出てきたもの」に並べる一覧（DefiLlama の利回りは毎日たくさん増えるので、数だけ出す）
-LIST_SOURCES = ("merkl_opportunities", "aero_articles", "merkl_chains", "merkl_protocols", "llama_chains",
+LIST_SOURCES = ("merkl_opportunities", "aero_articles", "aero_addresses", "merkl_chains", "merkl_protocols", "llama_chains",
                 "llama_protocols", "across_chains", "relay_chains", "lifi_chains")
 # Aero の開始（公式の発表の中の画像「TAKE OFF OCT 21 / 2026 8:00 PM EDT / OCT 22 00:00 UTC」。2026-10-01 確認。SPEC 13.1）
 AERO_START = {"jst": "2026-10-22 09:00", "utc": "2026-10-22T00:00:00+00:00",
@@ -78,7 +78,8 @@ def _status(conn: sqlite3.Connection, settings: FeedSettings, now: datetime, new
                                  (s.id, store.iso(today_start))).fetchone()[0]
         any_problem = any_problem or late or state in ("error", "rate_limited", "stuck")
         rows.append({
-            "id": s.id, "label": s.label_ja, "cadence": s.cadence, "cadence_ja": CADENCE_JA["hourly"] if s.every_minutes >= 55 else CADENCE_JA[s.cadence],
+            "id": s.id, "label": s.label_ja, "cadence": s.cadence, "cadence_ja": "約2時間ごと" if s.every_minutes >= 110 else CADENCE_JA["hourly"] if s.every_minutes >= 55
+            else CADENCE_JA[s.cadence],
             "status": state, "status_ja": STATUS_JA[state], "late": late,
             "last_run_at": last["started_at"] if last else None, "last_ok_at": ok["started_at"] if ok else None,
             "items": ok["items"] if ok else None, "new_today": new_today,
@@ -99,6 +100,13 @@ def _status(conn: sqlite3.Connection, settings: FeedSettings, now: datetime, new
         info = json.loads(r["info_json"] or "{}")
         articles.append({"slug": r["key"], "title": r["name"], "date": info.get("date"), "url": info.get("url"),
                          "new": not r["baseline"], "first_seen": r["first_seen"]})
+    # N5a: Aero の公式の住所のファイル（公開のコード置き場）。保存を始めた最初の回のあとに出た・変わったものに印を付ける
+    addresses = []
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='aero_address_files'").fetchone():
+        base = {r[0]: r[1] for r in conn.execute("SELECT key, baseline FROM feed_items WHERE source='aero_addresses'")}
+        for r in conn.execute("SELECT name, first_seen, changed_at, url FROM aero_address_files ORDER BY first_seen, name"):
+            addresses.append({"name": r["name"], "first_seen": r["first_seen"], "changed_at": r["changed_at"],
+                              "url": r["url"], "new": base.get(r["name"]) == 0 or r["changed_at"] is not None})
     limited = conn.execute("SELECT COUNT(*) FROM rate_limits WHERE ts>=?",
                            (store.iso(now - timedelta(hours=24)),)).fetchone()[0]
     disk = store.dir_bytes(settings.raw_dir) + sum(
@@ -108,5 +116,5 @@ def _status(conn: sqlite3.Connection, settings: FeedSettings, now: datetime, new
         "enabled": True, "started_at": started, "problem": any_problem,
         "text": "一部の一覧が読めていません。次の回にもう一度読みます。" if any_problem else "決めた時刻に保存できています。",
         "sources": rows, "new": new, "rate_limited_24h": limited, "disk_bytes": disk,
-        "aero": {"start": AERO_START, "articles": articles[:5]},
+        "aero": {"start": AERO_START, "articles": articles[:5], "addresses": addresses},
     }

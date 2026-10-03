@@ -17,7 +17,7 @@ param(
     [string]$OldApi = 'http://localhost:18000',
     [string]$NewApi = 'http://localhost:18001',
     [string]$Docker = 'docker',
-    [int]$WaitMinutes = 10
+    [int]$WaitMinutes = 20     # N5a で1日1回の読み取りが増えた（DefiLlama と Lighter の過去）ので、起動のあとの最初の回が長い
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -108,7 +108,7 @@ function OldState {
 try { Start-Transcript -Path $Log -Force | Out-Null } catch { }
 try {
     Say '新しい版（18001）を更新します。今の版（18000）には触りません。'
-    Say '終わるまで 10〜20 分ほどかかります。途中でこの画面を閉じないでください。'
+    Say '終わるまで 15〜30 分ほどかかります。途中でこの画面を閉じないでください。'
 
     # --- 1. 確かめる（まだ何も変えない） -------------------------------------------------------
     Step '1/9 今あるフォルダーと、動いているアプリを確かめる（何も変えません）'
@@ -231,6 +231,19 @@ try {
     Say "[見張り] venue_checks: $($vc.status) 今回 $(N0 $vc.items) / 確かめ済み $(N0 $vc.stored.checked)（公式の工場が作った $(N0 $vc.stored.verified)）"
     Say "[見張り] vault_states: $($vs.status) 今回 $(N0 $vs.items) / 見張っている金庫 $(N0 $vs.stored.vaults)"
 
+    # N5a: 試すための記録（Merkl の配った額・DefiLlama と Lighter の過去・影の記録・Aero の住所）
+    try {
+        $t = Invoke-RestMethod "$NewApi/api/trial/records" -TimeoutSec 60
+        $f = $t.feeds
+        Say "[試す] Merkl の配った額: キャンペーン $(N0 $f.merkl_rewards.campaigns) / 行 $(N0 $f.merkl_rewards.rows)"
+        Say "[試す] DefiLlama の毎日の記録: プール $(N0 $f.llama_history.pools) / 行 $(N0 $f.llama_history.rows)（$($f.llama_history.from) 〜 $($f.llama_history.to)）"
+        Say "[試す] Lighter の資金調達率の過去: 銘柄 $(N0 $f.lighter_history.markets) / 行 $(N0 $f.lighter_history.rows)"
+        Say "[試す] 影の記録: $(N0 $f.shadow.hours) 回 / 入れる先 $(N0 $f.shadow.opportunities) / 行 $(N0 $f.shadow.rows)"
+        Say "[試す] Aero の住所のファイル: $((@($f.aero_addresses) | ForEach-Object { $_.name }) -join ', ')"
+    } catch {
+        Write-Host "   注意: 試すための記録の数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+    }
+
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
     Say "[今の版] 前: eval: $($before.eval) / open: $($before.open) / last_ok_at: $($before.last)"
     try {
@@ -257,3 +270,4 @@ try {
     exit 1
 }
 try { Stop-Transcript | Out-Null } catch { }
+exit 0

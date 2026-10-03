@@ -93,8 +93,8 @@ def _run_receipts(cfg, rpc, fetcher):
                          rpc_factory=lambda chain: rpc, sleep=lambda s: None)
     runner = FeedRunner(cfg.feeds, fetcher=fetcher, coin_chains={8453: "base"}, receipt_ctx=ctx)
     conn = store.connect(cfg.feeds.database_path)
-    for s in ("merkl_chains", "merkl_protocols", "llama_chains", "llama_protocols", "llama_yields", "across_chains",
-              "relay_chains", "lifi_chains", "lighter_markets", "token_prices", "token_prices_30d", "llama_hacks", "venue_checks"):
+    from farm_radar.feeds.sources import SOURCES
+    for s in [x.id for x in SOURCES if x.cadence == "daily" and x.id != "receipts"] + ["venue_checks"]:
         store.finish_run(conn, store.start_run(conn, s, NOW), NOW, "ok")   # ほかの1日1回の一覧は今日読んだことにする
     conn.commit()
     conn.close()

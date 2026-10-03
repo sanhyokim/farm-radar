@@ -304,6 +304,39 @@ def pool_states(data: Any) -> list[Item]:
             for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
 
 
+# --- N5a「試す」のための記録（feeds/trial.py・feeds/shadow.py が読んだものを一覧の形にする） ----------------------
+
+def merkl_rewards(data: Any) -> list[Item]:
+    """{campaign_id: {rows, total, dist_chain} | {error}} → キャンペーンごとに1件。"""
+    return [Item(k, None, None if not isinstance(v, dict) else str(v.get("chain_id") or ""),
+                 {"rows": len(v.get("rows") or []), "total": v.get("total"), "dist_chain": v.get("dist_chain"),
+                  "error": v.get("error")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
+def llama_history(data: Any) -> list[Item]:
+    return [Item(k, None, None, {"days": len(v.get("points") or []), "error": v.get("error")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
+def lighter_history(data: Any) -> list[Item]:
+    return [Item(k, v.get("symbol"), None, {"points": len(v.get("points") or []), "error": v.get("error")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
+def aero_addresses(data: Any) -> list[Item]:
+    return [Item(k, k, None, {"sha": v.get("sha"), "size": v.get("size"), "url": v.get("url"), "via": v.get("via")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
+def shadow_predictions(data: Any) -> list[Item]:
+    rows = (data or {}).get("rows") if isinstance(data, dict) else None
+    keys: dict[str, int] = {}
+    for r in rows or []:
+        keys[r[1]] = r[5]
+    return [Item(k, None, None, {"rank": rank}) for k, rank in keys.items()]
+
+
 # --- Aero の公式のお知らせ ------------------------------------------------------------------------
 
 _AERO_ENTRY = re.compile(r"^#{2,3} \[(?P<title>[^\]]+)\]\((?P<path>/articles/[^)\s]+)\)\s*$", re.M)
@@ -370,6 +403,21 @@ SOURCES: tuple[Source, ...] = (
     Source("venue_checks", "会場の住所での見分け（チェーンの記録）", "eth_call", "15min", venue_checks, every_minutes=55),
     # N4b: 金庫の運用先の見張り（チェーンの公開の読み取り口。会場の登録で watch を付けた金庫だけ。2026-10-03 オーナー）
     Source("vault_states", "金庫の運用先（チェーンの記録）", "eth_call", "15min", vault_states, every_minutes=55),
+    # N5a「試す」のための記録（docs/n5-plan-2026-10-03.md の 2章。2026-10-03 オーナー承認）。
+    # Merkl の配った額（預け方ごと）: 配る木（root）の更新は Base で約2時間ごと（2026-10-02〜03 に12回）。約2時間に1回読む
+    Source("merkl_rewards", "Merkl の配った額（預け方ごと。答え合わせ）", f"{MERKL}/rewards/", "15min", merkl_rewards,
+           every_minutes=115, raw_every_minutes=720),
+    # Aero の公式の住所（公開のコード置き場）。新しいファイルが出たら知らせる（判断④A: 早く出たら Aero の準備を前倒し）
+    Source("aero_addresses", "Aero の公式の住所（公開のコード置き場）", "https://api.github.com", "hourly",
+           aero_addresses),
+    # 影の記録（判断③A）。Merkl の 37 分の回のあと、1時間に1回（47 分）
+    Source("shadow_predictions", "影の記録（毎時間の見込みのメモ）", "local", "hourly", shadow_predictions,
+           raw_every_minutes=1440),
+    # DefiLlama の利回りの毎日の記録（数か月分）と、Lighter の資金調達率の過去。1日1回（利回りの一覧・銘柄のあと）
+    Source("llama_yield_history", "DefiLlama の利回りの毎日の記録（試す）", "https://yields.llama.fi/chart", "daily",
+           llama_history, raw_every_minutes=10080),
+    Source("lighter_funding_history", "Lighter の資金調達率の過去（試す）", "https://mainnet.zklighter.elliot.ai/api/v1/fundings",
+           "daily", lighter_history, raw_every_minutes=10080),
 )
 
 BY_ID = {s.id: s for s in SOURCES}

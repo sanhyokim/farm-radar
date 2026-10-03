@@ -211,3 +211,90 @@ CREATE TABLE IF NOT EXISTS vault_changes (
   after_json TEXT,
   PRIMARY KEY (chain_id, address, detected_at)
 );
+
+-- ここから N5a（「試す」のための記録。docs/n5-plan-2026-10-03.md の 2章。feeds/trial.py・feeds/shadow.py）
+
+-- Merkl の配った額（預け方ごと。約2時間ごと。前の回と変わった行だけ）。amount は累計（受け取り済みを含む）、
+-- pending はまだ配る木（root）に入っていない分。reason は「UNISWAP_V3_<プール>_<預け方の番号>」の形（幅は入っていない）
+CREATE TABLE IF NOT EXISTS merkl_reward_snaps (
+  ts TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  recipient TEXT NOT NULL,             -- 小文字
+  reason TEXT NOT NULL,
+  amount_raw TEXT,                     -- 最小単位（桁あふれを避けて文字で）
+  claimed_raw TEXT,
+  pending_raw TEXT,
+  token TEXT,
+  PRIMARY KEY (campaign_id, recipient, reason, ts)
+);
+CREATE TABLE IF NOT EXISTS merkl_reward_latest (
+  campaign_id TEXT NOT NULL,
+  recipient TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  amount_raw TEXT,
+  pending_raw TEXT,
+  ts TEXT NOT NULL,
+  PRIMARY KEY (campaign_id, recipient, reason)
+);
+-- キャンペーン全体で配った合計（変わったときだけ）。配る予定の総額は merkl_campaigns.amount_raw
+CREATE TABLE IF NOT EXISTS merkl_reward_totals (
+  ts TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  dist_chain_id INTEGER,
+  amount_raw TEXT,
+  PRIMARY KEY (campaign_id, ts)
+);
+
+-- DefiLlama の利回りと預かり額の毎日の記録（https://yields.llama.fi/chart/<プール>。1日1回。400日分）
+CREATE TABLE IF NOT EXISTS llama_yield_history (
+  pool TEXT NOT NULL,
+  day TEXT NOT NULL,                   -- UTC の日付（DefiLlama の timestamp の日）
+  tvl_usd REAL,
+  apy REAL,
+  apy_base REAL,
+  apy_reward REAL,
+  PRIMARY KEY (pool, day)
+);
+
+-- Lighter の資金調達率の過去（/api/v1/fundings、1時間ごと。応答の値のまま。単位と向きは N5b で照合してから使う）
+CREATE TABLE IF NOT EXISTS lighter_funding_history (
+  market_id INTEGER NOT NULL,
+  ts INTEGER NOT NULL,                 -- UNIX 秒
+  symbol TEXT,
+  rate REAL,
+  value REAL,
+  direction TEXT,
+  PRIMARY KEY (market_id, ts)
+);
+
+-- Aero の公式の住所のファイル（公開のコード置き場の deployment-addresses。1時間に1回）
+CREATE TABLE IF NOT EXISTS aero_address_files (
+  name TEXT PRIMARY KEY,
+  sha TEXT,
+  via TEXT,                            -- "list"（一覧で読んだ）/ "guess"（名前を1つずつ確かめた）
+  size INTEGER,
+  url TEXT,
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  changed_at TEXT                      -- 中身が変わったのに気づいた時刻
+);
+
+-- 影の記録（毎時間の見込みのメモ。判断③A: 一覧に出る行のうち、狙い利回り以上と上位30行。建玉は作らない）
+CREATE TABLE IF NOT EXISTS shadow_predictions (
+  ts TEXT NOT NULL,
+  opp_key TEXT NOT NULL,
+  amount REAL NOT NULL,
+  chain TEXT,
+  kind TEXT,
+  rank INTEGER,                        -- $1,000 の並び順（0 から）
+  target_apr_pct REAL,
+  apr_cautious REAL,                   -- 控えめの見込みの年利（%）
+  apr_normal REAL,
+  net_cautious REAL,                   -- 1日に残る額（入る・出る費用を引いたあと。ドル）
+  net_normal REAL,
+  hedge INTEGER,                       -- 控えめの見込みでよい方が保険あり
+  recommended INTEGER,
+  detail_json TEXT,                    -- 内訳（ボーナスの取り分・値動きの損・費用・保険・幅など）
+  PRIMARY KEY (ts, opp_key, amount)
+);
+CREATE INDEX IF NOT EXISTS idx_shadow_key ON shadow_predictions(opp_key, ts);

@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from ..config import FeedSettings
 from ..external.http import ExternalError, JsonGetter
-from . import pools, receipts, store, vaults, venues
+from . import pools, receipts, shadow, store, trial, vaults, venues
 from .sources import SOURCES, Item, Source
 
 log = logging.getLogger(__name__)
@@ -155,14 +155,45 @@ def _read(source: Source, fetcher: Fetcher) -> tuple[Any, bytes, int]:
     return rows, json.dumps(rows, ensure_ascii=False).encode("utf-8"), pages
 
 
+def _read_trial(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, ctx: trial.TrialContext | None,
+                now: datetime) -> tuple[Any, bytes, int]:
+    """N5a の記録（feeds/trial.py・feeds/shadow.py）。設定が渡っていなければ何も読まない。"""
+    ctx = ctx or trial.TrialContext()
+    if source.id == "merkl_rewards":
+        data, pages = trial.read_merkl_rewards(conn, fetcher.text, ctx, now)
+    elif source.id == "llama_yield_history":
+        data, pages = trial.read_llama_history(conn, fetcher.text, ctx, now)
+    elif source.id == "lighter_funding_history":
+        data, pages = trial.read_lighter_history(conn, fetcher.text, ctx, now)
+    elif source.id == "aero_addresses":
+        data, pages = trial.read_aero_addresses(fetcher.text)
+    else:                                   # shadow_predictions
+        if ctx.shadow is None:
+            return {}, b"{}", 0
+        try:
+            data, pages = ctx.shadow(conn, now), 0
+        except (ExternalError, ValueError, TypeError):
+            raise
+        except Exception as exc:            # 計算の途中の失敗も「失敗」として記録し、ほかの一覧は続けて読む
+            raise ValueError(f"影の記録の計算に失敗: {type(exc).__name__}: {exc}") from exc
+    return data, json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"), pages
+
+
+TRIAL_SOURCES = ("merkl_rewards", "llama_yield_history", "lighter_funding_history", "aero_addresses",
+                 "shadow_predictions")
+
+
 def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, settings: FeedSettings,
                now: datetime | None = None, coin_chains: dict[int, str] | None = None,
-               receipt_ctx: ReceiptContext | None = None) -> dict[str, Any]:
+               receipt_ctx: ReceiptContext | None = None, trial_ctx: trial.TrialContext | None = None
+               ) -> dict[str, Any]:
     """1つの一覧を読んで保存する。結果（status・件数）を返す。"""
     now = now or datetime.now(UTC)
     run_id = store.start_run(conn, source.id, now)
     try:
-        if source.id in ("token_prices", "token_prices_30d"):
+        if source.id in TRIAL_SOURCES:
+            data, raw, pages = _read_trial(conn, source, fetcher, trial_ctx, now)
+        elif source.id in ("token_prices", "token_prices_30d"):
             data, raw, pages = _read_token_prices(conn, source, fetcher, coin_chains or {})
         elif source.id == "receipts":
             data, raw, pages = _read_receipts(conn, fetcher, coin_chains or {}, receipt_ctx, now)
@@ -214,6 +245,16 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = store.write_venue_checks(conn, seen_at, data)
     elif source.id == "vault_states":
         extra = store.write_vault_states(conn, seen_at, data)
+    elif source.id == "merkl_rewards":
+        extra = trial.write_merkl_rewards(conn, seen_at, data)
+    elif source.id == "llama_yield_history":
+        extra = trial.write_llama_history(conn, now, data)
+    elif source.id == "lighter_funding_history":
+        extra = trial.write_lighter_history(conn, data)
+    elif source.id == "aero_addresses":
+        extra = len(trial.write_aero_addresses(conn, seen_at, data))
+    elif source.id == "shadow_predictions":
+        extra = shadow.write(conn, (data or {}).get("rows") or [])
     store.finish_run(conn, run_id, datetime.now(UTC), "ok", items=len(items), new_items=new if prev else 0,
                      gone_items=gone, pages=pages, bytes=len(raw), raw_path=raw_path)
     log.info("feed saved", extra={"data": {"source": source.id, "items": len(items), "new": new if prev else 0,
@@ -247,8 +288,9 @@ class FeedRunner:
 
     def __init__(self, settings: FeedSettings, fetcher: Fetcher | None = None,
                  connect: Callable[[], sqlite3.Connection] | None = None, coin_chains: dict[int, str] | None = None,
-                 receipt_ctx: ReceiptContext | None = None):
+                 receipt_ctx: ReceiptContext | None = None, trial_ctx: trial.TrialContext | None = None):
         self.settings = settings
+        self.trial_ctx = trial_ctx                    # N5a: 試すための記録（無ければ影の記録は作らない）
         self.receipt_ctx = receipt_ctx                # N2c: 預かり証の中身を読むチェーン（無ければ読まない）
         self.coin_chains = coin_chains or {}          # N2b: コインの値動きを読むチェーン（チェーン番号 → DefiLlama の名前）
         self.fetcher = fetcher or Fetcher(settings)
@@ -265,7 +307,8 @@ class FeedRunner:
                     continue
                 if s.every_minutes and not every_due(conn, s, now or datetime.now(UTC)):
                     continue
-                out.append(run_source(conn, s, self.fetcher, self.settings, now, self.coin_chains, self.receipt_ctx))
+                out.append(run_source(conn, s, self.fetcher, self.settings, now, self.coin_chains, self.receipt_ctx,
+                                      self.trial_ctx))
             return out
         finally:
             conn.close()

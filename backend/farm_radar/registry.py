@@ -169,6 +169,19 @@ def coin_chains(chain_ids: tuple[str, ...], root: Path = REPO_ROOT) -> dict[int,
     return out
 
 
+def llama_chain_names(chain_ids: tuple[str, ...], root: Path = REPO_ROOT) -> tuple[str, ...]:
+    """DefiLlama のチェーン名（chains/*.yaml の defillama_name。利回りの記録の chain と同じ。N5a）。"""
+    out = []
+    for cid in chain_ids:
+        try:
+            c = load_chain(cid, root)
+        except ConfigError:
+            continue
+        if c.get("defillama_name"):
+            out.append(str(c["defillama_name"]))
+    return tuple(out)
+
+
 def stable_addresses(chain: dict[str, Any], root: Path = REPO_ROOT) -> dict[str, str]:
     """チェーンの値動きしないコイン（小文字の住所 → 記号）。チェーンの登録の stablecoins と、コインの分類のファイルの両方。
 

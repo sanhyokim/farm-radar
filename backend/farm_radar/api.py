@@ -162,6 +162,15 @@ def feeds_status_api() -> dict:
     return out
 
 
+@app.get("/api/trial/records")
+def trial_records_api() -> dict:
+    """N5「試す」に使える記録（N5a）: 今の版のデータの写し（あれば）と、新しい版が集めている記録の数と期間。"""
+    from . import trial_records
+
+    config = load_config()
+    return trial_records.summary(config.database_path.parent, config.feeds.database_path)
+
+
 @app.get("/api/registry")
 def registry_api() -> dict:
     """登録の一覧（N1）: 系統 ＞ チェーン ＞ 会場。問題があれば problems に出す。"""
