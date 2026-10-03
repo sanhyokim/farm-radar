@@ -19,6 +19,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Keep = @('farm-radar-claude-project-thread-np18zb', 'farm-radar-v2')   # 動いている2つの版（決して消さない）
+$Never = @('farm-radar-1001-old')   # 2026-10-03 オーナー「farm-radar-1001-old には触らないでください」
 
 function Step([string]$text) { Write-Host ''; Write-Host "== $text" -ForegroundColor Cyan }
 function Ok([string]$text) { Write-Host "   OK: $text" -ForegroundColor Green }
@@ -41,7 +42,7 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $Desk $k))) { throw "動いている版のフォルダー $k が見つかりません。" }
     }
     foreach ($n in $Names) {
-        if ($Keep -contains $n -or $n -notlike 'farm-radar-*' -or $n -match '[\\/*?]') { throw "$n は消せない名前です。" }
+        if ($Keep -contains $n -or $Never -contains $n -or $n -notlike 'farm-radar-*' -or $n -match '[\\/*?]') { throw "$n は消せない名前です。" }
     }
     $targets = @($Names | Where-Object { Test-Path -LiteralPath (Join-Path $Desk $_) })
     foreach ($n in $Names) { if ($targets -contains $n) { Write-Host "   消す: $n" } else { Write-Host "   もう無い: $n" } }
