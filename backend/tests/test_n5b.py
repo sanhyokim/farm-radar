@@ -9,7 +9,7 @@ import json
 import math
 import random
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -156,7 +156,7 @@ def test_backtest_on_a_copy(old_copy, feeds):
     f = res["funding"][0]
     assert f["perp"] == "ETH" and f["days"] == 4
     assert f["pred"] == pytest.approx(0.0003) and f["real"] == pytest.approx(0.000288)
-    assert f["ok_share"] == 1.0
+    assert f["ok_share"] == 1.0 and f["ok_share_loose"] == 1.0
     m = {x["symbol"]: x for x in res["margins"]}
     assert m["WETH"]["enough"] and m["WETH"]["withstand_pct"] == 50
     # ⑥ 段階1: −40% は 30% の線では出て、50% の線では出ない（4つの線の回数を並べる）
@@ -168,12 +168,18 @@ def test_backtest_on_a_copy(old_copy, feeds):
     assert e["funds_before_usd"] > 500_000 and not e["small"] and not e["recovered_6h"] and not e["big_drop"]
     assert res["stage1"]["breakdown"] == {"total": 1, "small": 0, "recovered_6h": 0, "big_drop": 0, "none": 1}
     assert res["stage1"]["counts_big_pools"]["30"] == 1
+    # 5万ドル以上のプールだけの中身と1回ずつ（2026-10-04 オーナーの追加2）
+    assert res["stage1"]["breakdown_big_pools"] == {"total": 1, "small": 0, "recovered_6h": 0, "big_drop": 0, "none": 1}
+    assert [x["pair"] for x in res["stage1"]["big_pool_events"]] == ["WETH/USDG"]
     # 種類ごと（オーナーの質問3）: WETH/USDG = ふつうのコイン、UP/WETH = ボーナスのコイン。中央値も出す
     assert res["kinds"] == {"stock": 0, "stable": 0, "bonus": 1, "coin": 1}
     k2 = {x["r_pct"]: x for x in res["ranges"]["kind_coin"]}[2.0]
     assert k2["days"] == 3 and k2["rebalances"]["pred_median"] == pytest.approx(2.25)
     assert k2["gamma"]["real_median"] is not None and res["ranges"]["kind_stock"] == []
     assert res["misses"][0]["pair"] == "WETH/USDG" and res["spy"] == []
+    mi = res["misses"][0]
+    assert mi["gap_usd_day"] == pytest.approx(abs(mi["loss_pred_usd_day"] - mi["loss_real_usd_day"]))
+    assert [x["gap_usd_day"] for x in res["misses"]] == sorted([x["gap_usd_day"] for x in res["misses"]], reverse=True)
     # 段階2: UP は24時間で約 −21%。−15% と −20% の線では出て、−25% では出ない
     up = res["stage2_reward"]["tokens"][0]
     assert up["symbol"] == "UP"
@@ -273,3 +279,98 @@ def test_lighter_history_also_reads_the_hedge_markets_of_up(tmp_path):
     ctx = trial.TrialContext(lighter_markets=((110, "NVDA"), (999, "OLD")))
     assert (110, "NVDA") in trial.lighter_targets(conn, ctx)
     assert all(mid != 999 for mid, _ in trial.lighter_targets(conn, ctx))      # 止まった市場は読まない
+
+
+def test_funding_match_uses_the_rate_not_a_dollar_floor():
+    # 2026-10-04 オーナーの質問3: QQQ の見込み −0.0122 / 実際 −0.0309 %/日 は、前の数え方（資金の0.1% = $1/日まで）だと
+    # いつも「合」になっていた。割合（30%）とごく小さい率の余裕（1日 0.002%）で見る
+    s = bt.BacktestSettings.from_config(load_config())
+    rows = [{"perp": "QQQ", "symbol": "QQQ", "day": f"2026-10-0{i}", "pred": -0.000122, "real": -0.000309,
+             "notional": 390.0} for i in (1, 2, 3)]
+    rows.append({"perp": "ETH", "symbol": "WETH", "day": "2026-10-01", "pred": 0.0003, "real": 0.00025, "notional": 390.0})
+    rows.append({"perp": "TINY", "symbol": "TINY", "day": "2026-10-01", "pred": 0.000001, "real": 0.000015, "notional": 390.0})
+    out = {x["perp"]: x for x in bt._summarize_funding(rows, s)}
+    assert out["QQQ"]["ok_share"] == 0.0 and out["QQQ"]["ok_share_loose"] == 1.0
+    assert out["ETH"]["ok_share"] == 1.0                     # 差 17%
+    assert out["TINY"]["ok_share"] == 1.0                    # 差 0.0014%/日（余裕の中）
+
+
+def test_miss_is_the_dollar_gap_of_daily_loss():
+    x = {"gamma_pred": 0.001, "gamma_real": 0.0004, "cost_pred": 0.002, "cost_real": 0.0, "c_lp": 780.0}
+    m = bt.miss(x)
+    assert m["loss_pred_usd_day"] == pytest.approx(2.34) and m["loss_real_usd_day"] == pytest.approx(0.312)
+    assert m["gap_usd_day"] == pytest.approx(2.028)
+
+
+def test_max_rise_on_hourly_candles_matches_a_plain_search():
+    rnd = random.Random(7)
+    c, p, t = [], 100.0, 0
+    for _ in range(600):
+        o = p
+        p *= math.exp(rnd.gauss(0, 0.01))
+        c.append((t, max(o, p) * 1.002, min(o, p) * 0.998, p))
+        t += 3600
+    t_gap = c[-1][0] + 10 * 86400                         # 窓より長くあいた記録も止まらない
+    c.append((t_gap, 130.0, 120.0, 125.0))
+    w = 14 * 86400
+    got = bt.max_rise_hl(c, w)
+    best = 0.0
+    for j in range(1, len(c)):
+        lows = [x[2] for x in c[:j] if c[j][0] - x[0] <= w]
+        if lows:
+            best = max(best, c[j][1] / min(lows) - 1)
+    assert got["rise_pct"] == pytest.approx(best * 100)
+    assert got["jump_up_pct"] == pytest.approx(max(b[1] / a[3] - 1 for a, b in zip(c[:-1], c[1:-1])) * 100)
+
+
+def test_lighter_price_history_feed_and_long_margins(tmp_path):
+    from farm_radar.feeds import trial
+    conn = store.connect(tmp_path / "feeds.sqlite3")
+    conn.execute("INSERT INTO lighter_markets(market_id, symbol, status, daily_quote_volume, updated_at) "
+                 "VALUES (0, 'ETH', 'active', 1, '2026-10-04T00:00:00+00:00')")
+    conn.commit()
+    now = datetime(2026, 10, 4, tzinfo=UTC)
+    start = int(now.timestamp()) - 90 * 86400
+    calls = []
+
+    def text(url, params):
+        calls.append((url, dict(params)))
+        end = int(params["end_timestamp"])
+        lo = max(int(params["start_timestamp"]), end - 500 * 3600 + 1)
+        first = (lo + 3599) // 3600 * 3600
+        cs = [{"t": tt * 1000, "o": 100.0, "h": 101.0 + (tt == start + 3600 * 100) * 60, "l": 99.0, "c": 100.0}
+              for tt in range(first, end + 1, 3600)]
+        return json.dumps({"code": 200, "r": "1h", "c": cs})
+
+    ctx = trial.TrialContext(lighter_markets=((0, "ETH"),))
+    data, pages = trial.read_lighter_prices(conn, text, ctx, now)
+    assert calls[0][0].endswith("/candles") and pages == 5               # 2161点を500点ずつ
+    n = trial.write_lighter_prices(conn, data)
+    assert n == 90 * 24 + 1                                              # 90日前の足から今の足まで
+    data, _ = trial.read_lighter_prices(conn, text, ctx, now + timedelta(hours=3))
+    assert len(data["0"]["points"]) == 4                                  # 最後の足を読み直して、そのあとの分だけ
+    s = bt.BacktestSettings.from_config(load_config())
+    m = bt.margins_long(conn, {0: "ETH"}, s)
+    assert m[0]["symbol"] == "ETH" and m[0]["rise_pct"] == pytest.approx(161 / 99 * 100 - 100)
+    assert not m[0]["enough"] and m[0]["span_days"] > 89
+
+
+def test_lighter_price_history_keeps_points_when_the_oldest_page_is_refused(tmp_path):
+    from farm_radar.external.http import ExternalError
+    from farm_radar.feeds import trial
+    conn = store.connect(tmp_path / "feeds.sqlite3")
+    conn.execute("INSERT INTO lighter_markets(market_id, symbol, status, daily_quote_volume, updated_at) "
+                 "VALUES (191, 'NOW', 'active', 1, '2026-10-04T00:00:00+00:00')")
+    conn.commit()
+    now = datetime(2026, 10, 4, tzinfo=UTC)
+    n = []
+
+    def text(url, params):
+        n.append(1)
+        if len(n) > 1:                       # 新しい市場で、いちばん古い足まで読んだあと
+            raise ExternalError("400 invalid timestamps", status=400)
+        end = int(params["end_timestamp"])
+        return json.dumps({"c": [{"t": (end - 3600 * i) * 1000, "o": 1, "h": 1, "l": 1, "c": 1} for i in range(500)]})
+
+    data, _ = trial.read_lighter_prices(conn, text, trial.TrialContext(lighter_markets=((191, "NOW"),)), now)
+    assert len(data["191"]["points"]) == 500 and "error" not in data["191"]

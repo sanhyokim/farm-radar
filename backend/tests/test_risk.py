@@ -62,12 +62,30 @@ def test_reward_token_drop_exits_even_for_red_start():
     assert f[0].level == "exit" and f[0].kind == "reward_token_drop"
 
 
-def test_pool_funds_drop_is_emergency_and_ranks_first():
-    # 2026-10-01 オーナー決定 A: 緊急離脱は「プールのお金」（コインの量 × 今の値段）で比べる
-    f = check_position(_p(signal="red", funds_now=40.0, funds_1h_ago=100.0), PF, S)
+def test_pool_funds_drop_is_emergency_and_ranks_first_when_action_is_exit():
+    # 2026-10-01 オーナー決定 A: 緊急離脱は「プールのお金」（コインの量 × 今の値段）で比べる（action: exit のとき）
+    s = dataclasses.replace(S, pool_funds_drop_action="exit")
+    f = check_position(_p(signal="red", funds_now=40.0, funds_1h_ago=100.0), PF, s)
     assert f[0].level == "emergency" and f[0].kind == "pool_funds_drop" and f[1].kind == "signal_red"
     assert f[0].data["drop_pct"] == pytest.approx(60.0)
-    assert check_position(_p(funds_now=51.0, funds_1h_ago=100.0), PF, S) == []      # 49%減は基準の手前
+    assert check_position(_p(funds_now=51.0, funds_1h_ago=100.0), PF, s) == []      # 49%減は基準の手前
+
+
+def test_pool_funds_drop_only_notifies_by_default():
+    # 2026-10-04 オーナー決定 A: プールのお金の減りは、知らせて新しく入るのを止めるだけ（出るのは手で）
+    f = check_position(_p(funds_now=40.0, funds_1h_ago=100.0), PF, S)
+    assert [(x.level, x.kind) for x in f] == [("caution", "pool_funds_drop")]
+    assert "自動では閉じません" in f[0].message_ja and "24時間" in f[0].message_ja
+    assert f[0].data["action"] == "notify"
+
+
+def test_own_value_drop_is_emergency():
+    # 2026-10-04 オーナー決定 A: 自分の建玉の値打ちが1時間で−10%（仮）→ その建玉だけ閉じる
+    f = check_position(_p(value_now=890.0, value_1h_ago=1000.0), PF, S)
+    assert f[0].level == "emergency" and f[0].kind == "own_value_drop"
+    assert f[0].data["drop_pct"] == pytest.approx(11.0)
+    assert check_position(_p(value_now=910.0, value_1h_ago=1000.0), PF, S) == []
+    assert check_position(_p(value_now=500.0, value_1h_ago=None), PF, S) == []      # 1時間前の記録がない
 
 
 def test_active_liquidity_drop_is_only_a_caution():
@@ -243,10 +261,12 @@ def _balances(conn, pool_id, b0, b1, ts=None):
 
 def test_pool_funds_drop_closes_only_that_pool(world, calm):  # noqa: F811
     # 2026-10-01 オーナー決定 A+C: プールのお金が1時間で半分以下 → その建玉だけ閉じる。ほかの建玉と評価は続く
+    # （2026-10-04 からは risk.pool_funds_drop_action: exit のときだけ）
     from farm_radar.execution import evaluation
     path, conn = world
     _set_score(conn)
     cfg = _big(path)
+    cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, pool_funds_drop_action="exit"))
     ex = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW)
     weth = ex.open_position(WETH_POOL, 1000.0)
     nvda = ex.open_position(NVDA_POOL, 1000.0)
@@ -274,6 +294,69 @@ def test_pool_funds_drop_closes_only_that_pool(world, calm):  # noqa: F811
     assert "中断" in s["interrupted"]["message"] and s["interrupted"]["last_pair"]
     with pytest.raises(ValueError, match="練習の建玉が1つもない"):
         evaluation.start(conn, cfg, NOW + timedelta(hours=5))
+
+
+def test_pool_funds_drop_notifies_blocks_new_entries_and_records_what_if(world, calm):  # noqa: F811
+    # 2026-10-04 オーナー決定 A: 建玉は閉じない。強く知らせて、そのプールに新しく入るのを止め、
+    # 「出ていたら（合図のとき）／残っていたら（1・6・24時間後）」を記録する
+    path, conn = world
+    _set_score(conn)
+    cfg = _big(path)
+    ex = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW)
+    weth = ex.open_position(WETH_POOL, 1000.0)
+    _extend(conn, 2)
+    _balances(conn, WETH_POOL, 10 ** 21, 2_000 * 10 ** 6)
+    last = conn.execute("SELECT MAX(ts) FROM pool_snapshots").fetchone()[0]
+    _balances(conn, WETH_POOL, 3 * 10 ** 20, 600 * 10 ** 6, last)          # 70% 引き出された
+    t1 = NOW + timedelta(hours=3)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=t1)
+    assert _pos(conn, weth.position_id)["status"] == "open"
+    ev = [e for e in _events(conn) if e["kind"] == "pool_funds_drop"]
+    assert len(ev) == 1 and ev[0]["level"] == "caution" and ev[0]["action"] == "none"
+    assert json.loads(ev[0]["data_json"])["stage"] == 1
+    alert = conn.execute("SELECT level FROM alerts WHERE kind='paper_caution' ORDER BY id DESC LIMIT 1").fetchone()
+    assert alert["level"] == "major"                                      # 強く知らせる
+    w = risk_job.stage1_watch_rows(conn)
+    assert len(w) == 1 and w[0]["drop_pct"] == pytest.approx(70.0)
+    assert w[0]["value_usd"] and w[0]["exit_value_usd"] < w[0]["value_usd"]   # 閉じる費用の分だけ少ない
+    assert w[0]["stay_1h_usd"] is None
+    # 同じ合図は続けて記録しない
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=t1 + timedelta(minutes=10))
+    assert len(risk_job.stage1_watch_rows(conn)) == 1
+    # そのプールには新しく入れない（手で閉じたあとでも）
+    ex2 = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=t1 + timedelta(hours=1))
+    ex2.close_position(weth)
+    with pytest.raises(PaperError, match="新しく入るのを止めています"):
+        ex2.open_position(WETH_POOL, 1000.0)
+    # 1時間後: 閉じたので、1・6・24時間の欄は閉じたときの額
+    risk_job.update_stage1_watch(conn, ex2, t1 + timedelta(hours=1, minutes=5))
+    w = risk_job.stage1_watch_rows(conn)[0]
+    assert w["stay_1h_usd"] == w["stay_6h_usd"] == w["stay_24h_usd"] is not None
+    assert w["closed_at"] and w["close_reason"] == "manual"
+    assert w["diff_24h_usd"] == pytest.approx(w["stay_24h_usd"] - w["exit_value_usd"])
+    # 24時間たてば、また入れる
+    ex3 = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=datetime.fromisoformat(last) + timedelta(hours=25))
+    ex3.check_pool_funds_calm(WETH_POOL)
+    # 守るの画面にも出る
+    from farm_radar import guard
+    assert guard.summary(conn, cfg, t1)["stage1_watch"][0]["pair"] == "WETH/USDG"
+
+
+def test_own_value_drop_closes_the_position(world, calm):  # noqa: F811
+    path, conn = world
+    _set_score(conn)
+    cfg = _big(path)
+    cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, emergency_own_value_drop_1h_pct=0.0001))
+    ex = PaperExecutor(conn, cfg, TOKENS, fx=FakeFx(), now=NOW)
+    weth = ex.open_position(WETH_POOL, 1000.0)
+    _extend(conn, 1)
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(minutes=55))
+    assert _pos(conn, weth.position_id)["status"] == "open"              # 1時間前の記録がまだない
+    _extend(conn, 1, price_mult=0.97)                                    # 値段が下がって値打ちが減る
+    run_paper(conn, cfg, TOKENS, fx=FakeFx(), now=NOW + timedelta(minutes=115))
+    p = _pos(conn, weth.position_id)
+    assert p["status"] == "closed" and p["close_reason"] == "emergency:own_value_drop"
+    assert pviews.close_reason_ja(p["close_reason"]) == "緊急離脱・自分の建玉の値打ちが減った"
 
 
 def test_active_liquidity_drop_keeps_the_position(world, calm):  # noqa: F811

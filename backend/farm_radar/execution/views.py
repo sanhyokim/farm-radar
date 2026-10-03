@@ -154,7 +154,8 @@ def close_reason_ja(reason: str | None) -> str | None:
     if reason == "owner_exit_all":
         return "オーナーが全部閉じた"
     if reason.startswith("emergency:"):
-        detail = {"pool_funds_drop": "プールのお金が減った", "liquidity_drop": "前の決まり: レンジ内の流動性",
+        detail = {"pool_funds_drop": "プールのお金が減った", "own_value_drop": "自分の建玉の値打ちが減った",
+                  "liquidity_drop": "前の決まり: レンジ内の流動性",
                   "contract_change": "会場プログラムの変化", "usdg_depeg": "USDG の値段", "daily_loss": "今日の損",
                   "hedge_liquidation": "保険の強制決済"}.get(reason.partition(":")[2])
         return f"緊急離脱・{detail}" if detail else "緊急離脱"
@@ -173,7 +174,7 @@ def close_reason_ja(reason: str | None) -> str | None:
 
 
 RULE_JA = {
-    "pool_funds_drop": "プールのお金が減った", "contract_change": "会場プログラムの変化", "usdg_depeg": "ドルのコインのずれ",
+    "pool_funds_drop": "プールのお金が減った", "own_value_drop": "自分の建玉の値打ちが減った", "contract_change": "会場プログラムの変化", "usdg_depeg": "ドルのコインのずれ",
     "hedge_liquidation": "保険の強制決済", "reward_token_drop": "ボーナスのコインの値下がり", "dump": "投げ売り",
     "signal_red": "判定が🔴", "out_of_range_low_score": "幅の外で置き直しても低い", "below_target": "狙い利回りを続けて下回った",
     "bonus_drop": "ボーナスが減った（切り替えのあと）", "better_place": "もっと良い場所がある",
@@ -227,9 +228,17 @@ def risk_rules(r: RiskSettings) -> list[dict[str, str]]:
                                                     f"値動きする側のトークンが1時間で{r.exit_dump_1h_pct:g}%か"
                                                     f"24時間で{r.exit_dump_24h_pct:g}%（投げ売り）/ "
                                                     "プールの判定が🔴になった（🔴で始めた練習は除く）", "action": "その建玉を閉じる"},
+        *([{"level": "emergency", "level_ja": "緊急離脱（そのプール）",
+            "rule": f"プールのお金（持っているコインの量。1時間前も今の値段で数える）が1時間で−{r.emergency_pool_funds_drop_1h_pct:g}%",
+            "action": "その建玉だけ閉じる。ほかの建玉と評価は続く（評価の建玉が全部閉じたら評価は中断）"}]
+          if r.pool_funds_drop_action == "exit" else
+          [{"level": "caution", "level_ja": "段階1の知らせ（そのプール）",
+            "rule": f"プールのお金（持っているコインの量。1時間前も今の値段で数える）が1時間で−{r.emergency_pool_funds_drop_1h_pct:g}%",
+            "action": f"強く知らせて、そのプールに新しく入るのを{r.pool_funds_block_hours:g}時間止める。建玉は自動では閉じない"
+                      "（出るのは手で）。「出ていたら／残っていたら」の額を記録する（2026-10-04 オーナー決定 A）"}]),
         {"level": "emergency", "level_ja": "緊急離脱（そのプール）",
-         "rule": f"プールのお金（持っているコインの量。1時間前も今の値段で数える）が1時間で−{r.emergency_pool_funds_drop_1h_pct:g}%",
-         "action": "その建玉だけ閉じる。ほかの建玉と評価は続く（評価の建玉が全部閉じたら評価は中断）"},
+         "rule": f"自分の建玉の値打ちが1時間で−{r.emergency_own_value_drop_1h_pct:g}%",
+         "action": "その建玉だけ閉じる。ほかの建玉と評価は続く"},
         {"level": "emergency", "level_ja": "緊急離脱（全体）",
          "rule": "会場プログラムの停止・持ち主の変更・入れ替え / "
                  f"USDG の外部の価格が{r.emergency_usdg_times}回続けて ${r.emergency_usdg_below:g} 未満 / "

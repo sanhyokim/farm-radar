@@ -145,6 +145,12 @@ class RiskSettings:
     # 緊急離脱: プールのお金（プールが持っているコインの量 × 今の値段）が1時間でこの%以上減った（2026-10-01 オーナー決定 A。
     # 前の名前 emergency_liquidity_drop_1h_pct も読む。前はレンジ内の流動性で比べていて、値段が動くだけで働いた）
     emergency_pool_funds_drop_1h_pct: float = 50.0
+    # 上のときにすること（2026-10-04 オーナー決定 A。2段にする）: notify = 知らせて、そのプールに新しく入るのを止める
+    # （出るのは手で）/ exit = 前と同じく、その建玉を自動で閉じる
+    pool_funds_drop_action: str = "notify"
+    pool_funds_block_hours: float = 24.0        # notify のとき、そのプールに新しく入るのを止める時間（最後の合図から。仮）
+    # 緊急離脱（段階1。その建玉だけ閉じる）: 自分の持ち分の値打ち（建玉の値打ち）が1時間でこの%以上減った（2026-10-04 A。仮）
+    emergency_own_value_drop_1h_pct: float = 10.0
     # 注意（記録と表示だけ）: 今の値段のところの流動性（レンジ内の流動性）が1時間でこの%以上減った。
     # ボーナスの取り分の計算に関わるため（2026-10-01 オーナー決定。緊急離脱には使わない）
     caution_active_liquidity_drop_1h_pct: float = 50.0
@@ -186,12 +192,15 @@ def _risk(raw: dict[str, Any]) -> RiskSettings:
             "emergency_daily_loss_pct", "max_swap_slippage_pct",
             "max_gas_usd_per_tx", "actual_min_hours", "compare_min_hours", "exit_dump_1h_pct", "exit_dump_24h_pct",
             "emergency_usdg_below", "emergency_usdg_times", "caution_hedge_cost_pct", "contract_watch",
-            "bonus_drop_ratio", "bonus_drop_wait_hours", "bonus_drop_action")},
+            "bonus_drop_ratio", "bonus_drop_wait_hours", "bonus_drop_action", "pool_funds_drop_action",
+            "pool_funds_block_hours", "emergency_own_value_drop_1h_pct")},
     )
     for hm in out.fast_window_ny:
         hh, _, mm = hm.partition(":")
         if not (hh.isdigit() and mm.isdigit() and int(hh) < 24 and int(mm) < 60):
             raise ConfigError("risk.fast_window_ny は \"09:00-10:30\" のように書いてください。")
+    if out.pool_funds_drop_action not in ("notify", "exit"):
+        raise ConfigError("risk.pool_funds_drop_action は notify（知らせて新しく入るのを止める）か exit（自動で閉じる）にしてください。")
     if out.bonus_drop_action not in ("record", "exit"):
         raise ConfigError("risk.bonus_drop_action は record（記録と通知だけ）か exit（抜けるのがいちばんよければ閉じる）にしてください。")
     if not 0 < out.bonus_drop_ratio < 1:

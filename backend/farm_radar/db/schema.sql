@@ -320,3 +320,25 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+-- 段階1の合図（プールのお金が1時間で大きく減った）のあとの「出ていたら／残っていたら」（2026-10-04 オーナー決定 A の追加1）。
+-- 合図のときに出ていたら手もとに残った額（建玉の値打ち − 閉じる費用の見込み）と、そのあと 1・6・24 時間の同じ額を記録する。
+-- 途中で閉じたら、閉じたときの額をそのあとの欄にも入れる。あとで「自動で出るようにするか」を数字で決めるため
+CREATE TABLE IF NOT EXISTS stage1_watch (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER NOT NULL,
+  pool_id TEXT NOT NULL,
+  pair TEXT,
+  ts TEXT NOT NULL,                   -- 合図の時刻
+  drop_pct REAL,                      -- プールのお金の1時間の減り（%）
+  funds_1h_ago REAL,                  -- プールのお金（1時間前。単位は unit）
+  unit TEXT,
+  value_usd REAL,                     -- 合図のときの建玉の値打ち
+  exit_value_usd REAL,                -- そこで出ていたら（値打ち − 閉じる費用の見込み）
+  stay_1h_usd REAL,                   -- 残っていたら（1時間後に出たときの額。途中で閉じたら閉じたときの額）
+  stay_6h_usd REAL,
+  stay_24h_usd REAL,
+  closed_at TEXT,                     -- 24時間の間に閉じたとき
+  close_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_stage1_watch_pos ON stage1_watch(position_id, ts);

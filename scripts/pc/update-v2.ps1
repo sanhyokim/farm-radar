@@ -244,6 +244,7 @@ try {
         Say "[試す] Merkl の配った額: キャンペーン $(N0 $f.merkl_rewards.campaigns) / 行 $(N0 $f.merkl_rewards.rows)"
         Say "[試す] DefiLlama の毎日の記録: プール $(N0 $f.llama_history.pools) / 行 $(N0 $f.llama_history.rows)（$($f.llama_history.from) 〜 $($f.llama_history.to)）"
         Say "[試す] Lighter の資金調達率の過去: 銘柄 $(N0 $f.lighter_history.markets) / 行 $(N0 $f.lighter_history.rows)"
+        Say "[試す] Lighter の値段の過去: 銘柄 $(N0 $f.lighter_prices.markets) / 行 $(N0 $f.lighter_prices.rows)（1日1回。最初は90日分）"
         Say "[試す] 影の記録: $(N0 $f.shadow.hours) 回 / 入れる先 $(N0 $f.shadow.opportunities) / 行 $(N0 $f.shadow.rows)"
         Say "[試す] Aero の住所のファイル: $((@($f.aero_addresses) | ForEach-Object { $_.name }) -join ', ')"
     } catch {
@@ -266,8 +267,17 @@ try {
                     (BtPct $g.in_range.pred 1), (BtPct $g.in_range.real 1), (BtPct $g.gamma.pred 3), (BtPct $g.gamma.real 3), (BtPct $g.gamma.formula_real_sigma 3), `
                     (BtPct $g.gamma.ok_share 0), (BtPct $g.cost.pred 3), (BtPct $g.cost.real 3))
             }
-            foreach ($x in @($r.funding)) { Say ("   資金調達 {0}（{1}日）: 見込み {2}/実際 {3} %/日（合 {4}%）" -f $x.perp, $x.days, (BtPct $x.pred 4), (BtPct $x.real 4), (BtPct $x.ok_share 0)) }
+            # 合 = 差が見込みの30%以内（ごく小さい率は 1日 0.002% まで）。前の数え方（資金の0.1%まで）は「前」（2026-10-04 オーナーの質問3）
+            foreach ($x in @($r.funding)) { Say ("   資金調達 {0}（{1}日）: 見込み {2}/実際 {3} %/日（合 {4}%。前の数え方 {5}%）" -f $x.perp, $x.days, (BtPct $x.pred 4), (BtPct $x.real 4), (BtPct $x.ok_share 0), (BtPct $x.ok_share_loose 0)) }
             foreach ($x in @($r.margins)) { Say ("   預け金 {0}: いちばんの上げ {1}%（{2}日の記録。耐える {3}%）/ 15分の飛び {4}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 1), $x.withstand_pct, (BtNum $x.jump_up_pct 1)) }
+            # Lighter の値段の過去（最大90日の1時間の足）で見た預け金（2026-10-04 オーナーの質問4）。上げの大きい順
+            $ml = @($r.margins_long | Sort-Object { -[double]$_.rise_pct })
+            if ($ml.Count -gt 0) {
+                Say "[さかのぼり 預け金 90日] 市場 $($ml.Count) / 耐える $($ml[0].withstand_pct)% を超えた市場 $(@($ml | Where-Object { -not $_.enough }).Count)"
+                foreach ($x in @($ml | Select-Object -First 8)) {
+                    Say ("   {0}: 14日以内のいちばんの上げ {1}%（{2}日の記録）/ 1時間でいちばんの上げ {3}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 0), (BtNum $x.jump_up_pct 1))
+                }
+            } else { Say "[さかのぼり 預け金 90日] まだ値段の過去がありません（1日1回の読み取りのあとに出ます）" }
             # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ
             $kn = @{ kind_stock = '株'; kind_stable = 'ステーブル'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン' }
             Say "[さかのぼり 種類] 株 $($r.kinds.stock) / ステーブル $($r.kinds.stable) / ふつうのコイン $($r.kinds.coin) / ボーナスのコイン $($r.kinds.bonus)（プールの数）"
@@ -278,9 +288,11 @@ try {
                         (BtPct $g.gamma.pred_median 3), (BtPct $g.gamma.real_median 3), (BtPct $g.sigma.pred_median 1), (BtPct $g.sigma.real_median 1))
                 }
             }
+            # 1日の損（値動きの損 + 置き直しの費用）の見込みと実際の差（ドル）の大きい順（2026-10-04 オーナーの質問5）
             foreach ($x in @($r.misses | Select-Object -First 5)) {
-                Say ("   ずれの大きいプール {0}（{1}・±{2}%）: 値動き σ {3}/{4}% / 値動きの損 {5}/{6}%" -f $x.pair, $kn["kind_$($x.kind)"], $x.r_pct, `
-                    (BtPct $x.sigma_pred 1), (BtPct $x.sigma_real 1), (BtPct $x.gamma_pred 3), (BtPct $x.gamma_real 3))
+                Say ("   ずれの大きいプール {0}（{1}・±{2}%）: 1日の損 見込み `${3}/実際 `${4}（差 `${5}）/ 値動き σ {6}/{7}% / 置き直し {8}/{9} 回/日" -f $x.pair, $kn["kind_$($x.kind)"], $x.r_pct, `
+                    (BtNum $x.loss_pred_usd_day), (BtNum $x.loss_real_usd_day), (BtNum $x.gap_usd_day), (BtPct $x.sigma_pred 1), (BtPct $x.sigma_real 1), `
+                    (BtNum $x.rebalances_pred), (BtNum $x.rebalances_real))
             }
             foreach ($x in @($r.spy)) {
                 Say ("   SPY {0}（±{1}%）: 値動き σ {2}/{3}% / 値動きの損 {4}/{5}% / 置き直し {6}/{7} 回/日" -f $x.pair, $x.r_pct, `
@@ -292,6 +304,14 @@ try {
             Say "   うち 5万ドル以上のプール: -20%: $($c1b.'20') / -30%: $($c1b.'30') / -40%: $($c1b.'40') / -50%: $($c1b.'50')"
             $bd = $r.stage1.breakdown
             Say "   -$($r.stage1.threshold_pct)% の $($bd.total) 回の中身（重なりあり）: 小さいプール $($bd.small) / 6時間以内に戻った $($bd.recovered_6h) / そのあと24時間でコインが -20% 以上 $($bd.big_drop) / どれでもない $($bd.none)"
+            # 5万ドル以上のプールだけの中身と1回ずつ（2026-10-04 オーナーの追加2）
+            $bb = $r.stage1.breakdown_big_pools
+            Say "   5万ドル以上のプールの $($bb.total) 回: 6時間以内に戻った $($bb.recovered_6h) / そのあと24時間でコインが -20% 以上 $($bb.big_drop) / どれでもない $($bb.none)"
+            foreach ($x in @($r.stage1.big_pool_events)) {
+                $at = [DateTimeOffset]::FromUnixTimeSeconds([long]$x.at).ToOffset([TimeSpan]::FromHours(9)).ToString('MM/dd HH:mm')
+                Say ("     {0}（{1}）{2} 日本時間: プールのお金 {3}%（前 `${4}）/ 6時間以内に戻った {5} / そのあと24時間のコインの最低 {6}%" -f $x.pair, $kn["kind_$($x.kind)"], $at, `
+                    (BtNum $x.change_pct 1), (BtNum $x.funds_before_usd 0), $(if ($x.recovered_6h) { 'はい' } else { 'いいえ' }), (BtNum $x.coin_min_24h_pct 1))
+            }
             foreach ($x in @($r.stage2_reward.tokens)) {
                 $e = $x.events
                 Say "[さかのぼり 段階2] $($x.symbol) 24時間で -10%: $(@($e.'-10').Count) 回 / -15%: $(@($e.'-15').Count) 回 / -20%: $(@($e.'-20').Count) 回 / -25%: $(@($e.'-25').Count) 回"
