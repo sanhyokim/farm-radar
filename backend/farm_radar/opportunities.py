@@ -1096,6 +1096,61 @@ def _merkl_rows(fconn: sqlite3.Connection) -> tuple[dict[str, dict[str, Any]], d
     return infos, camps
 
 
+def _change(now_v: float | None, vals: list[float]) -> tuple[float, float] | None:
+    """24時間の中のいちばん高い値・低い値と今を比べて、大きいほうの変化（%）と比べた相手を返す。"""
+    vals = [v for v in vals if v is not None and v > 0]
+    if now_v is None or not vals:
+        return None
+    hi, lo = max(vals), min(vals)
+    drop, rise = (now_v / hi - 1) * 100, (now_v / lo - 1) * 100
+    return (drop, hi) if -drop >= rise else (rise, lo)
+
+
+def sudden_changes(fconn: sqlite3.Connection, now: datetime, s: OpportunitySettings) -> dict[str, str]:
+    """年利が急に変わった Merkl の機会（オーナー依頼 2026-10-03 17:59 JST。Hyperdrive の金庫で 35.9% → 62.5%）。
+
+    預かり額か1日のボーナスの額が、直近 sudden_change_hours 時間の高い値・低い値から sudden_change_pct %以上動いたら印を付ける。
+    年利はボーナス ÷ 預かり額なので、どちらが動いたかを書く（原因の見分け）。印はおすすめから外さない（注意だけ）。"""
+    last = fconn.execute("SELECT MAX(ts) FROM merkl_opportunity_snaps").fetchone()[0]
+    if not last:
+        return {}
+    since = (now - timedelta(hours=s.sudden_change_hours)).astimezone(UTC).isoformat(timespec="seconds")
+    hist: dict[str, list[tuple[float | None, float | None]]] = {}
+    cur: dict[str, tuple[float | None, float | None]] = {}
+    for r in fconn.execute("""SELECT opportunity_id, ts, tvl, daily_rewards FROM merkl_opportunity_snaps
+                              WHERE ts >= ? ORDER BY ts""", (min(since, last),)):
+        key = str(r["opportunity_id"])
+        if r["ts"] == last:
+            cur[key] = (r["tvl"], r["daily_rewards"])
+        else:
+            hist.setdefault(key, []).append((r["tvl"], r["daily_rewards"]))
+    out: dict[str, str] = {}
+    h = f"{s.sudden_change_hours:g}時間"
+    for key, (tvl, rew) in cur.items():
+        past = hist.get(key)
+        if not past:
+            continue
+        t = _change(tvl, [p[0] for p in past])
+        w = _change(rew, [p[1] for p in past])
+        big_t = t is not None and abs(t[0]) >= s.sudden_change_pct
+        big_w = w is not None and abs(w[0]) >= s.sudden_change_pct
+        if not (big_t or big_w):
+            continue
+        parts = []
+        if big_t:
+            parts.append(f"預かり額が{h}で {t[0]:+.0f}%（${t[1]:,.0f} → ${tvl:,.0f}）")
+        if big_w:
+            parts.append(f"1日のボーナスの額が{h}で {w[0]:+.0f}%（${w[1]:,.0f} → ${rew:,.0f}）")
+        elif rew:
+            parts.append(f"ボーナスの額は大きく変わっていない（1日 ${rew:,.0f}）")
+        why = ("ほかの人が大きく引き出したので、同じボーナスを少ない人数で分けている。戻ってくると年利は下がる"
+               if big_t and t[0] < 0 and not big_w else
+               "ほかの人が大きく入れたので、ボーナスを多い人数で分けている" if big_t and t[0] > 0 and not big_w else
+               "配る額が変わった")
+        out[key] = f"年利が急に変わった: {'。'.join(parts)}。{why}（Merkl の15分ごとの記録）"
+    return out
+
+
 def collect(conn: sqlite3.Connection, config: Config, now: datetime | None = None) -> list[Opportunity]:
     """登録したチェーンの機会（自分で読んだ会場と Merkl）を計算する。"""
     now = now or datetime.now(UTC)
@@ -1107,8 +1162,12 @@ def collect(conn: sqlite3.Connection, config: Config, now: datetime | None = Non
             out.append(evaluate_own(b, conn, config, data))
         if fconn is not None:
             infos, camps = _merkl_rows(fconn)
+            sudden = sudden_changes(fconn, now, config.opportunities)
             for b in from_merkl(config.feeds.database_path, config, now, registered_only=True):
-                out.append(evaluate_merkl(b, infos.get(b.key, {}), camps.get(b.key, []), data, config))
+                op = evaluate_merkl(b, infos.get(b.key, {}), camps.get(b.key, []), data, config)
+                if b.key in sudden:
+                    op.flags.append(Flag("SUDDEN_CHANGE", LEVEL_WARN, sudden[b.key]))
+                out.append(op)
     finally:
         if fconn is not None:
             fconn.close()

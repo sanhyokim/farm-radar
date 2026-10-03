@@ -171,6 +171,16 @@ def trial_records_api() -> dict:
     return trial_records.summary(config.database_path.parent, config.feeds.database_path)
 
 
+@app.get("/api/trial/backtest")
+def trial_backtest_api() -> dict:
+    """N5b さかのぼりの計算: 今の版のデータの写しで、見込み（②〜⑥）と実際の記録を比べる。
+    写しが変わるまで、計算の結果は data/import/backtest.json にとっておく（最初の1回は数十秒かかることがある）。"""
+    from . import backtest
+
+    config = load_config()
+    return backtest.cached(config.database_path.parent, config, config.feeds.database_path)
+
+
 @app.get("/api/registry")
 def registry_api() -> dict:
     """登録の一覧（N1）: 系統 ＞ チェーン ＞ 会場。問題があれば problems に出す。"""

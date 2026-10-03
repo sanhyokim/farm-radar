@@ -463,3 +463,30 @@ def test_narrow_range_pays_for_jumps_over_the_range():
     assert jumpy.jumps_per_day == pytest.approx(2 / 30)          # 幅（±0.5%）を飛び越えた2回
     assert jumpy.gamma > calm.gamma and jumpy.rebalance > calm.rebalance
     assert jumpy.in_range_ratio < calm.in_range_ratio
+
+
+def test_sudden_change_mark(cfg):
+    """年利が急に変わった印（オーナー依頼 2026-10-03 17:59 JST）: 預かり額かボーナスの額が24時間で30%以上動いた行。
+    原因（どちらが動いたか）を書き、おすすめからは外さない。24時間より前の動きは数えない。"""
+    by_id = {o["id"]: o for o in OPPS}
+    conn = store.connect(cfg.feeds.database_path)
+    # 10時間前は預かり額が多かった（今 $2,000,000 → −43%。ボーナスの額は同じ）
+    store.write_merkl(conn, store.iso(NOW - timedelta(hours=10)), [{**by_id["o-lend"], "tvl": 3_500_000.0}])
+    # 5時間前はボーナスの額が倍だった（−50%）
+    store.write_merkl(conn, store.iso(NOW - timedelta(hours=5)), [{**by_id["o-eth"], "dailyRewards": 2000.0}])
+    # 30時間前の大きな違いは数えない
+    store.write_merkl(conn, store.iso(NOW - timedelta(hours=30)), [{**by_id["o-pts"], "tvl": 9_000_000.0}])
+    conn.commit()
+    conn.close()
+    ops = _collect(cfg)
+    lend = [f for f in ops["o-lend"].flags if f.code == "SUDDEN_CHANGE"]
+    assert len(lend) == 1 and lend[0].level == "warn" and not ops["o-lend"].excluded
+    assert "預かり額が24時間で -43%（$3,500,000 → $2,000,000）" in lend[0].text
+    assert "ボーナスの額は大きく変わっていない（1日 $1,000）" in lend[0].text and "引き出した" in lend[0].text
+    eth = [f for f in ops["o-eth"].flags if f.code == "SUDDEN_CHANGE"]
+    assert len(eth) == 1 and "1日のボーナスの額が24時間で -50%（$2,000 → $1,000）" in eth[0].text
+    assert not any(f.code == "SUDDEN_CHANGE" for f in ops["o-pts"].flags)
+    assert not any(f.code == "SUDDEN_CHANGE" for o in ops.values() for f in o.flags
+                   if o.base.key not in ("o-lend", "o-eth"))
+    # 一覧の行に印が届く（画面は flags の code で「年利が急に変わった」を出す）
+    assert any(f["code"] == "SUDDEN_CHANGE" for f in ops["o-lend"].to_dict(1000.0, 30.0)["flags"])

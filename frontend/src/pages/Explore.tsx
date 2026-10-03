@@ -3,7 +3,7 @@ import { useApi, type OpportunitiesResp, type Opportunity } from "../api";
 import { bigUsd, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Folds, Line, Loading, Note, PageHead, Segmented, Term, useWide } from "../ui";
-import { CHAINS, GuessPill, SafetyPill, TargetEdit, VenueMatchPill, apr, days, isGuess, isRecommended, isUncertainVenue, type Chain } from "./opp";
+import { CHAINS, GuessPill, SafetyPill, SuddenPill, TargetEdit, VenueMatchPill, apr, days, isGuess, isRecommended, isSudden, isUncertainVenue, type Chain } from "./opp";
 
 /**
  * 探す（N2c。SPEC 13.1 の追加の決定 2）: 「機会」と「プール」をまとめた、入れる先の1行ずつの表。
@@ -131,6 +131,7 @@ function Row({ o, wide, back }: { o: Opportunity; wide: boolean; back: string })
     boxShadow: hit ? "inset 3px 0 0 var(--g)" : undefined };
   const guess = isGuess(o);
   const unsure = isUncertainVenue(o);
+  const sudden = isSudden(o);
   if (wide) {
     return (
       <Link to={to} className="grid items-center gap-4 px-6 py-4 hover:bg-white/[0.02]"
@@ -138,8 +139,8 @@ function Row({ o, wide, back }: { o: Opportunity; wide: boolean; back: string })
         <span className="flex min-w-0 flex-col gap-1">
           <span className="bold truncate">{o.name ?? o.key}</span>
           <span className="cap truncate">{where}</span>
-          {(guess || unsure || o.excluded) && (
-            <span className="flex flex-wrap gap-2">{guess && <GuessPill />}{unsure && <VenueMatchPill />}{o.excluded && <ExcludedNote o={o} />}</span>
+          {(sudden || guess || unsure || o.excluded) && (
+            <span className="flex flex-wrap gap-2">{sudden && <SuddenPill />}{guess && <GuessPill />}{unsure && <VenueMatchPill />}{o.excluded && <ExcludedNote o={o} />}</span>
           )}
         </span>
         <span className="t20 num text-right">{apr(b?.apr_pct)}</span>
@@ -165,6 +166,7 @@ function Row({ o, wide, back }: { o: Opportunity; wide: boolean; back: string })
       <div className="flex flex-wrap items-center gap-2">
         <SafetyPill s={o.safety} />
         <span className="cap">残り {days(o.days_left)}</span>
+        {sudden && <SuddenPill />}
         {guess && <GuessPill />}
         {unsure && <VenueMatchPill />}
         {o.excluded && <ExcludedNote o={o} />}

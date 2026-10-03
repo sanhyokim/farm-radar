@@ -37,6 +37,9 @@ export const GuessPill = () => <Pill tone="y" icon="alert">値下がり未計算
 /** 会場を契約の住所で見分けられていない印（オーナー依頼 2026-10-02 17:07 JST。N4a で住所の見分けを始めた） */
 export const isUncertainVenue = (o: Opportunity) => !!o.safety?.uncertain_match;
 export const VenueMatchPill = () => <Pill tone="y" icon="alert">仮・会場の見分けが不確か</Pill>;
+/** 年利が急に変わった印（オーナー依頼 2026-10-03 17:59 JST。預かり額かボーナスの額が24時間で大きく動いた。おすすめからは外さない） */
+export const isSudden = (o: Opportunity) => o.flags.some((f) => f.code === "SUDDEN_CHANGE");
+export const SuddenPill = () => <Pill tone="y" icon="alert">年利が急に変わった</Pill>;
 /** おすすめ（狙い以上で会場の見分けが確か）。見分けが不確かな行はおすすめに入れない（オーナー 2026-10-02 23:15 JST） */
 export const isRecommended = (o: Opportunity) => !o.excluded && !!o.recommended;
 

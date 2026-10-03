@@ -58,6 +58,10 @@ opportunities:
   receipt_stable_drop_monthly_pct: 3
   # 預かり証の値段が中身から、この%以上外れたら知らせます（仮）
   receipt_price_alert_pct: 2
+  # 「年利が急に変わった」の印（2026-10-03 オーナー依頼。仮）: 預かり額か1日のボーナスの額が、直近24時間の
+  # 高い値・低い値から30%以上動いたら注意の印を付けます（おすすめからは外しません）
+  sudden_change_hours: 24
+  sudden_change_pct: 30
 
 # 有効にする会場（venues/<id>.yaml）。上から順に集めます。練習と評価に使う会場（up.）を先に書きます。
 # alandale-robinhood は「観察だけ」の会場です（練習と評価には入れません。2026-09-30 オーナー決定。M6）。
