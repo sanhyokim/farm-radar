@@ -6,7 +6,7 @@ import { Icon } from "../icons";
 import { Fold, Folds, Line, Loading, PageHead, Pill, Spark, Term, usePulse, useWide } from "../ui";
 import { EvalProgress, TodoCard } from "./parts";
 import { FeedsCard } from "./Feeds";
-import { VenueMatchPill, isUncertainVenue } from "./opp";
+import { SuddenPill, VenueMatchPill, isSudden, isUncertainVenue } from "./opp";
 
 // ホーム（SPEC 7.1章・13.1 の追加の決定 2。N2c で形を変えた）
 // スマホ: 全体の損益と損失ライン → 持っている建玉 → 知らせ → 探す（狙い以上の数）→ 一覧の保存 → 1時間ごとのグラフ
@@ -111,7 +111,8 @@ function ExploreTile() {
             <span className="flex min-w-0 flex-1 flex-col">
               <span className="truncate">{o.name ?? o.key}</span>
               <span className="cap truncate">{[o.chain_name, o.venue_name ?? o.venue].filter(Boolean).join(" · ")}</span>
-              {isUncertainVenue(o) && <span className="flex"><VenueMatchPill /></span>}
+              {(isSudden(o) || isUncertainVenue(o)) && (
+                <span className="flex flex-wrap gap-2">{isSudden(o) && <SuddenPill />}{isUncertainVenue(o) && <VenueMatchPill />}</span>)}
             </span>
             <span className="bold num shrink-0">{o.best ? `${o.best.apr_pct.toFixed(1)}%` : "—"}</span>
           </Link>

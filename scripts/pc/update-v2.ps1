@@ -210,7 +210,13 @@ try {
     function N0($x) { if ($null -eq $x) { 0 } else { $x } }
     if ($dg) { Say "[危なさ] low: $(N0 $dg.low) / mid: $(N0 $dg.mid) / high: $(N0 $dg.high) / very_high: $(N0 $dg.very_high) / venue_verified: $(N0 $o.counts.venue_verified)" }
     foreach ($x in @($o.items | Where-Object { $_.recommended })) {
-        Say ("   おすすめ: {0}  年利 {1}%  危なさ {2}" -f $x.name, [math]::Round($x.best.apr_pct, 1), $x.safety.level)
+        $mk = if ($x.flags.code -contains 'SUDDEN_CHANGE') { '  [年利が急に変わった]' } else { '' }
+        Say ("   おすすめ: {0}  年利 {1}%  危なさ {2}{3}" -f $x.name, [math]::Round($x.best.apr_pct, 1), $x.safety.level, $mk)
+    }
+    $sd = @($o.items | Where-Object { $_.flags.code -contains 'SUDDEN_CHANGE' })
+    Say "[年利が急に変わった] $($sd.Count) 件"
+    foreach ($x in ($sd | Select-Object -First 5)) {
+        Say ("   {0}: {1}" -f $x.name, (@($x.flags | Where-Object { $_.code -eq 'SUDDEN_CHANGE' })[0].text))
     }
     $c = @($o.items | Where-Object { $_.flags.code -contains 'RANGE_CHAIN' })
     $u = @($o.items | Where-Object { $_.safety.uncertain_match })
