@@ -164,11 +164,35 @@ def test_backtest_on_a_copy(old_copy, feeds):
     assert res["stage1"]["counts"]["50"] == 0 and res["stage1"]["counts"]["20"] == 1
     e = res["stage1"]["events"][0]
     assert e["pair"] == "WETH/USDG" and e["change_pct"] == pytest.approx(-40, abs=0.5)
+    # 段階1 の中身（オーナーの質問2）: 大きいプール（約 $54万）で、戻らず、コインの大きな値下がりもない → 「どれでもない」
+    assert e["funds_before_usd"] > 500_000 and not e["small"] and not e["recovered_6h"] and not e["big_drop"]
+    assert res["stage1"]["breakdown"] == {"total": 1, "small": 0, "recovered_6h": 0, "big_drop": 0, "none": 1}
+    assert res["stage1"]["counts_big_pools"]["30"] == 1
+    # 種類ごと（オーナーの質問3）: WETH/USDG = ふつうのコイン、UP/WETH = ボーナスのコイン。中央値も出す
+    assert res["kinds"] == {"stock": 0, "stable": 0, "bonus": 1, "coin": 1}
+    k2 = {x["r_pct"]: x for x in res["ranges"]["kind_coin"]}[2.0]
+    assert k2["days"] == 3 and k2["rebalances"]["pred_median"] == pytest.approx(2.25)
+    assert k2["gamma"]["real_median"] is not None and res["ranges"]["kind_stock"] == []
+    assert res["misses"][0]["pair"] == "WETH/USDG" and res["spy"] == []
     # 段階2: UP は24時間で約 −21%。−15% と −20% の線では出て、−25% では出ない
     up = res["stage2_reward"]["tokens"][0]
     assert up["symbol"] == "UP"
     assert len(up["events"]["-15"]) == 1 and len(up["events"]["-20"]) == 1 and up["events"]["-25"] == []
     assert up["events"]["-15"][0]["at"] < up["events"]["-20"][0]["at"]     # 線が浅いほど早く出る
+
+
+def test_stage1_detail_splits_small_recovered_and_big_drop():
+    t = START + 10 * 3600
+    funds = [(t, 30_000.0, 50_000.0), (t + 3600, 48_000.0, 30_000.0)]       # $5万 → $3万、1時間後に $4.8万（90%以上）
+    coin = [(t - 900, 10.0), (t + 3600, 7.5)]                                # そのあと24時間でコインが −25%
+    d = bt.stage1_detail(t, funds, [coin])
+    assert d["small"] is False and d["funds_before_usd"] == 50_000
+    assert d["recovered_6h"] and d["big_drop"] and d["coin_min_24h_pct"] == pytest.approx(-25)
+    assert bt.stage1_detail(t, [(t, 1.0, 40_000.0)], [])["small"]
+
+
+def test_median():
+    assert bt._median([3, 1, 2]) == 2 and bt._median([1, 2, 3, 100]) == 2.5 and bt._median([]) is None
 
 
 def test_cached_reuses_result_until_the_copy_changes(tmp_path, old_copy, monkeypatch):

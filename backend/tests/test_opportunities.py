@@ -490,3 +490,18 @@ def test_sudden_change_mark(cfg):
                    if o.base.key not in ("o-lend", "o-eth"))
     # 一覧の行に印が届く（画面は flags の code で「年利が急に変わった」を出す）
     assert any(f["code"] == "SUDDEN_CHANGE" for f in ops["o-lend"].to_dict(1000.0, 30.0)["flags"])
+
+
+def test_sudden_change_mark_restarts_24h_after_a_second_move(cfg):
+    """オーナー決定（2026-10-03 21:11 JST）: 印は24時間で消える。24時間の間にまた30%以上動いたら、そこから24時間を数え直す。
+    今の比べ方（直近24時間の高い値・低い値と今）で、2回目の動きの前の値が24時間残るので、そのとおりになる。"""
+    by_id = {o["id"]: o for o in OPPS}
+    lend = by_id["o-lend"]                       # 今の預かり額 $2,000,000
+    conn = store.connect(cfg.feeds.database_path)
+    # 30時間前 $4,100,000 → 20時間前 $2,900,000（−29%）→ 今 $2,000,000（−31%）
+    store.write_merkl(conn, store.iso(NOW - timedelta(hours=30)), [{**lend, "tvl": 4_100_000.0}])
+    store.write_merkl(conn, store.iso(NOW - timedelta(hours=20)), [{**lend, "tvl": 2_900_000.0}])
+    conn.commit()
+    conn.close()
+    marks = [f.text for f in _collect(cfg)["o-lend"].flags if f.code == "SUDDEN_CHANGE"]
+    assert len(marks) == 1 and "($2,900,000 → $2,000,000)".replace("(", "（").replace(")", "）") in marks[0]
