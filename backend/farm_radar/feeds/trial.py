@@ -47,6 +47,9 @@ class TrialContext:
     llama_chains: tuple[str, ...] = ()                    # DefiLlama のチェーン名（Base・Robinhood Chain）
     perp_alias: dict[str, str] = field(default_factory=dict)
     shadow: Callable[[sqlite3.Connection, datetime], dict[str, Any]] | None = None   # 影の記録（feeds/shadow.py）
+    # up. のコインの保険に使う Lighter の市場（venues/tokens-robinhood.yaml の perps.map。N5b のさかのぼりで、
+    # 今の版の見込みの資金調達料と比べるため。株の銘柄は Merkl の一覧や取引の多い10銘柄に入らないことがある）
+    lighter_markets: tuple[tuple[int, str], ...] = ()
 
 
 def _json(body: str) -> Any:
@@ -184,7 +187,8 @@ def write_llama_history(conn: sqlite3.Connection, now: datetime, data: dict[str,
 # --- Lighter の資金調達率の過去 ---------------------------------------------------------------------------
 
 def lighter_targets(conn: sqlite3.Connection, ctx: TrialContext) -> list[tuple[int, str]]:
-    """読む銘柄: 登録したチェーンの Merkl の機会に出てくるコイン（WETH → ETH などの読み替えつき）と、取引の多い銘柄。"""
+    """読む銘柄: 登録したチェーンの Merkl の機会に出てくるコイン（WETH → ETH などの読み替えつき）と、取引の多い銘柄と、
+    up. のコインの保険に使う市場（N5b）。"""
     alias = {k.upper(): v.upper() for k, v in ctx.perp_alias.items()}
     syms: set[str] = set()
     for r in conn.execute("SELECT info_json FROM feed_items WHERE source='merkl_opportunities'"):
@@ -198,6 +202,8 @@ def lighter_targets(conn: sqlite3.Connection, ctx: TrialContext) -> list[tuple[i
     top = sorted(markets, key=lambda m: -(m[2] or 0))[:LIGHTER_TOP_VOLUME]
     want = {int(m[0]): str(m[1]) for m in markets if str(m[1]).upper() in syms}
     want.update({int(m[0]): str(m[1]) for m in top})
+    active = {int(m[0]) for m in markets}
+    want.update({mid: sym for mid, sym in ctx.lighter_markets if mid in active})
     return sorted(want.items())
 
 

@@ -45,8 +45,14 @@ def main() -> None:
     from ..registry import llama_chain_names
     from .shadow import make_recorder
     from .trial import TrialContext
+    from ..tokens import load_tokens
+    book = load_tokens(root=config.root)
+    lighter = tuple(sorted({(r.market_id, r.symbol) for t in book.perp_alts for r in book.perp_candidates(t)
+                            if r.venue == "lighter"} | {(r.market_id, r.symbol) for r in book.perps.values()
+                                                       if r.venue == "lighter"}))
     tctx = TrialContext(chain_ids=tuple(coins), llama_chains=llama_chain_names(config.chains, config.root),
-                        perp_alias=dict(config.opportunities.perp_alias), shadow=make_recorder(config))
+                        perp_alias=dict(config.opportunities.perp_alias), shadow=make_recorder(config),
+                        lighter_markets=lighter)
     runner = FeedRunner(fs, coin_chains=coins, receipt_ctx=ctx, trial_ctx=tctx)
     lock = threading.Lock()                            # 同時に2つ読まない（回数制限とパソコンの負荷のため）
 

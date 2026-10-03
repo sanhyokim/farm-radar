@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -248,6 +248,36 @@ try {
         Say "[試す] Aero の住所のファイル: $((@($f.aero_addresses) | ForEach-Object { $_.name }) -join ', ')"
     } catch {
         Write-Host "   注意: 試すための記録の数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+    }
+
+    # N5b: さかのぼりの計算（今の版の写しで、見込みと実際を比べる。最初の1回は数十秒〜数分かかる）
+    try {
+        Step '9/9 の続き: さかのぼりの計算（数分かかることがあります）'
+        $bk = Invoke-RestMethod "$NewApi/api/trial/backtest" -TimeoutSec 900
+        if (-not $bk.present) { Say "[さかのぼり] $($bk.text)" } else {
+            $r = $bk.result
+            $dd = @($r.days)
+            Say "[さかのぼり] プール $($r.pools) / プールと日の組 $($r.pool_days) / 日 $($dd.Count)（$($dd[0]) 〜 $($dd[-1])）"
+            function BtPct($x, $d = 2) { if ($null -eq $x) { '-' } else { [math]::Round([double]$x * 100, $d) } }
+            function BtNum($x, $d = 2) { if ($null -eq $x) { '-' } else { [math]::Round([double]$x, $d) } }
+            foreach ($g in @($r.ranges.all)) {
+                Say ("   幅 ±{0}%（プールと日 {1}件）: 置き直し {2}/{3} 回/日（合 {4}%） 幅の中 {5}/{6}% 値動きの損 {7}/{8}%（実際の値動きで式 {9}%。合 {10}%） 費用 {11}/{12}%" -f `
+                    $g.r_pct, $g.days, (BtNum $g.rebalances.pred), (BtNum $g.rebalances.real), (BtPct $g.rebalances.ok_share 0), `
+                    (BtPct $g.in_range.pred 1), (BtPct $g.in_range.real 1), (BtPct $g.gamma.pred 3), (BtPct $g.gamma.real 3), (BtPct $g.gamma.formula_real_sigma 3), `
+                    (BtPct $g.gamma.ok_share 0), (BtPct $g.cost.pred 3), (BtPct $g.cost.real 3))
+            }
+            foreach ($x in @($r.funding)) { Say ("   資金調達 {0}（{1}日）: 見込み {2}/実際 {3} %/日（合 {4}%）" -f $x.perp, $x.days, (BtPct $x.pred 4), (BtPct $x.real 4), (BtPct $x.ok_share 0)) }
+            foreach ($x in @($r.margins)) { Say ("   預け金 {0}: いちばんの上げ {1}%（{2}日の記録。耐える {3}%）/ 15分の飛び {4}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 1), $x.withstand_pct, (BtNum $x.jump_up_pct 1)) }
+            $c1 = $r.stage1.counts
+            Say "[さかのぼり 段階1] プールのお金 1時間で -20%: $($c1.'20') 回 / -30%: $($c1.'30') 回 / -40%: $($c1.'40') 回 / -50%: $($c1.'50') 回"
+            foreach ($x in @($r.stage2_reward.tokens)) {
+                $e = $x.events
+                Say "[さかのぼり 段階2] $($x.symbol) 24時間で -10%: $(@($e.'-10').Count) 回 / -15%: $(@($e.'-15').Count) 回 / -20%: $(@($e.'-20').Count) 回 / -25%: $(@($e.'-25').Count) 回"
+            }
+            Say "[さかのぼり 投げ売り] 合図が出たコイン: $(@($r.stage2_dump.tokens).Count)"
+        }
+    } catch {
+        Write-Host "   注意: さかのぼりの計算を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
     }
 
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
