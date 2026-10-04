@@ -179,6 +179,10 @@ def check_campaign(conn: sqlite3.Connection, c: sqlite3.Row, coins_key: str | No
             "weights": {"fee": w_fee, "token": w_tok}, "out_of_range_paid": out_ok,
             "intervals": len({(r['start'], r['end']) for r in rows}), "pairs": len(rows),
             "pairs_in_range": len(ratios), "ratio_median": statistics.median(ratios) if ratios else None,
+            # 1つの区切りで、預け方1つがもらう割合（見込み・実際のまん中。N5d の画面）
+            "predicted_median": statistics.median([r["predicted"] for r in full]) if full else None,
+            "actual_median": statistics.median([r["actual"] for r in full]) if full else None,
+            "first": min((r["start"] for r in rows), default=None), "last": max((r["end"] for r in rows), default=None),
             "ratio_p25": _q(ratios, 0.25), "ratio_p75": _q(ratios, 0.75),
             "denominator_share_median": statistics.median(shares) if shares else None,
             "out_of_range_paid_share": _out_paid(rows), "skipped": skipped}
@@ -202,6 +206,7 @@ def check(conn: sqlite3.Connection, coins_keys: dict[int, str]) -> dict[str, Any
     if not all(_table(conn, t) for t in need):
         return {"campaigns": [], "errors": [], "ratio_median": None, "pairs_in_range": 0}
     out, errors = [], []
+    skipped: dict[str, int] = {}
     for c in conn.execute("SELECT * FROM merkl_campaigns WHERE type='UNISWAP_V4' AND settings_json LIKE '%weightFees%' "
                           "AND campaign_id IN (SELECT DISTINCT campaign_id FROM merkl_reward_totals)").fetchall():
         if c["chain_id"] not in coins_keys:
@@ -211,6 +216,8 @@ def check(conn: sqlite3.Connection, coins_keys: dict[int, str]) -> dict[str, Any
         except Exception as exc:  # noqa: BLE001  1つのキャンペーンの不良で、全体（/api/trial/records）を止めない
             errors.append({"campaign_id": c["campaign_id"], "error": f"{type(exc).__name__}: {exc}"[:200]})
             continue
+        for k, v in res["skipped"].items():
+            skipped[k] = skipped.get(k, 0) + v
         if res["pairs"]:
             out.append(res)
     all_ratios = [m for m in (x["ratio_median"] for x in out) if m is not None]
@@ -218,4 +225,5 @@ def check(conn: sqlite3.Connection, coins_keys: dict[int, str]) -> dict[str, Any
     return {"campaigns": sorted(out, key=lambda x: -x["pairs_in_range"]), "errors": errors,
             "ratio_median": statistics.median(all_ratios) if all_ratios else None,
             "denominator_share_median": statistics.median(all_shares) if all_shares else None,
-            "pairs_in_range": sum(x["pairs_in_range"] for x in out)}
+            "pairs_in_range": sum(x["pairs_in_range"] for x in out), "pairs": sum(x["pairs"] for x in out),
+            "skipped": skipped}

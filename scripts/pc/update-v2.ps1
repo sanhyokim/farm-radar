@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\merkl_check.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\merkl_check.py', 'backend\farm_radar\trial_view.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -440,6 +440,20 @@ try {
         }
     } catch {
         Write-Host "   注意: さかのぼりの計算を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+    }
+
+    # N5d: 試すの結果のまとめ（6つの項目の判定。確認できた・要注意・記録中）
+    try {
+        $ts = Invoke-RestMethod "$NewApi/api/trial/summary" -TimeoutSec 900
+        $sts = @($ts.sections.bonus.state, $ts.sections.rebalance.state, $ts.sections.price_loss.state) + `
+            @($ts.sections.costs.items | ForEach-Object { $_.state }) + @($ts.sections.hedge.funding_main.state, $ts.sections.hedge.margins.state) + `
+            @($ts.sections.early_exit.rows | ForEach-Object { $_.state })
+        $cnt = @{ ok = 0; warn = 0; rec = 0 }
+        foreach ($x in $sts) { if ($x) { $cnt[$x.code]++ } }
+        Say ("[試すの結果] 確認できた {0} / 要注意 {1} / 記録中 {2}（画面: http://localhost:18001/learn/trial）" -f $cnt.ok, $cnt.warn, $cnt.rec)
+        Say ("[試すの結果] ① Merkl: {0}  ② 置き直し: {1}" -f $ts.sections.bonus.state.why, $ts.sections.rebalance.state.why)
+    } catch {
+        Write-Host "   注意: 試すの結果のまとめを読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
     }
 
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す

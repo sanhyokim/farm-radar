@@ -11,6 +11,7 @@ import Practice from "./pages/Practice";
 import PracticeDetail from "./pages/PracticeDetail";
 import { TimelinePage } from "./pages/PaperExtras";
 import Learn from "./pages/Learn";
+import Trial from "./pages/Trial";
 import Explore from "./pages/Explore";
 import ExploreDetail from "./pages/ExploreDetail";
 import Guard from "./pages/Guard";
@@ -51,6 +52,7 @@ export default function App() {
             <Route path="/practice/timeline" element={<TimelinePage />} />
             <Route path="/practice/:id" element={<PracticeDetail />} />
             <Route path="/learn" element={<Learn />} />
+            <Route path="/learn/trial" element={<Trial />} />
             <Route path="*" element={<Home />} />
           </Routes>
         </main>

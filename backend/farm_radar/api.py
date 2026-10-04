@@ -183,6 +183,26 @@ def trial_backtest_api() -> dict:
     return backtest.cached(config.database_path.parent, config, config.feeds.database_path)
 
 
+@app.get("/api/trial/summary")
+def trial_summary_api() -> dict:
+    """N5d「試す」の結果のまとめ: 6つの項目（見込み・実際・差・判定・記録中か）と比べる相手。
+    新しい記録は作らない（さかのぼり・Merkl の答え合わせ・練習の記録を並べ直すだけ）。"""
+    from . import backtest, trial_records, trial_view
+    from .registry import coin_chains
+
+    with _open() as (config, conn):
+        try:
+            bt = backtest.cached(config.database_path.parent, config, config.feeds.database_path)
+        except Exception as exc:  # noqa: BLE001  さかのぼりが落ちても、ほかの項目は出す
+            bt = {"present": False, "text": f"さかのぼりの計算ができませんでした（{type(exc).__name__}）。"}
+        trial = trial_records.summary(config.database_path.parent, config.feeds.database_path,
+                                      coin_chains(config.chains, config.root))
+        now = _now()
+        practice = trial_view.practice_rows(conn, now, config.risk)
+        return trial_view.build(bt, trial, trial_view.guard_bits(conn, config), practice,
+                                float(config.scoring.total_capital_usd))
+
+
 @app.get("/api/registry")
 def registry_api() -> dict:
     """登録の一覧（N1）: 系統 ＞ チェーン ＞ 会場。問題があれば problems に出す。"""
