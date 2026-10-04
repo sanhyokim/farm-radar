@@ -206,7 +206,7 @@ WETH/USDG の確かめ（チェーンの記録: Robinhood Chain の公開の読�
 - update-v2.ps1 の行: 値段が動いていないプールに 手数料の段・同じ組のほかのプール、[値動きが急に大きくなった]、[Lighter RH版]、[守る] 足したとしたら。
 - テスト: test_n5d.py（6件）、test_n5b の空欄・同じ組・中身の印のテスト。全部で 417 件通った（作業場所）。
 
-RH版の数字で見込む（PR #35 のあと。次の PR。2026-10-04 午後 JST）:
+RH版の数字で見込む（PR #35 に足した。2026-10-04 午後 JST）:
 - 探す: FeedData.perps_rh（lighter_rh_markets・lighter_rh_funding_snaps・lighter_rh_funding_history。記号で本体の市場と結ぶ）。
   perp(symbol, chain_id) は、chain_id が opportunities.lighter_rh_chain_ids（config.yaml。[4663] = Robinhood Chain）で RH版に市場があれば RH版を返す。
   Merkl の入れる先（evaluate_merkl）と up. の入れる先（evaluate_own。資金調達料と手数料を RH版に差し替え）の両方。Base は本体のまま。
@@ -221,7 +221,7 @@ RH版の数字で見込む（PR #35 のあと。次の PR。2026-10-04 午後 JS
 
 N5 の現在地と次:
 - 済み: N5a（記録を集める）、N5b（さかのぼり）、段階1の2段、預け金 A・資金調達料 B、①A・②A（読み取り）・③A（記録）。
-- 次: ② の見込みを RH版の数字に切り替える（作業場所でできた。上の「RH版の数字で見込む」。PR #35 のマージのあとに出す）。練習の資金調達料の積み上げも RH版に。
+- 次: ② の見込みを RH版の数字に切り替える（できた。上の「RH版の数字で見込む」。PR #35 に入っている）。練習の資金調達料の積み上げも RH版に。
   そのあと N5c（Merkl のボーナスが「全員」か「幅の中だけ」かの答え合わせ）、比べる相手（何もしない／貸し出し／広く置きっぱなし）、N5d。
 - 置き直しの見込みの直しは、記録が7日たまってから（前と後を並べて出す）。
 
