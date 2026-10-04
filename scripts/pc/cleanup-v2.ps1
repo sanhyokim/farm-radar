@@ -14,7 +14,11 @@ param(
     # 2026-10-02 23:15 JST オーナー「この3つは消してかまいません」、23:34 JST「farm-radar-v2-old-20261002-2258 を消す手順をください」
     # （-File で渡すと配列が1つの文字になるので、カンマで区切った1つの文字でも受け取る）
     [string[]]$Names = @('farm-radar-v2-failed-20261002-2248', 'farm-radar-v2-old', 'farm-radar-v2-n2b-old', 'farm-radar-v2-old-20261002-2258'),
-    [string]$Docker = 'docker'
+    [string]$Docker = 'docker',
+    # 2026-10-04 オーナーの決まり「控えは1つだけ残す。更新がうまくいったら、次の1行で前の控えを消す」。
+    # 名前を前もって知らないときに使う: farm-radar-v2-old-（8けたの日付）-（4けたの時刻）の形のフォルダーのうち、
+    # いちばん新しい1つを残して、ほかを消す。消す前に名前を並べ、y を押したときだけ消す（ほかのキーなら止まる）
+    [switch]$OldBackups
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +37,12 @@ function Projects {
 }
 
 $Names = @($Names | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($OldBackups) {
+    $bk = @(Get-ChildItem -LiteralPath $Desk -Directory | Where-Object { $_.Name -cmatch '^farm-radar-v2-old-\d{8}-\d{4}$' } |
+            ForEach-Object { $_.Name } | Sort-Object)
+    $Names = @(if ($bk.Count -gt 1) { $bk[0..($bk.Count - 2)] } else { @() })
+    Write-Host "   控え: $($bk -join ', ')（いちばん新しい $(if ($bk.Count) { $bk[-1] } else { 'なし' }) は残します）"
+}
 
 try {
     Write-Host 'もう使わないフォルダーを消します。今の版（18000）と新しい版（18001）には触りません。'
@@ -46,6 +56,10 @@ try {
     }
     $targets = @($Names | Where-Object { Test-Path -LiteralPath (Join-Path $Desk $_) })
     foreach ($n in $Names) { if ($targets -contains $n) { Write-Host "   消す: $n" } else { Write-Host "   もう無い: $n" } }
+    if ($OldBackups -and $targets.Count -gt 0) {
+        $ans = Read-Host '   上の「消す」のフォルダーを消してよければ y を押して Enter（ほかのキーなら何も消さずに止めます）'
+        if ($ans -ne 'y') { throw '消すのをやめました（y 以外が押されました）。' }
+    }
 
     Step '片付け 2/3 docker が使っていないか確かめる（何も変えません）'
     foreach ($p in Projects) {

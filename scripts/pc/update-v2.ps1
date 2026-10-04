@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\merkl_check.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
