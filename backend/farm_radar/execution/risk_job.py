@@ -549,7 +549,7 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
                         contract_changes=tuple(contract_changes or ()))
     events: list[int] = []
     target = target_apr_pct(conn, config)
-    mmf_table = hedge_guard._mmf_table(config.feeds.database_path)
+    mmf_table = hedge_guard._mmf_table(config.feeds.database_path, hedge_guard.use_rh(config))
 
     # 全体の緊急離脱（会場プログラムの変化・USDG・今日の損）
     for f in check_portfolio(pf, s):

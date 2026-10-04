@@ -20,6 +20,7 @@ from .execution.review import make_review
 from .external.geckoterminal import GeckoTerminal
 from . import hedges as hedge_mod
 from .logging_setup import setup_logging
+from .execution import hedge_guard
 from .execution.jobs import run_paper
 from .notify.events import detect_signal_changes
 from .notify.service import Notifier
@@ -146,7 +147,8 @@ def main() -> None:
                                reserve_usd=_reserve(config, v.venue["chain"]["id"]),
                                mmf_fallback=config.guard.hedge_mmf_fallback, lighter_db=config.feeds.database_path,
                                per_market=config.opportunities.hedge_withstand_mode == "per_market",
-                               stay_days=config.opportunities.stay_days),
+                               stay_days=config.opportunities.stay_days,
+                               rh=hedge_guard.use_rh(config, v.venue["chain"].get("chain_id"))),
         )
         for v in venues
     ]

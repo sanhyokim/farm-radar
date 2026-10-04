@@ -42,43 +42,80 @@ def margin_of(pos: sqlite3.Row | dict[str, Any], config: Config) -> float:
     return float(pos["capital"]) * config.scoring.allocation_hedge_margin if hedges else 0.0
 
 
-def _mmf_table(path: Path) -> dict[int, float]:
-    if not path.exists():
+# --- Lighter の使い分け（2026-10-04 オーナー決定 ②A。SPEC 13.1 の追加の決定 19） ---------------------------------
+# 練習の建玉は本体の市場の番号で保険を持つ。Robinhood Chain のプールなら、同じ記号の市場が Lighter の Robinhood Chain 版に
+# あれば、維持の割合・最初に要る割合・耐える上げ幅をその版の数字にする（番号は本体のまま。表の中身だけ入れ替える）。
+
+def use_rh(config: Config, chain_id: int | None = None) -> bool:
+    """このチェーンのプールの保険を RH版の数字で見るか。chain_id を省くと練習の会場のチェーン（今は Robinhood Chain）。"""
+    ids = config.opportunities.lighter_rh_chain_ids
+    if not ids:
+        return False
+    if chain_id is None:
+        try:
+            from ..registry import load_chain
+            chain_id = int(load_chain(config.chains[0], config.root)["chain_id"])
+        except Exception:  # noqa: BLE001  分からなければ本体
+            return False
+    return int(chain_id) in ids
+
+
+def rh_markets(conn: sqlite3.Connection) -> dict[int, tuple[int, Any, Any]]:
+    """本体の市場の番号 → RH版の同じ記号の市場（動いているものだけ）の (番号, 最初に要る割合, 維持の割合)。"""
+    try:
+        rows = conn.execute("SELECT m.market_id, r.market_id, r.initial_margin_fraction, r.maintenance_margin_fraction "
+                            "FROM lighter_markets m JOIN lighter_rh_markets r ON UPPER(r.symbol) = UPPER(m.symbol) "
+                            "WHERE r.status = 'active'").fetchall()
+    except sqlite3.Error:
         return {}
+    return {int(r[0]): (int(r[1]), r[2], r[3]) for r in rows}
+
+
+def _read(path: Path, fn: Any) -> Any:
+    if not path.exists():
+        return None
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
         try:
-            rows = conn.execute("SELECT market_id, maintenance_margin_fraction FROM lighter_markets").fetchall()
+            return fn(conn)
         finally:
             conn.close()
     except sqlite3.Error:
-        return {}
-    return {int(m): float(v) / 10000 for m, v in rows if m is not None and v is not None}
+        return None
+
+
+def _mmf_table(path: Path, rh: bool = False) -> dict[int, float]:
+    def go(conn: sqlite3.Connection) -> dict[int, float]:
+        rows = conn.execute("SELECT market_id, maintenance_margin_fraction FROM lighter_markets").fetchall()
+        out = {int(m): float(v) / 10000 for m, v in rows if m is not None and v is not None}
+        if rh:
+            out.update({m: float(v) / 10000 for m, (_, _, v) in rh_markets(conn).items() if v is not None})
+        return out
+    return _read(path, go) or {}
 
 
 def mmf_for(config: Config, market_id: int | None, table: dict[int, float] | None = None) -> tuple[float, bool]:
     """維持の割合と、それが Lighter から読んだ値か（False なら仮の値）。"""
-    table = _mmf_table(config.feeds.database_path) if table is None else table
+    table = _mmf_table(config.feeds.database_path, use_rh(config)) if table is None else table
     if market_id is not None and int(market_id) in table:
         return table[int(market_id)], True
     return config.guard.hedge_mmf_fallback, False
 
 
-def lighter_margin_table(path: Path) -> dict[int, tuple[float | None, float | None]]:
-    """Lighter の銘柄ごとの (最初に要る割合, 維持の割合)。feeds の lighter_markets（API の値 ÷ 10000）。"""
-    if not path.exists():
-        return {}
-    try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
-        try:
-            rows = conn.execute("SELECT market_id, initial_margin_fraction, maintenance_margin_fraction "
-                                "FROM lighter_markets").fetchall()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return {}
-    return {int(m): (None if i is None else float(i) / 10000, None if v is None else float(v) / 10000)
-            for m, i, v in rows if m is not None}
+def lighter_margin_table(path: Path, rh: bool = False) -> dict[int, tuple[float | None, float | None]]:
+    """Lighter の銘柄ごとの (最初に要る割合, 維持の割合)。feeds の lighter_markets（API の値 ÷ 10000）。
+    rh なら、RH版にある市場は RH版の値（番号は本体のまま）。"""
+    def frac(x: Any) -> float | None:
+        return None if x is None else float(x) / 10000
+
+    def go(conn: sqlite3.Connection) -> dict[int, tuple[float | None, float | None]]:
+        rows = conn.execute("SELECT market_id, initial_margin_fraction, maintenance_margin_fraction "
+                            "FROM lighter_markets").fetchall()
+        out = {int(m): (frac(i), frac(v)) for m, i, v in rows if m is not None}
+        if rh:
+            out.update({m: (frac(i), frac(v)) for m, (_, i, v) in rh_markets(conn).items() if v is not None})
+        return out
+    return _read(path, go) or {}
 
 
 def margin_need(imf: float | None, mmf: float | None, withstand_rise: float) -> float:
@@ -95,15 +132,24 @@ def margin_need(imf: float | None, mmf: float | None, withstand_rise: float) -> 
 # いちばん上がった幅」を出し、それと opportunities.hedge_withstand_rise_pct（50%）の大きい方に耐えるだけ預ける。
 # 値段の過去がまだない市場は 50%。計算は1時間に1回まで（足は1日1回しか増えない）。
 WITHSTAND_TTL_S = 3600
-_withstand_cache: dict[tuple[str, float], tuple[float, dict[int, float]]] = {}
+_withstand_cache: dict[tuple[str, float, bool], tuple[float, dict[int, float]]] = {}
 
 
-def withstand_from_conn(conn: sqlite3.Connection, window_s: float) -> dict[int, float]:
-    """市場ごとの、window_s のうちにいちばん上がった幅（割合。0.584 = 58.4%）。"""
+def withstand_from_conn(conn: sqlite3.Connection, window_s: float, table: str = "lighter_price_history",
+                        rh: bool = False) -> dict[int, float]:
+    """市場ごとの、window_s のうちにいちばん上がった幅（割合。0.584 = 58.4%）。
+    rh なら、RH版にある市場は RH版の値段の過去でも出し、本体と大きい方をとる（同じ株・コインなので安全側。番号は本体）。"""
     from ..backtest import max_rise_hl       # backtest は scoring を読むので、ここで読む（循環を避ける）
 
+    if rh:
+        out = withstand_from_conn(conn, window_s)
+        rh_table = withstand_from_conn(conn, window_s, "lighter_rh_price_history")
+        for main_id, (rh_id, _, _) in rh_markets(conn).items():
+            if rh_id in rh_table:
+                out[main_id] = max(out.get(main_id, 0.0), rh_table[rh_id])
+        return out
     try:
-        rows = conn.execute("SELECT market_id, ts, high, low, close FROM lighter_price_history WHERE high IS NOT NULL "
+        rows = conn.execute(f"SELECT market_id, ts, high, low, close FROM {table} WHERE high IS NOT NULL "
                             "AND low IS NOT NULL AND close IS NOT NULL ORDER BY market_id, ts").fetchall()
     except sqlite3.Error:
         return {}
@@ -118,8 +164,8 @@ def withstand_from_conn(conn: sqlite3.Connection, window_s: float) -> dict[int, 
     return out
 
 
-def withstand_table(path: Path, window_days: float) -> dict[int, float]:
-    key = (str(path), float(window_days))
+def withstand_table(path: Path, window_days: float, rh: bool = False) -> dict[int, float]:
+    key = (str(path), float(window_days), rh)
     hit = _withstand_cache.get(key)
     if hit and time.monotonic() - hit[0] < WITHSTAND_TTL_S:
         return hit[1]
@@ -128,7 +174,7 @@ def withstand_table(path: Path, window_days: float) -> dict[int, float]:
         try:
             conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
             try:
-                table = withstand_from_conn(conn, window_days * 86400)
+                table = withstand_from_conn(conn, window_days * 86400, rh=rh)
             finally:
                 conn.close()
         except sqlite3.Error:
@@ -143,14 +189,14 @@ def withstand_for(config: Config, market_id: int | None, table: dict[int, float]
     floor = op.hedge_withstand_rise_pct / 100
     if op.hedge_withstand_mode != "per_market" or market_id is None:
         return floor
-    table = withstand_table(config.feeds.database_path, op.stay_days) if table is None else table
+    table = withstand_table(config.feeds.database_path, op.stay_days, use_rh(config)) if table is None else table
     return max(floor, table.get(int(market_id), 0.0))
 
 
 def need_for(config: Config, hedge_id: str | None, market_id: int | None,
              table: dict[int, tuple[float | None, float | None]] | None = None) -> dict[str, Any]:
     """この保険の売り1ドルあたりに預けるお金と、その元の数字。Lighter の値が読めなければ維持の割合は仮の値。"""
-    table = lighter_margin_table(config.feeds.database_path) if table is None else table
+    table = lighter_margin_table(config.feeds.database_path, use_rh(config)) if table is None else table
     imf = mmf = None
     if (hedge_id or "lighter") == "lighter" and market_id is not None and int(market_id) in table:
         imf, mmf = table[int(market_id)]

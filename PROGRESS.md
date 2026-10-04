@@ -206,9 +206,22 @@ WETH/USDG の確かめ（チェーンの記録: Robinhood Chain の公開の読�
 - update-v2.ps1 の行: 値段が動いていないプールに 手数料の段・同じ組のほかのプール、[値動きが急に大きくなった]、[Lighter RH版]、[守る] 足したとしたら。
 - テスト: test_n5d.py（6件）、test_n5b の空欄・同じ組・中身の印のテスト。全部で 417 件通った（作業場所）。
 
+RH版の数字で見込む（PR #35 のあと。次の PR。2026-10-04 午後 JST）:
+- 探す: FeedData.perps_rh（lighter_rh_markets・lighter_rh_funding_snaps・lighter_rh_funding_history。記号で本体の市場と結ぶ）。
+  perp(symbol, chain_id) は、chain_id が opportunities.lighter_rh_chain_ids（config.yaml。[4663] = Robinhood Chain）で RH版に市場があれば RH版を返す。
+  Merkl の入れる先（evaluate_merkl）と up. の入れる先（evaluate_own。資金調達料と手数料を RH版に差し替え）の両方。Base は本体のまま。
+  耐える上げ幅は、RH版の値段の過去と本体の値段の過去の大きい方（同じ株・コイン。RH版の過去が短いあいだも安全側）。
+  hedge_markets に book（rh / main）と rh_market_id。詳しい画面に「保険の売り場: WETH → ETH（Lighter の Robinhood Chain 版）」。
+- 練習: hedge_guard.use_rh（練習の会場のチェーン）、_mmf_table・lighter_margin_table・withstand_table に rh（番号は本体のまま、中身を RH版に）。
+  risk_job（預け金の余裕）・paper の need_for（保険に預ける額）・scoring の MarginBasis.rh（分け方）が使う。
+- まだ本体のまま: 練習の資金調達料の積み上げ（paper._funding は collector の funding_rates）と、scoring の保険の資金調達料（hedge adapter）。
+  N6（練習の比べ）の前に、RH版の資金調達率で積み上げるようにする。
+- update-v2.ps1: [Lighter RH版] 探すの保険の見込み: RH版の数字 N 件 / 本体の数字 M 件。
+- テスト: test_n5d.py に2件（探すの使い分け、練習の表）。作業場所で 419 件通った。
+
 N5 の現在地と次:
 - 済み: N5a（記録を集める）、N5b（さかのぼり）、段階1の2段、預け金 A・資金調達料 B、①A・②A（読み取り）・③A（記録）。
-- 次: ② の見込みを RH版の数字に切り替える（RH版にある市場は RH版の資金調達率・維持の割合・値段の過去で耐える上げ幅）。
+- 次: ② の見込みを RH版の数字に切り替える（作業場所でできた。上の「RH版の数字で見込む」。PR #35 のマージのあとに出す）。練習の資金調達料の積み上げも RH版に。
   そのあと N5c（Merkl のボーナスが「全員」か「幅の中だけ」かの答え合わせ）、比べる相手（何もしない／貸し出し／広く置きっぱなし）、N5d。
 - 置き直しの見込みの直しは、記録が7日たまってから（前と後を並べて出す）。
 

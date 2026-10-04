@@ -186,3 +186,66 @@ def test_risk_run_writes_a_topup_event_and_guard_summary_shows_it(world, calm): 
     from farm_radar import guard
     s = guard.summary(conn, _config(path), NOW + timedelta(hours=2))
     assert s["topups"][0]["count"] == 1 and s["topup_line_frac"] == 0.5
+
+
+# --- ②A RH版の数字で見込む -------------------------------------------------------------------------------
+
+def _two_books(tmp_path):
+    from farm_radar.config import load_config
+    conn = store.connect(tmp_path / "f.sqlite3")
+    ts = "2026-10-04T06:00:00+00:00"
+    store.write_lighter_markets(conn, ts, [
+        sources.Item("0", "ETH", None, {"status": "active", "imf": 200, "mmf": 120, "taker_pct": 0.0}),
+        sources.Item("139", "SNDK", None, {"status": "active", "imf": 666, "mmf": 300, "taker_pct": 0.0}),
+        sources.Item("150", "NBIS", None, {"status": "active", "imf": 1000, "mmf": 600, "taker_pct": 0.0})])
+    store.write_lighter_rh_markets(conn, ts, sources.lighter_markets(RH_BOOK_DETAILS))
+    store.write_lighter_funding(conn, ts, [sources.Item("0", "ETH", None, {"rate_8h": -0.0001}),
+                                           sources.Item("139", "SNDK", None, {"rate_8h": -0.0001}),
+                                           sources.Item("150", "NBIS", None, {"rate_8h": -0.0001})])
+    store.write_lighter_funding(conn, ts, [sources.Item("0", "ETH", None, {"rate_8h": -0.0004}),
+                                           sources.Item("32", "SNDK", None, {"rate_8h": -0.0004})],
+                                "lighter_rh_funding_snaps")
+    # 値段の過去: 本体の SNDK は14日で +60%、RH版の SNDK は +80%（RH版のほうが大きい）
+    t0 = int(datetime(2026, 9, 25, tzinfo=UTC).timestamp())
+    for table, mid, top in (("lighter_price_history", 139, 160.0), ("lighter_rh_price_history", 32, 180.0)):
+        for h in range(48):
+            px = 100.0 if h < 24 else top
+            conn.execute(f"INSERT INTO {table}(market_id, ts, symbol, open, high, low, close) VALUES (?,?,?,?,?,?,?)",
+                         (mid, t0 + h * 3600, "SNDK", px, px, px, px))
+    conn.commit()
+    return conn, load_config()
+
+
+def test_robinhood_pools_use_the_rh_lighter_numbers_and_base_pools_use_main(tmp_path):
+    conn, cfg = _two_books(tmp_path)
+    assert cfg.opportunities.lighter_rh_chain_ids == (4663,)
+    data = opps.FeedData(conn, cfg, datetime(2026, 10, 4, 7, tzinfo=UTC))
+    rh = data.perp("SNDK", chain_id=4663)
+    main = data.perp("SNDK", chain_id=8453)
+    assert rh["book"] == "rh" and rh["rh_market_id"] == 32 and rh["market_id"] == 139
+    assert rh["mmf"] == 0.06 and main["mmf"] == 0.03                    # 維持の割合は RH版 6%、本体 3%
+    assert rh["funding_daily"] == pytest.approx(0.0012) and main["funding_daily"] == pytest.approx(0.0003)
+    assert main["book"] == "main"
+    # 耐える上げ幅: RH版の過去（+80%）と本体の過去（+60%）の大きい方
+    assert data.withstand(rh) == pytest.approx(0.8) and data.withstand(main) == pytest.approx(0.6)
+    # RH版にない市場（NBIS）は、Robinhood Chain のプールでも本体
+    assert data.perp("NBIS", chain_id=4663)["book"] == "main"
+    assert data.perp("WETH", chain_id=4663)["book"] == "rh"               # 別名（WETH → ETH）でも RH版
+    assert data.perp("WETH")["book"] == "main"                            # チェーンが分からなければ本体
+
+
+_REAL_MARGIN_TABLE = hedge_guard.lighter_margin_table      # conftest が作業場所の値を読まないように差し替える前のもの
+
+
+def test_practice_margin_tables_switch_to_rh_for_robinhood(tmp_path, monkeypatch):
+    from farm_radar.execution import hedge_guard as hg
+    monkeypatch.setattr(hg, "lighter_margin_table", _REAL_MARGIN_TABLE)
+    conn, cfg = _two_books(tmp_path)
+    conn.close()
+    path = tmp_path / "f.sqlite3"
+    assert hg._mmf_table(path)[139] == 0.03 and hg._mmf_table(path, True)[139] == 0.06
+    assert hg._mmf_table(path, True)[150] == 0.06                       # NBIS は本体のまま（本体も 6%）
+    assert hg.lighter_margin_table(path, True)[139] == (0.5, 0.06)
+    assert hg.withstand_table(path, 14, True)[139] == pytest.approx(0.8)
+    assert hg.withstand_table(path, 14)[139] == pytest.approx(0.6)
+    assert hg.use_rh(cfg) and hg.use_rh(cfg, 4663) and not hg.use_rh(cfg, 8453)

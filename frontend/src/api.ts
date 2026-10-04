@@ -114,6 +114,8 @@ export interface Opportunity {
   best: OppVariant | null; above_target: boolean | null; over_cap: boolean;
   recommended?: boolean | null;   // 練習のおすすめ（狙い以上で、会場の見分けが確か。2026-10-02 23:15 JST）
   safety: Safety; venue_safety: Safety | null;
+  /** 保険に使う売り場。book = "rh" は Lighter の Robinhood Chain 版、"main" は本体（2026-10-04 ②A） */
+  hedge_markets?: { coin: string; symbol: string; market_id: number | null; book?: "rh" | "main"; rh_market_id?: number | null }[];
 }
 /** 危なさの点数（N4a。N2c の「安全度」を置きかえた。点が多いほど危ない。重みと区切りは仮） */
 export interface SafetyPart { key: string; label: string; points: number; note: string }

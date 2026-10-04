@@ -490,6 +490,8 @@ class OpportunitySettings:
     # 悪い方（払う額が大きい方）を使う。0 なら使わない（7日だけ）
     funding_cautious_days: float = 30.0
     vol_jump_ratio: float = 1.5       # 直近24時間の値動きが7日のこの倍をこえたら「値動きが急に大きくなった」（2026-10-04 ①A）
+    # このチェーンのプールの保険は、Lighter の Robinhood Chain 版にその市場があれば、そちらの数字で見込む（2026-10-04 ②A）。空なら本体だけ
+    lighter_rh_chain_ids: tuple[int, ...] = (4663,)
     # 予備はガス代の分だけ（チェーンごとのドル。2026-10-02 13:44 JST オーナー決定。額は仮）
     reserve_usd: dict[str, float] = field(default_factory=lambda: {"robinhood": 20.0, "base": 10.0})
     # 値段の記録がないボーナスのコイン: 控えめの見込みで、この%だけ月に下がるとみなす（2026-10-02 オーナー決定。仮）
@@ -527,6 +529,7 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             hedge_withstand_mode=str(o.get("hedge_withstand_mode", d.hedge_withstand_mode)),
             funding_cautious_days=float(o.get("funding_cautious_days", d.funding_cautious_days)),
             vol_jump_ratio=float(o.get("vol_jump_ratio", d.vol_jump_ratio)),
+            lighter_rh_chain_ids=tuple(int(x) for x in (o.get("lighter_rh_chain_ids", d.lighter_rh_chain_ids) or ())),
             reserve_usd={str(k): float(v) for k, v in (o.get("reserve_usd") or d.reserve_usd).items()},
             unknown_reward_drop_monthly_pct=float(o.get("unknown_reward_drop_monthly_pct",
                                                         d.unknown_reward_drop_monthly_pct)),

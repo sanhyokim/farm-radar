@@ -66,6 +66,12 @@ export default function ExploreDetail() {
               empty={noHedgeMarket ? "保険の売り場（Lighter）がない" : "値動きしないコインだけなので、保険はいらない"} />
           </div>
         )}
+        {(o.hedge_markets ?? []).length > 0 && (
+          <p className="cap text-sec">
+            保険の売り場: {(o.hedge_markets ?? []).map(h =>
+              `${h.coin} → ${h.symbol}（${h.book === "rh" ? "Lighter の Robinhood Chain 版" : "Lighter 本体"}）`).join("、")}
+          </p>
+        )}
       </section>
 
       <TryCard data={data} />

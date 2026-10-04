@@ -279,6 +279,12 @@ try {
                 Say ("   {0}: 値段 RH {1} / 本体 {2}・維持の割合 RH {3}% / 本体 {4}%・売りの資金調達料（年、7日。プラス = 払う）RH {5}% / 本体 {6}%・過去 値段 {7} 点 / 資金調達率 {8} 点" -f `
                     $x.symbol, $x.price_rh, $x.price_main, $x.mmf_rh_pct, $x.mmf_main_pct, $fr, $fm, $x.price_points, $x.funding_points)
             }
+            # 探すの見込みで、どちらの Lighter の数字を使ったか（Robinhood Chain のプールで RH版にある市場は RH版）
+            if ($o) {
+                $hm = @($o.items | ForEach-Object { @($_.hedge_markets) } | Where-Object { $_ })
+                $nr = @($hm | Where-Object { $_.book -eq 'rh' }).Count
+                Say ("[Lighter RH版] 探すの保険の見込み: RH版の数字 {0} 件 / 本体の数字 {1} 件" -f $nr, ($hm.Count - $nr))
+            }
         } else { Say "[Lighter RH版] まだ読めていません" }
     } catch {
         Write-Host "   注意: 試すための記録の数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
