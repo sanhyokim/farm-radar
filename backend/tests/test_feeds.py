@@ -169,12 +169,16 @@ def test_runner_reads_only_the_cadence_asked(settings):
     pages = {s.url: [] for s in sources.SOURCES if s.page_size}
     texts["https://aero.xyz/articles/index.md"] = AERO_MD
     texts[sources.BY_ID["lighter_funding"].url] = "{}"
+    texts[sources.BY_ID["lighter_rh_markets"].url] = "{}"
+    texts[sources.BY_ID["lighter_rh_funding"].url] = "{}"
     texts["https://api.github.com/repos/dromos-labs/metadex-public/contents/deployment-addresses"] = "[]"
     r = FeedRunner(settings, FakeFetcher(pages=pages, texts=texts))
     out = r.run("hourly", NOW)
-    # N5a: Aero の公式の住所と影の記録も1時間に1回（影の記録は設定が渡っていなければ何も作らない）
+    # N5a: Aero の公式の住所と影の記録も1時間に1回（影の記録は設定が渡っていなければ何も作らない）。
+    # 2026-10-04 ②A: Lighter の Robinhood Chain 版の銘柄と資金調達率も1時間に1回
     assert [o["source"] for o in out] == ["aero_articles", "lighter_funding", "aero_addresses",
-                                          "shadow_predictions"] and out[0]["items"] == 2
+                                          "shadow_predictions", "lighter_rh_markets", "lighter_rh_funding"] \
+        and out[0]["items"] == 2
     out = r.run("daily", NOW)
     assert {o["source"] for o in out} == {s.id for s in sources.SOURCES if s.cadence == "daily"}
     assert r.run("daily", NOW + timedelta(minutes=30)) == []        # 今日はもう読んだ

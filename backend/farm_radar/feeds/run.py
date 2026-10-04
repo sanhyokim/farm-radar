@@ -167,6 +167,10 @@ def _read_trial(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, ctx:
         data, pages = trial.read_lighter_history(conn, fetcher.text, ctx, now)
     elif source.id == "lighter_price_history":
         data, pages = trial.read_lighter_prices(conn, fetcher.text, ctx, now)
+    elif source.id == "lighter_rh_funding_history":
+        data, pages = trial.read_lighter_history(conn, fetcher.text, ctx, now, trial.RH_BOOK)
+    elif source.id == "lighter_rh_price_history":
+        data, pages = trial.read_lighter_prices(conn, fetcher.text, ctx, now, trial.RH_BOOK)
     elif source.id == "aero_addresses":
         data, pages = trial.read_aero_addresses(fetcher.text)
     else:                                   # shadow_predictions
@@ -182,7 +186,7 @@ def _read_trial(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, ctx:
 
 
 TRIAL_SOURCES = ("merkl_rewards", "llama_yield_history", "lighter_funding_history", "lighter_price_history",
-                 "aero_addresses", "shadow_predictions")
+                 "aero_addresses", "shadow_predictions", "lighter_rh_funding_history", "lighter_rh_price_history")
 
 
 def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, settings: FeedSettings,
@@ -237,6 +241,14 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
         extra = store.write_lighter_markets(conn, seen_at, items)
     elif source.id == "lighter_funding":
         extra = store.write_lighter_funding(conn, seen_at, items)
+    elif source.id == "lighter_rh_markets":
+        extra = store.write_lighter_rh_markets(conn, seen_at, items)
+    elif source.id == "lighter_rh_funding":
+        extra = store.write_lighter_funding(conn, seen_at, items, "lighter_rh_funding_snaps")
+    elif source.id == "lighter_rh_funding_history":
+        extra = trial.write_lighter_history(conn, data, trial.RH_BOOK)
+    elif source.id == "lighter_rh_price_history":
+        extra = trial.write_lighter_prices(conn, data, trial.RH_BOOK)
     elif source.id in ("token_prices", "token_prices_30d"):
         extra = store.write_token_prices(conn, seen_at, data)
     elif source.id == "receipts":

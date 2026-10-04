@@ -110,6 +110,8 @@ def summary(conn: sqlite3.Connection, config: Config, now: datetime) -> dict[str
         # 段階1の合図のあとの「出ていたら／残っていたら」（2026-10-04 オーナー決定 A の追加1）
         "stage1_watch": risk_job.stage1_watch_rows(conn),
         "margin_log": risk_job.margin_log_rows(conn),
+        # 預け金を「足したとしたら」（2026-10-04 オーナー決定 ③A。本物のお金を始めるまでは記録だけ）
+        "topups": risk_job.topup_rows(conn), "topup_line_frac": config.guard.hedge_topup_buffer_frac,
         "hedges": [{"position_id": p["id"], "pair": c["pair"], "margin_usd": margins[p["id"]],
                     "status": hedge_guard.margin_status(conn, config, p)} for p, c in zip(rows, cards) if margins[p["id"]] > 0],
         "notes": ["チェーンごとの上限はまだ決めていません。全体の上限までの残りを出しています。",

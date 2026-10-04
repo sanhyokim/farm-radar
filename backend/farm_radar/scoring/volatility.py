@@ -57,6 +57,13 @@ def daily_sigma(returns: list[float], min_count: int = 24, per_day: float = 24) 
     return math.sqrt(sum(r * r for r in returns) / len(returns)) * math.sqrt(per_day)
 
 
+def recent_sigma(returns: list[tuple[int, float]], end: int, hours: int = 24, min_count: int = 12) -> float | None:
+    """直近 hours 時間の1時間ごとの変化だけで出した1日あたりの値動き（2026-10-04 オーナー決定 ①A）。
+    急に値動きが大きくなったコイン（例: WETH/MOO で 7日 19.3% → 実際 39.5%）に、7日の値より早く追いつくため。"""
+    rets = [r for t, r in returns if t > end - hours * HOUR]
+    return daily_sigma(rets, min_count=min_count)
+
+
 def jump_times(grid: list[tuple[int, float]], min_flat: int) -> set[int]:
     """値段が min_flat 秒以上まったく変わらなかったあと、最初に変わった区切りの時刻（N4b。2026-10-03 オーナー）。
 

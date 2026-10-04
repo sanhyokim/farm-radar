@@ -85,3 +85,39 @@ account:
       quote: 公開 API の応答で collateral・available_balance・positions の形を確認。見つからないアドレスは code 21100 "account not found"
   unverified:
     - 建玉（positions）がある口座の応答の形（sign が売り=-1 か）は、建玉のある口座で未確認
+
+robinhood_chain:
+  # Lighter の Robinhood Chain 版（別の取引所。2026-10-04 オーナー決定 ②A: この版にある市場は、こちらで保険をかける方針。
+  # ほかの市場と Base のプールは本体）。今は読むだけ。お金を動かすコード・署名・鍵はない（Phase 3a まで作らない）
+  api_base: https://api.rh.lighter.xyz/api/v1
+  collateral: USDG（Robinhood Chain のドルのコイン。本体は USDC）
+  separate_from_mainnet: '口座・残高・鍵・市場の番号は本体と別（例: NVDA は本体 110、この版 15）'
+  contract_unverified_here:
+    # 預け入れの契約の住所は公式の説明に書かれているが、このアプリは使わない（お金を動かさない）ので、Blockscout・Sourcify では確かめていない
+    address: "0x94bAB9693Ba2f6358507eFfcbd372b0660AFfF9d"
+    unverified: true
+    source_url: https://apidocs.lighter.xyz/docs/lighter-rh
+    checked_at: '2026-10-04'
+  read:
+    markets: /orderBookDetails（1時間に1回。status・maintenance_margin_fraction・default_initial_margin_fraction・min_initial_margin_fraction・mark_price）
+    funding: '/funding-rates の exchange=lighter（1時間に1回。本体と同じ単位: 8時間あたり、プラス = 買いが払う）'
+    history: /fundings・/candles（1日1回。up. の保険の市場のうち、この版にあるものだけ。最初は90日分）
+  units: >-
+    割合の欄は本体と同じ（÷10000）。default_initial_margin_fraction はこの版ではどの市場も 5000（50%。最初の倍率の決まりの値とみられる）、
+    min_initial_margin_fraction は本体と同じ形（ETH 200 = 2%）。預け金の式は「耐える上げ u（50% 以上）＋ (1+u) × 維持の割合」が
+    いつも大きいので、最初に要る割合の違いで預け金は変わらない
+  differences_seen:
+    # 2026-10-04 作業場所で読んだ値（Lighter の公開の記録）。保険に使う29市場のうち18市場がこの版にある
+    on_rh: [AAPL, AMD, AMZN, COIN, CRCL, ETH, GOOGL, INTC, META, MSFT, MU, NVDA, ORCL, QQQ, SNDK, SPCX, SPY, TSLA]
+    not_on_rh: [ASML, CBRS, DELL, EWY, IBM, MRNA, MRVL, MSTR, NBIS, NOW, RKLB]
+    maintenance_margin: SNDK・MU はこの版 6%（本体 3%）、QQQ はこの版 1.2%（本体 1.99%）。ほかの15市場は同じ
+  sources:
+    - url: https://apidocs.lighter.xyz/docs/lighter-rh
+      checked_at: '2026-10-04'
+      quote: Lighter on Robinhood Chain は別の取引所。預け金は USDG。口座・残高・鍵・番号は本体と共有されない
+    - url: https://docs.robinhood.com/chain/lighter-domains
+      checked_at: '2026-10-04'
+      quote: own contracts, sequencer, blockspace, and liquidity（Lighter Core とは別）
+    - url: https://api.rh.lighter.xyz/api/v1/orderBookDetails
+      checked_at: '2026-10-04'
+      quote: perp 58 市場。手数料 0%。ETH の maintenance_margin_fraction 120（1.2%）

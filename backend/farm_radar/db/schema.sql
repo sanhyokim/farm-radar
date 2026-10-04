@@ -358,3 +358,23 @@ CREATE TABLE IF NOT EXISTS hedge_margin_log (
   rebalances INTEGER          -- それまでの置き直しの回数
 );
 CREATE INDEX IF NOT EXISTS idx_hedge_margin_log_pos ON hedge_margin_log(position_id, ts);
+
+-- 預け金を「足したとしたら」の記録（2026-10-04 オーナー決定 ③A。本物のお金を始めるまでは実際には足さない）。
+-- 余裕（足したとしたらの分も入れて）がはじめの guard.hedge_topup_buffer_frac（仮 50%）を切ったら、はじめの余裕に戻す額を1回と数える。
+-- 足すお金はプールから一部出すとみなす。値動きするコインも同じ割合で減るので、売り（保険）もその量に合わせて減らす
+CREATE TABLE IF NOT EXISTS hedge_topup_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER NOT NULL,
+  ts TEXT NOT NULL,
+  buffer_frac REAL,           -- 足す前の余裕 ÷ はじめの余裕（前に足したとしたらの分も入れて）
+  line_frac REAL,             -- 足す線（仮 0.5）
+  topup_usd REAL,             -- 足す額（はじめの余裕まで戻す）
+  pool_usd REAL,              -- そのときのプールの側のお金
+  volatile_before_usd REAL,   -- プールの中の値動きするコイン（足す前）
+  volatile_after_usd REAL,    -- 同じ（プールから足す分を出したあと）
+  short_before_usd REAL,      -- 売り（保険）の額（足す前）
+  short_after_usd REAL,       -- 売りを残った値動きするコインに合わせたあと
+  cost_usd REAL,              -- 見込みの費用（プールから出すガス代・両替・Lighter に入れるガス代・売りを減らす手数料）
+  detail_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_hedge_topup_log_pos ON hedge_topup_log(position_id, ts);

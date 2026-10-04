@@ -162,10 +162,20 @@ def write_lighter_markets(conn: sqlite3.Connection, ts: str, items: list[Item]) 
     return len(rows)
 
 
-def write_lighter_funding(conn: sqlite3.Connection, ts: str, items: list[Item]) -> int:
+def write_lighter_funding(conn: sqlite3.Connection, ts: str, items: list[Item], table: str = "lighter_funding_snaps") -> int:
     rows = [(ts, int(it.key), it.name, it.info.get("rate_8h")) for it in items if it.info.get("rate_8h") is not None]
-    conn.executemany("INSERT OR REPLACE INTO lighter_funding_snaps(ts, market_id, symbol, rate_8h) VALUES (?,?,?,?)",
-                     rows)
+    conn.executemany(f"INSERT OR REPLACE INTO {table}(ts, market_id, symbol, rate_8h) VALUES (?,?,?,?)", rows)
+    return len(rows)
+
+
+def write_lighter_rh_markets(conn: sqlite3.Connection, ts: str, items: list[Item]) -> int:
+    """Lighter の Robinhood Chain 版の銘柄（2026-10-04 オーナー決定 ②A）。本体の表とは別。"""
+    rows = [(int(it.key), it.name, it.info.get("status"), it.info.get("taker_pct"), it.info.get("maker_pct"),
+             it.info.get("imf"), it.info.get("min_imf"), it.info.get("mmf"), it.info.get("open_interest"),
+             it.info.get("daily_quote_volume"), it.info.get("mark_price"), ts) for it in items if it.name]
+    conn.executemany("INSERT OR REPLACE INTO lighter_rh_markets(market_id, symbol, status, taker_pct, maker_pct, "
+                     "initial_margin_fraction, min_initial_margin_fraction, maintenance_margin_fraction, open_interest, "
+                     "daily_quote_volume, mark_price, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     return len(rows)
 
 

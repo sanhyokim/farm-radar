@@ -114,6 +114,8 @@ export interface Opportunity {
   best: OppVariant | null; above_target: boolean | null; over_cap: boolean;
   recommended?: boolean | null;   // 練習のおすすめ（狙い以上で、会場の見分けが確か。2026-10-02 23:15 JST）
   safety: Safety; venue_safety: Safety | null;
+  /** 保険に使う売り場。book = "rh" は Lighter の Robinhood Chain 版、"main" は本体（2026-10-04 ②A） */
+  hedge_markets?: { coin: string; symbol: string; market_id: number | null; book?: "rh" | "main"; rh_market_id?: number | null }[];
 }
 /** 危なさの点数（N4a。N2c の「安全度」を置きかえた。点が多いほど危ない。重みと区切りは仮） */
 export interface SafetyPart { key: string; label: string; points: number; note: string }
@@ -151,6 +153,7 @@ export interface Guard {
   loss_line: { pct: number; line_usd: number | null; today_usd: number; state: "none" | "ok" | "near" | "hit"; near_frac: number; used_frac: number };
   loss_lines: LossLines; stages: StageRow[]; signals: RiskEvent[]; stage1_watch: Stage1Watch[];
   margin_log: MarginLog[];
+  topups?: Topup[]; topup_line_frac?: number;
   hedges: { position_id: number; pair: string; margin_usd: number; status: HedgeMargin | null }[];
   notes: string[];
 }
@@ -541,6 +544,12 @@ export interface MarginLog {
   position_id: number; pair: string | null; status: string | null; since: string; at: string; points: number;
   margin_usd: number; equity_usd: number | null; low_equity_usd: number | null; low_at: string;
   change_pct: number | null; buffer_frac: number | null; rebalances: number | null; per_rebalance_usd: number | null;
+}
+/** 預け金を「足したとしたら」（2026-10-04 オーナー決定 ③A。本物のお金を始めるまでは記録だけ） */
+export interface Topup {
+  position_id: number; pair: string | null; status: string | null; count: number; total_usd: number; cost_usd: number | null; at: string;
+  last: { topup_usd: number; pool_usd: number | null; volatile_before_usd: number | null; volatile_after_usd: number | null;
+    short_before_usd: number | null; short_after_usd: number | null; cost_usd: number | null; buffer_frac: number | null };
 }
 export interface Stage1Watch {
   id: number; position_id: number; pool_id: string; pair: string | null; ts: string; drop_pct: number | null;

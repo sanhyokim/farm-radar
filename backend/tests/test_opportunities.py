@@ -268,7 +268,7 @@ def test_stay_factor_and_provisional_drop():
 def test_pool_with_a_hedge_has_both_variants_and_the_split(cfg):
     o = _collect(cfg)["o-eth"]
     assert o.computable and o.kind == "pool_range" and not o.excluded
-    assert o.hedge_markets == [{"coin": "WETH", "symbol": "ETH", "market_id": 0}]
+    assert o.hedge_markets == [{"coin": "WETH", "symbol": "ETH", "market_id": 0, "book": "main", "rh_market_id": None}]
     row = o.calc["1000"]
     no, yes = row["cautious"]["no_hedge"], row["cautious"]["hedge"]
     assert no is not None and yes is not None

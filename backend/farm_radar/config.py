@@ -235,6 +235,9 @@ class GuardSettings:
     hedge_cooldown_minutes: float = 60.0
     # 保険の強制決済が近い知らせ: 余裕（担保 − 維持に要る額）が、はじめの余裕のこの割合を切ったら
     hedge_alert_buffer_frac: float = 0.5
+    # 預け金を足す線（2026-10-04 オーナー決定 ③A。仮）: 余裕がはじめのこの割合を切ったら、はじめの額まで足す。
+    # 本物のお金を始めるまでは足さず、「足したとしたら」を記録する（execution/risk_job.record_topup）
+    hedge_topup_buffer_frac: float = 0.5
     # Lighter の維持の割合が読めないときの仮の値（feeds の lighter_markets にあればそれを使う）
     hedge_mmf_fallback: float = 0.05
 
@@ -256,11 +259,13 @@ def _guard(raw: dict[str, Any]) -> GuardSettings:
             raise ConfigError(f"guard.loss_lines.{p} は、マイナスの%で 注意 ≥ 新しく入らない ≥ すべて止める の順にしてください。")
     out = GuardSettings(loss_lines=lines, **{k: type(getattr(d, k))(g.get(k, getattr(d, k))) for k in (
         "below_target_times", "better_cost_multiple", "hedge_edge_buffer_frac", "hedge_edge_wait_minutes",
-        "hedge_cooldown_minutes", "hedge_alert_buffer_frac", "hedge_mmf_fallback")})
+        "hedge_cooldown_minutes", "hedge_alert_buffer_frac", "hedge_mmf_fallback", "hedge_topup_buffer_frac")})
     if out.below_target_times < 1:
         raise ConfigError("guard.below_target_times は1以上にしてください。")
     if not 0 < out.hedge_alert_buffer_frac < 1:
         raise ConfigError("guard.hedge_alert_buffer_frac は 0 より大きく 1 より小さい数にしてください。")
+    if not 0 < out.hedge_topup_buffer_frac < 1:
+        raise ConfigError("guard.hedge_topup_buffer_frac は 0 より大きく 1 より小さい数にしてください。")
     return out
 
 
@@ -484,6 +489,9 @@ class OpportunitySettings:
     # 資金調達料の控えめの見込み（2026-10-04 オーナー決定 B）: 7日の平均と、この日数の平均（Lighter の資金調達率の過去）の
     # 悪い方（払う額が大きい方）を使う。0 なら使わない（7日だけ）
     funding_cautious_days: float = 30.0
+    vol_jump_ratio: float = 1.5       # 直近24時間の値動きが7日のこの倍をこえたら「値動きが急に大きくなった」（2026-10-04 ①A）
+    # このチェーンのプールの保険は、Lighter の Robinhood Chain 版にその市場があれば、そちらの数字で見込む（2026-10-04 ②A）。空なら本体だけ
+    lighter_rh_chain_ids: tuple[int, ...] = (4663,)
     # 予備はガス代の分だけ（チェーンごとのドル。2026-10-02 13:44 JST オーナー決定。額は仮）
     reserve_usd: dict[str, float] = field(default_factory=lambda: {"robinhood": 20.0, "base": 10.0})
     # 値段の記録がないボーナスのコイン: 控えめの見込みで、この%だけ月に下がるとみなす（2026-10-02 オーナー決定。仮）
@@ -520,6 +528,8 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             hedge_withstand_rise_pct=float(o.get("hedge_withstand_rise_pct", d.hedge_withstand_rise_pct)),
             hedge_withstand_mode=str(o.get("hedge_withstand_mode", d.hedge_withstand_mode)),
             funding_cautious_days=float(o.get("funding_cautious_days", d.funding_cautious_days)),
+            vol_jump_ratio=float(o.get("vol_jump_ratio", d.vol_jump_ratio)),
+            lighter_rh_chain_ids=tuple(int(x) for x in (o.get("lighter_rh_chain_ids", d.lighter_rh_chain_ids) or ())),
             reserve_usd={str(k): float(v) for k, v in (o.get("reserve_usd") or d.reserve_usd).items()},
             unknown_reward_drop_monthly_pct=float(o.get("unknown_reward_drop_monthly_pct",
                                                         d.unknown_reward_drop_monthly_pct)),
@@ -538,7 +548,8 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             or not 0 <= out.unknown_reward_drop_monthly_pct < 100 or not 0 <= out.receipt_stable_drop_monthly_pct < 100 \
             or out.receipt_price_alert_pct <= 0 or out.pool_state_max_age_hours <= 0 \
             or out.sudden_change_hours <= 0 or out.sudden_change_pct <= 0 \
-            or out.hedge_withstand_mode not in ("per_market", "fixed") or out.funding_cautious_days < 0:
+            or out.hedge_withstand_mode not in ("per_market", "fixed") or out.funding_cautious_days < 0 \
+            or out.vol_jump_ratio <= 1:
         raise ConfigError("config.yaml の opportunities の数字を確かめてください（金額は正、割合は0〜1、倍率は1以上。"
                           "hedge_withstand_mode は per_market か fixed）。")
     return out

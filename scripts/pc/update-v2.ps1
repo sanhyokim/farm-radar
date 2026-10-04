@@ -218,6 +218,12 @@ try {
     foreach ($x in ($sd | Select-Object -First 5)) {
         Say ("   {0}: {1}" -f $x.name, (@($x.flags | Where-Object { $_.code -eq 'SUDDEN_CHANGE' })[0].text))
     }
+    # 値動きが急に大きくなった（2026-10-04 オーナー決定 ①A。直近24時間が7日の1.5倍をこえた）
+    $vj = @($o.items | Where-Object { $_.flags.code -contains 'VOL_JUMP' })
+    Say "[値動きが急に大きくなった] $($vj.Count) 件"
+    foreach ($x in ($vj | Select-Object -First 5)) {
+        Say ("   {0}: {1}" -f $x.name, (@($x.flags | Where-Object { $_.code -eq 'VOL_JUMP' })[0].text))
+    }
     $c = @($o.items | Where-Object { $_.flags.code -contains 'RANGE_CHAIN' })
     $u = @($o.items | Where-Object { $_.safety.uncertain_match })
     Say "[チェーンの記録で計算] chain: $($c.Count) / 会場の見分けが不確か: $($u.Count)"
@@ -238,6 +244,15 @@ try {
             $(if ($null -eq $m.equity_usd) { '-' } else { [math]::Round([double]$m.equity_usd, 2) }), $(if ($null -eq $m.change_pct) { '-' } else { [math]::Round([double]$m.change_pct, 1) }), `
             $(if ($null -eq $m.low_equity_usd) { '-' } else { [math]::Round([double]$m.low_equity_usd, 2) }), $m.rebalances)
     }
+    # 預け金を「足したとしたら」（2026-10-04 オーナー決定 ③A。記録だけ。本物のお金は動かさない）
+    Say "[守る] 足したとしたら: 建玉 $(@($g.topups).Count)（線は余裕がはじめの $([math]::Round([double]$g.topup_line_frac * 100, 0))% を切ったとき）"
+    foreach ($t in @($g.topups | Select-Object -First 5)) {
+        Say ("   {0}: {1} 回・合計 `${2}・見込みの費用 `${3}・最後の回 プール `${4} から足す / 売り `${5} → `${6}" -f $t.pair, $t.count, `
+            [math]::Round([double]$t.total_usd, 2), $(if ($null -eq $t.cost_usd) { '-' } else { [math]::Round([double]$t.cost_usd, 2) }), `
+            $(if ($null -eq $t.last.pool_usd) { '-' } else { [math]::Round([double]$t.last.pool_usd, 0) }), `
+            $(if ($null -eq $t.last.short_before_usd) { '-' } else { [math]::Round([double]$t.last.short_before_usd, 0) }), `
+            $(if ($null -eq $t.last.short_after_usd) { '-' } else { [math]::Round([double]$t.last.short_after_usd, 0) }))
+    }
     $vs = @($fs.sources | Where-Object { $_.id -eq 'vault_states' })[0]
     $vc = @($fs.sources | Where-Object { $_.id -eq 'venue_checks' })[0]
     # 「今回」は最後の回に読んだ数。答えが出たものは読み直さないので、たまった数（確かめ済み・金庫）も出す
@@ -254,6 +269,23 @@ try {
         Say "[試す] Lighter の値段の過去: 銘柄 $(N0 $f.lighter_prices.markets) / 行 $(N0 $f.lighter_prices.rows)（1日1回。最初は90日分）"
         Say "[試す] 影の記録: $(N0 $f.shadow.hours) 回 / 入れる先 $(N0 $f.shadow.opportunities) / 行 $(N0 $f.shadow.rows)"
         Say "[試す] Aero の住所のファイル: $((@($f.aero_addresses) | ForEach-Object { $_.name }) -join ', ')"
+        # Lighter の Robinhood Chain 版（2026-10-04 オーナー決定 ②A。読むだけ。本物のお金は動かさない）
+        $rh = $f.lighter_rh
+        if ($rh) {
+            Say "[Lighter RH版] 市場 $(N0 $rh.markets) / 保険に使う市場のうち、この版にあるもの $(N0 $rh.hedge_markets)（読んだ時刻 $($rh.updated_at)）"
+            foreach ($x in @($rh.rows)) {
+                $fr = if ($null -eq $x.funding_daily_rh) { '-' } else { [math]::Round([double]$x.funding_daily_rh * 365 * 100, 1) }
+                $fm = if ($null -eq $x.funding_daily_main) { '-' } else { [math]::Round([double]$x.funding_daily_main * 365 * 100, 1) }
+                Say ("   {0}: 値段 RH {1} / 本体 {2}・維持の割合 RH {3}% / 本体 {4}%・売りの資金調達料（年、7日。プラス = 払う）RH {5}% / 本体 {6}%・過去 値段 {7} 点 / 資金調達率 {8} 点" -f `
+                    $x.symbol, $x.price_rh, $x.price_main, $x.mmf_rh_pct, $x.mmf_main_pct, $fr, $fm, $x.price_points, $x.funding_points)
+            }
+            # 探すの見込みで、どちらの Lighter の数字を使ったか（Robinhood Chain のプールで RH版にある市場は RH版）
+            if ($o) {
+                $hm = @($o.items | ForEach-Object { @($_.hedge_markets) } | Where-Object { $_ })
+                $nr = @($hm | Where-Object { $_.book -eq 'rh' }).Count
+                Say ("[Lighter RH版] 探すの保険の見込み: RH版の数字 {0} 件 / 本体の数字 {1} 件" -f $nr, ($hm.Count - $nr))
+            }
+        } else { Say "[Lighter RH版] まだ読めていません" }
     } catch {
         Write-Host "   注意: 試すための記録の数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
     }
@@ -301,9 +333,15 @@ try {
             $st = @($r.still_pools)
             Say ("[さかのぼり 値段が動いていないプール] {0} 個（となりの記録と同じ値段が {1}% 以上。比べるのから外しました）" -f $st.Count, (BtPct $r.still_share_line 0))
             # 同じ名前のプールが複数あるので、プールの住所と手数料の段・最初と最後の値段も出す（2026-10-04 オーナーの質問1）
+            # 空欄なら、とっておいた古い計算の結果を読んでいる（2026-10-04。VERSION の上げ忘れ。今はファイルの中身の印もキーに入れた）
             foreach ($x in $st) {
-                Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}" -f $x.pair, $x.pool_id, $x.fee_tier, `
-                    (BtPct $x.still_share 1), $x.points, $x.distinct_prices, $x.first_price, $x.last_price)
+                $fee = if ($null -eq $x.fee_pct) { '不明' } else { "$($x.fee_pct)%" }
+                Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}" -f $x.pair, $x.pool_id, $fee, `
+                    (BtPct $x.still_share 1), $x.points, $x.distinct_prices, (BtNum $x.first_price 6), (BtNum $x.last_price 6))
+                foreach ($o in @($x.same_pair)) {
+                    $of = if ($null -eq $o.fee_pct) { '不明' } else { "$($o.fee_pct)%" }
+                    Say ("      同じ組のほかのプール: {0}（手数料の段 {1}・記録 {2} 点・{3}）" -f $o.pool_id, $of, $o.points, $(if ($o.still) { '値段が動いていない' } else { '値段が動いている' }))
+                }
             }
             # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ
             $kn = @{ kind_stock = '株'; kind_stable = 'ステーブル'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン' }

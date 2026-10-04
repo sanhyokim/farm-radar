@@ -23,6 +23,23 @@ from ..external.http import ExternalError
 MERKL = "https://api.merkl.xyz/v4"
 LLAMA_CHART = "https://yields.llama.fi/chart"
 LIGHTER = "https://mainnet.zklighter.elliot.ai/api/v1"
+# Lighter の Robinhood Chain 版（別の取引所。預け金は USDG。口座・番号は本体と別。2026-10-04 オーナー決定 ②A。
+# https://apidocs.lighter.xyz/docs/lighter-rh ・ https://docs.robinhood.com/chain/lighter-domains 2026-10-04 確認）
+LIGHTER_RH = "https://api.rh.lighter.xyz/api/v1"
+
+
+@dataclass(frozen=True)
+class LighterBook:
+    """どちらの Lighter を読むか（読み取り口と、保存する表）。市場の番号は本体と Robinhood Chain 版で別。"""
+    base: str
+    markets: str          # 銘柄の表
+    funding: str          # 資金調達率の過去の表
+    prices: str           # 値段の過去の表
+    rh: bool = False
+
+
+MAIN_BOOK = LighterBook(LIGHTER, "lighter_markets", "lighter_funding_history", "lighter_price_history")
+RH_BOOK = LighterBook(LIGHTER_RH, "lighter_rh_markets", "lighter_rh_funding_history", "lighter_rh_price_history", rh=True)
 # Aero の公開のコード置き場（README: "Deployment addresses are in `deployment-addresses/`"。2026-10-03 確認）。
 # ここに出た住所も、使う前にチェーンの公開の記録（Blockscout・Sourcify）で確かめる（絶対ルール3）
 AERO_REPO = "dromos-labs/metadex-public"
@@ -209,20 +226,35 @@ def lighter_targets(conn: sqlite3.Connection, ctx: TrialContext) -> list[tuple[i
     return sorted(want.items())
 
 
+def rh_targets(conn: sqlite3.Connection, ctx: TrialContext) -> list[tuple[int, str]]:
+    """Robinhood Chain 版で読む銘柄: up. のコインの保険に使う市場（perps.map）のうち、Robinhood Chain 版にもあるもの
+    （2026-10-04 に確かめたときは29市場のうち18。番号は Robinhood Chain 版のもの）。"""
+    want = {sym.upper() for _, sym in ctx.lighter_markets}
+    try:
+        rows = conn.execute("SELECT market_id, symbol FROM lighter_rh_markets WHERE status='active'").fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return sorted((int(r[0]), str(r[1])) for r in rows if str(r[1]).upper() in want)
+
+
+def _targets(conn: sqlite3.Connection, ctx: TrialContext, book: LighterBook) -> list[tuple[int, str]]:
+    return rh_targets(conn, ctx) if book.rh else lighter_targets(conn, ctx)
+
+
 def read_lighter_history(conn: sqlite3.Connection, text: Callable[..., str], ctx: TrialContext,
-                         now: datetime) -> tuple[dict[str, Any], int]:
+                         now: datetime, book: LighterBook = MAIN_BOOK) -> tuple[dict[str, Any], int]:
     """銘柄ごとに、前に保存した最後の時刻のあとから今まで（最初は90日分）を、750点ずつ新しい方からさかのぼって読む。"""
     out: dict[str, Any] = {}
     calls = 0
     end_all = int(now.timestamp())
-    for mid, sym in lighter_targets(conn, ctx):
-        last = conn.execute("SELECT MAX(ts) FROM lighter_funding_history WHERE market_id=?", (mid,)).fetchone()[0]
+    for mid, sym in _targets(conn, ctx, book):
+        last = conn.execute(f"SELECT MAX(ts) FROM {book.funding} WHERE market_id=?", (mid,)).fetchone()[0]
         start = int(last) + 1 if last else end_all - LIGHTER_DAYS * 86400
         pts: dict[int, dict[str, Any]] = {}
         end = end_all
         try:
             while end > start:
-                body = _json(text(f"{LIGHTER}/fundings", {"market_id": str(mid), "resolution": "1h",
+                body = _json(text(f"{book.base}/fundings", {"market_id": str(mid), "resolution": "1h",
                                                           "start_timestamp": str(start), "end_timestamp": str(end),
                                                           "count_back": str(LIGHTER_PAGE)}))
                 calls += 1
@@ -244,12 +276,12 @@ def read_lighter_history(conn: sqlite3.Connection, text: Callable[..., str], ctx
     return out, calls
 
 
-def write_lighter_history(conn: sqlite3.Connection, data: dict[str, Any]) -> int:
+def write_lighter_history(conn: sqlite3.Connection, data: dict[str, Any], book: LighterBook = MAIN_BOOK) -> int:
     """値は応答のまま残す（rate・value・direction の単位と向きは、N5b で公式の資料と照合してから使う）。"""
     n = 0
     for mid, d in data.items():
         for f in (d or {}).get("points") or []:
-            conn.execute("INSERT OR REPLACE INTO lighter_funding_history(market_id, ts, symbol, rate, value, direction) "
+            conn.execute(f"INSERT OR REPLACE INTO {book.funding}(market_id, ts, symbol, rate, value, direction) "
                          "VALUES (?,?,?,?,?,?)", (int(mid), int(f["timestamp"]), d.get("symbol"),
                                                   None if f.get("rate") is None else float(f["rate"]),
                                                   None if f.get("value") is None else float(f["value"]),
@@ -259,14 +291,14 @@ def write_lighter_history(conn: sqlite3.Connection, data: dict[str, Any]) -> int
 
 
 def read_lighter_prices(conn: sqlite3.Connection, text: Callable[..., str], ctx: TrialContext,
-                        now: datetime) -> tuple[dict[str, Any], int]:
+                        now: datetime, book: LighterBook = MAIN_BOOK) -> tuple[dict[str, Any], int]:
     """値段の過去（1時間の足）。読む銘柄は資金調達率と同じ。前に保存した最後の足から今まで（最初は90日分）を、
     500点ずつ新しい方からさかのぼって読む（/api/v1/candles。認証なし。t はミリ秒、start/end は秒）。"""
     out: dict[str, Any] = {}
     calls = 0
     end_all = int(now.timestamp())
-    for mid, sym in lighter_targets(conn, ctx):
-        last = conn.execute("SELECT MAX(ts) FROM lighter_price_history WHERE market_id=?", (mid,)).fetchone()[0]
+    for mid, sym in _targets(conn, ctx, book):
+        last = conn.execute(f"SELECT MAX(ts) FROM {book.prices} WHERE market_id=?", (mid,)).fetchone()[0]
         start = int(last) if last else end_all - LIGHTER_DAYS * 86400     # 最後の足は読み直す（まだ途中だったかもしれない）
         pts: dict[int, dict[str, Any]] = {}
         end = end_all
@@ -275,7 +307,7 @@ def read_lighter_prices(conn: sqlite3.Connection, text: Callable[..., str], ctx:
             # 90日より新しい市場で、いちばん古い足まで読んだとき）。そこで止める
             while end - start >= 3600:
                 try:
-                    body = _json(text(f"{LIGHTER}/candles", {"market_id": str(mid), "resolution": "1h",
+                    body = _json(text(f"{book.base}/candles", {"market_id": str(mid), "resolution": "1h",
                                                              "start_timestamp": str(start), "end_timestamp": str(end),
                                                              "count_back": str(LIGHTER_CANDLE_PAGE)}))
                 except ExternalError as exc:
@@ -302,12 +334,12 @@ def read_lighter_prices(conn: sqlite3.Connection, text: Callable[..., str], ctx:
     return out, calls
 
 
-def write_lighter_prices(conn: sqlite3.Connection, data: dict[str, Any]) -> int:
+def write_lighter_prices(conn: sqlite3.Connection, data: dict[str, Any], book: LighterBook = MAIN_BOOK) -> int:
     n = 0
     for mid, d in data.items():
         for c in (d or {}).get("points") or []:
             vals = [None if c.get(x) is None else float(c[x]) for x in "ohlc"]
-            conn.execute("INSERT OR REPLACE INTO lighter_price_history(market_id, ts, symbol, open, high, low, close) "
+            conn.execute(f"INSERT OR REPLACE INTO {book.prices}(market_id, ts, symbol, open, high, low, close) "
                          "VALUES (?,?,?,?,?,?,?)", (int(mid), int(c["ts"]), d.get("symbol"), *vals))
             n += 1
     return n

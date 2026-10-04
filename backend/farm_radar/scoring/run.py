@@ -59,6 +59,8 @@ class MarginBasis:
     # 市場ごとに max(withstand_rise, stay_days のうちのいちばんの上げ)（2026-10-04 オーナー決定 A。hedge_guard.withstand_for）
     per_market: bool = False
     stay_days: float = 14.0
+    # このチェーンの保険は、Lighter の Robinhood Chain 版にある市場ならその版の数字（2026-10-04 オーナー決定 ②A）
+    rh: bool = False
 
 
 @dataclass
@@ -343,7 +345,7 @@ def score_venue(conn: sqlite3.Connection, ctx: ScoreContext, now: datetime | Non
             log.warning("gas price failed", extra={"data": {"error": str(exc)}})
 
     params = model_params(s, gas_usd)
-    margin_table = hedge_guard.lighter_margin_table(ctx.margin.lighter_db) if ctx.margin.lighter_db else {}
+    margin_table = hedge_guard.lighter_margin_table(ctx.margin.lighter_db, ctx.margin.rh) if ctx.margin.lighter_db else {}
     sparams = signal_params(s)
     base_warns = venue_warnings(ctx.venue)
     if reward_change is not None and reward_change * 100 <= s.reward_token_7d_major_pct:
@@ -386,7 +388,7 @@ def _split_for(m: MarginBasis, c_total: float, table: dict[int, tuple[float | No
         mmf = mmf if mmf is not None else m.mmf_fallback
         w = m.withstand_rise
         if m.per_market and m.lighter_db is not None and ch.get("hedge_id") == "lighter" and mid is not None:
-            w = max(w, hedge_guard.withstand_table(m.lighter_db, m.stay_days).get(int(mid), 0.0))
+            w = max(w, hedge_guard.withstand_table(m.lighter_db, m.stay_days, m.rh).get(int(mid), 0.0))
         needs[sym] = {"need": hedge_guard.margin_need(imf, mmf, w), "imf": imf, "mmf": mmf,
                       "from_lighter": from_lighter, "hedge_id": ch.get("hedge_id"), "withstand_rise_pct": w * 100}
     sp = hedge_guard.split(c_total, m.reserve_usd, [(0.5, n["need"]) for n in needs.values()])
@@ -431,6 +433,10 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     sig0 = 0.0 if tokens.is_stable(t0) else _sigma(g0)
     sig1 = 0.0 if tokens.is_stable(t1) else _sigma(g1)
     sig_pair = _sigma(pair_grid)
+    # 直近24時間の値動き（2026-10-04 オーナー決定 ①A。控えめの見込みと「値動きが急に大きくなった」の印に使う）
+    sig_pair24 = vol.recent_sigma(vol.hourly_returns(pair_grid), now_s)
+    sig24 = {r["token0_symbol"]: 0.0 if tokens.is_stable(t0) else vol.recent_sigma(vol.hourly_returns(g0), now_s),
+             r["token1_symbol"]: 0.0 if tokens.is_stable(t1) else vol.recent_sigma(vol.hourly_returns(g1), now_s)}
     is_stock = tokens.is_stock(t0) or tokens.is_stock(t1)
     split = {}
     for t, g in ((t0, g0), (t1, g1)):
@@ -530,6 +536,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         "inputs": {
             "price": r["price"], "usd": {r["token0_symbol"]: prices.get(t0), r["token1_symbol"]: prices.get(t1)},
             "sigma_token": {r["token0_symbol"]: sig0, r["token1_symbol"]: sig1}, "sigma_pair": sig_pair,
+            "sigma_pair_24h": sig_pair24, "sigma_token_24h": sig24,
             "sigma_stock_split": split, "vol_source": src,
             "reward_usd_day": reward_usd_day, "fees_usd_day": fees_day, "fee": fee,
             "volume_24h_usd": volume, "tvl_usd": tvl,

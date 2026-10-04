@@ -828,6 +828,40 @@ class PaperExecutor:
         return {"slippage": slip, "gas": gas, "max_slip": max_slip, "parts": parts, "swap_cost": swap_cost,
                 "swap_gas": swap_gas, "hedge_fee": hedge_fee, "total": swap_cost + gas + swap_gas + hedge_fee}
 
+    def topup_estimate(self, ref: PositionRef, topup_usd: float) -> dict[str, Any]:
+        """預け金を topup_usd 足すとしたら（2026-10-04 オーナー決定 ③A。お金は動かさない。記録だけ）。
+
+        足すお金はプールから同じ割合で出す（値動きするコインと値動きしないコインの両方が減る）。出した値動きするコインは
+        ドルのコインに両替して Lighter に入れる。プールの値動きするコインが減るので、売り（保険）を残りの量に合わせて減らす。
+        費用 = プールから出すガス代1回 + 両替（手数料 + ずれ）+ 両替のガス代1回 + Lighter に入れるガス代1回 + 売りを減らす手数料。
+        """
+        pos = self._open_pos(ref.position_id)
+        pool = self.market.pool(pos["pool_id"])
+        st = json.loads(pos["state_json"] or "{}")
+        hedges = json.loads(pos["hedges_json"] or "[]")
+        snap = self.market.latest(pos["pool_id"])
+        price = float(snap["price"])
+        prices = self.market.prices(snap["run_id"])
+        t0, t1 = pool["token0"].lower(), pool["token1"].lower()
+        last = st.get("last_prices") or {}
+        u0, u1 = prices.get(t0, last.get(t0)) or 0.0, prices.get(t1, last.get(t1)) or 0.0
+        x, y = lp_amounts(float(pos["liquidity"]), price, pos["lower"], pos["upper"],
+                          int(pool["token0_decimals"]), int(pool["token1_decimals"]))
+        pool_usd = x * u0 + y * u1
+        vol_before = (0.0 if self.tokens.is_stable(t0) else x * u0) + (0.0 if self.tokens.is_stable(t1) else y * u1)
+        take = min(1.0, topup_usd / pool_usd) if pool_usd > 0 else 0.0
+        vol_after = vol_before * (1 - take)
+        short_before = sum(float(h["size"]) * prices.get(h["token"], float(h["entry"])) for h in hedges)
+        short_after = min(short_before, vol_after)
+        fee, slip, gas = self._costs_now(pos["pool_id"])
+        taker = max((self.taker_fee(h.get("market_id"), h.get("hedge_id") or "lighter") for h in hedges), default=0.0)
+        swap = vol_before * take * (fee + slip)
+        cost = gas + swap + gas + gas + (short_before - short_after) * taker
+        return {"pool_usd": pool_usd, "volatile_before_usd": vol_before, "volatile_after_usd": vol_after,
+                "short_before_usd": short_before, "short_after_usd": short_after, "cost_usd": cost,
+                "parts": {"gas_withdraw": gas, "swap": swap, "gas_swap": gas, "gas_deposit": gas,
+                          "hedge_fee": (short_before - short_after) * taker, "share_taken": take}}
+
     def estimate_close_cost(self, ref: PositionRef) -> float:
         """今閉じたらかかる費用の見込み（閉じない。ボーナスが減ったときの比べ方に使う。2026-09-30 オーナー決定③）。"""
         pos = self._open_pos(ref.position_id)

@@ -187,7 +187,21 @@ function HedgesCard({ data }: { data: GuardData }) {
             </span>
           </div>
         ))}
-      <Note>置き直すと、保険の損は Lighter に、プールの得はチェーンに分かれてたまります。そのため長くいると、Lighter の預け金だけが減っていくことがあります。足し方の決まりは、これから決めます。</Note>
+      <Note>置き直すと、保険の損は Lighter に、プールの得はチェーンに分かれてたまります。そのため長くいると、Lighter の預け金だけが減っていくことがあります。</Note>
+      <div className="label pt-2">預け金を足したとしたら（記録だけ）</div>
+      {(data.topups ?? []).length === 0
+        ? <Note>まだありません。余裕がはじめの{((data.topup_line_frac ?? 0.5) * 100).toFixed(0)}%を切ったら、はじめの額まで足したとして記録します。</Note>
+        : (data.topups ?? []).map((t) => (
+          <div key={t.position_id} className="flex flex-col gap-1 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+            <span className="cap">{t.pair ?? `建玉 ${t.position_id}`}{t.status === "closed" ? "（閉じた）" : ""} · 最後 {jst(t.at)}</span>
+            <span className="num">{t.count} 回 · 合計 {usd(t.total_usd)} · 見込みの費用 {t.cost_usd == null ? "—" : usd(t.cost_usd)}</span>
+            <span className="cap num">
+              最後の回: プール {t.last.pool_usd == null ? "—" : usd(t.last.pool_usd, 0)} から {usd(t.last.topup_usd)} を出す ·
+              売り {t.last.short_before_usd == null ? "—" : usd(t.last.short_before_usd, 0)} → {t.last.short_after_usd == null ? "—" : usd(t.last.short_after_usd, 0)}
+            </span>
+          </div>
+        ))}
+      <Note>決まり（仮）: 余裕がはじめの半分を切ったら、はじめの額まで足します。足すお金はプールから出すので、プールの値動きするコインも減ります。そのぶん、保険の売りも減らします。本物のお金を始めるまでは実際には足さず、回数・額・そのときのプールの額・費用の見込みを記録します。</Note>
     </Card>
   );
 }
