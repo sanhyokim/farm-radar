@@ -91,7 +91,46 @@ def feeds(feeds_db: Path, coins_keys: dict[int, str] | None = None) -> dict[str,
         return {"merkl_rewards": rewards, "llama_history": llama, "lighter_history": lighter, "lighter_prices": lighter_prices,
                 "shadow": shadow,
                 "aero_addresses": files, "lighter_rh": lighter_rh(conn),
-                "merkl_positions": positions, "merkl_check": _merkl_check(feeds_db, coins_keys or {})}
+                "merkl_positions": positions, "merkl_check": _merkl_check(feeds_db, coins_keys or {}),
+                "merkl_sums": merkl_sums(conn), "pool_history": _pool_history(feeds_db), "tables": tables(conn)}
+    finally:
+        conn.close()
+
+
+# Merkl の分母 A/B の検証に要る表（2026-10-04 指示書。パソコンの1行の更新で、作られたかを確かめる）
+AB_TABLES = ("merkl_reward_sums", "pool_liq_progress", "pool_liq_base", "pool_liq_events", "chain_block_times",
+             "pool_liq_runs")
+
+
+def tables(conn: sqlite3.Connection) -> dict[str, bool]:
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    return {t: t in names for t in AB_TABLES}
+
+
+def merkl_sums(conn: sqlite3.Connection, page_rows: int = 100) -> dict[str, Any] | None:
+    """Merkl の全部のページを読んだ合計（merkl_reward_sums）の記録の数。complete=1 = 最後のページまで読めた回。
+
+    over_page: 1ページ（100行）をこえるキャンペーンのうち、最後のページまで読めたもの（ページを続けて読めている証拠）。"""
+    r = _count(conn, f"""SELECT COUNT(*), COALESCE(SUM(complete = 1), 0), COUNT(DISTINCT campaign_id),
+                               COUNT(DISTINCT CASE WHEN complete = 1 THEN campaign_id END),
+                               COUNT(DISTINCT CASE WHEN complete = 1 AND rows > {int(page_rows)} THEN campaign_id END),
+                               MAX(CASE WHEN complete = 1 THEN rows END), MIN(ts), MAX(ts),
+                               COALESCE(SUM(complete = 0), 0) FROM merkl_reward_sums""")
+    if r is None:
+        return None
+    return {"records": r[0], "complete": r[1], "campaigns": r[2], "complete_campaigns": r[3], "over_page": r[4],
+            "max_rows": r[5], "from": r[6], "to": r[7], "incomplete": r[8]}
+
+
+def _pool_history(feeds_db: Path) -> dict[str, Any] | None:
+    """預け方の歴史の読み取りの進み具合（feeds/pool_history.status）。"""
+    from .feeds import pool_history
+    conn = sqlite3.connect(f"file:{feeds_db.as_posix()}?mode=ro", uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        return pool_history.status(conn)
+    except sqlite3.OperationalError:          # 表がまだない（古い保存のデータベース）
+        return None
     finally:
         conn.close()
 

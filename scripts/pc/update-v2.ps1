@@ -17,7 +17,7 @@ param(
     [string]$OldApi = 'http://localhost:18000',
     [string]$NewApi = 'http://localhost:18001',
     [string]$Docker = 'docker',
-    [int]$WaitMinutes = 20     # N5a で1日1回の読み取りが増えた（DefiLlama と Lighter の過去）ので、起動のあとの最初の回が長い
+    [int]$WaitMinutes = 30     # N5a で1日1回の読み取りが増えた。2026-10-04 から Merkl の全ページ（約160回）と預け方の歴史（150回）も起動のあとすぐ読む
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,6 +82,13 @@ function Projects {
     if ($LASTEXITCODE -ne 0) { throw 'docker compose ls が動きません。Docker Desktop が起動しているか確かめてください。' }
     $j = $raw | ConvertFrom-Json
     return @($j | ForEach-Object { $_ })
+}
+
+function N0($x) { if ($null -eq $x) { 0 } else { $x } }   # 0件の区分は空欄ではなく 0 と出す（2026-10-03 オーナー）
+
+function Fresh($src) {
+    # 起動のあとに読み終わったか（読んでいる最中のものは、まだ）
+    return ($src.status -ne 'running' -and $src.last_run_at -and ([datetime]$src.last_run_at).ToUniversalTime() -ge $since)
 }
 
 function Running([object[]]$list, [string]$name) {
@@ -185,18 +192,53 @@ try {
     Step "8/9 一覧を読み終わるまで待つ（最大 $WaitMinutes 分。30秒ごとに確かめます）"
     $deadline = (Get-Date).AddMinutes($WaitMinutes)
     $fs = $null
+    # 起動のあとに1回読み終わるまで待つもの（前の回の数がまとめに出ないように）:
+    # 会場の見分け・Merkl の配った額（全部のページ）・預け方の歴史（2026-10-04 指示書: Merkl A/B の記録の始まりを確かめる）
+    $mustRun = @('venue_checks', 'merkl_rewards', 'pool_history')
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 30
         try { $fs = Invoke-RestMethod "$NewApi/api/feeds/status" -TimeoutSec 30 } catch { $fs = $null; Say '   まだ画面が起動していません……'; continue }
         $busy = @($fs.sources | Where-Object { $_.status -eq 'running' -or $_.status -eq 'none' })
-        # 会場の見分け（venue_checks）は、起動のあとに1回読み終わるまで待つ（前の回の数がまとめに出ないように）
-        $vcs = @($fs.sources | Where-Object { $_.id -eq 'venue_checks' })
-        $vcFresh = ($vcs.Count -eq 0) -or ($vcs[0].last_run_at -and ([datetime]$vcs[0].last_run_at).ToUniversalTime() -ge $since)
-        if ($busy.Count -eq 0 -and $vcFresh) { break }
-        if (-not $vcFresh) { $busy += $vcs[0] }
-        Say "   読んでいる途中: $(($busy | ForEach-Object { $_.id }) -join ', ')"
+        $stale = @($fs.sources | Where-Object { $mustRun -contains $_.id -and -not (Fresh $_) })
+        if ($busy.Count -eq 0 -and $stale.Count -eq 0) { break }
+        Say "   読んでいる途中: $((@($busy) + @($stale) | ForEach-Object { $_.id } | Select-Object -Unique) -join ', ')"
     }
-    if ($null -eq $fs) { throw "$NewApi が答えません。" }
+    if ($null -eq $fs) { throw "$NewApi が答えません（新しい版が起動していません）。" }
+
+    # --- 8 の続き. Merkl A/B の記録が始まったか（2026-10-04 指示書。始まっていなければ止める） -----------------
+    Step '8/9 の続き: Merkl A/B の記録が始まったかを確かめる'
+    $tr = Invoke-RestMethod "$NewApi/api/trial/records" -TimeoutSec 120
+    $ff = $tr.feeds
+    if (-not $ff -or -not $ff.tables) { throw '記録の数を読めません（/api/trial/records に新しい表の確かめがありません。古い版のままかもしれません）。' }
+    $noTable = @($ff.tables.PSObject.Properties | Where-Object { -not $_.Value } | ForEach-Object { $_.Name })
+    if ($noTable.Count -gt 0) { throw "データベースに新しい表が作られていません: $($noTable -join ', ')" }
+    Ok "新しい表はそろっています（$(@($ff.tables.PSObject.Properties).Count) 個）。"
+    $mrs = @($fs.sources | Where-Object { $_.id -eq 'merkl_rewards' })[0]
+    $phs = @($fs.sources | Where-Object { $_.id -eq 'pool_history' })[0]
+    if (-not $mrs -or -not $phs) { throw '一覧に merkl_rewards か pool_history がありません（古い版のままかもしれません）。' }
+    $notes = @()                                    # 止めるほどではないが、送ってほしいこと
+    $ms = $ff.merkl_sums
+    if (-not (Fresh $mrs)) { throw "Merkl の配った額が、起動のあとに一度も読まれていません（状態 $($mrs.status)・最後 $($mrs.last_run_at)）。" }
+    if ($mrs.status -eq 'rate_limited') {
+        $notes += 'Merkl が回数制限（429）を返しました。この回は何も書かずに、15分後にやり直します（記録は壊れません）。'
+    } elseif ($mrs.status -ne 'ok') {
+        throw "Merkl の配った額を読めませんでした（状態 $($mrs.status): $($mrs.error)）。"
+    } elseif (-not $ms -or [int]$ms.complete -lt 1) {
+        throw 'Merkl の配った額は読めましたが、全部のページを読めた記録（complete=1）が1件もありません。'
+    }
+    $mStarted = $ms -and [int](N0 $ms.complete) -gt 0
+    if ($mStarted) { Ok "Merkl の全部のページの記録: complete=1 が $(N0 $ms.complete) 件（キャンペーン $(N0 $ms.complete_campaigns)）" }
+    if (-not (Fresh $phs)) { throw "預け方の歴史が、起動のあとに一度も読まれていません（状態 $($phs.status)・最後 $($phs.last_run_at)）。" }
+    if ($phs.status -ne 'ok') { throw "預け方の歴史を読めませんでした（状態 $($phs.status): $($phs.error)）。" }
+    $ph = $ff.pool_history
+    $lr = $ph.last_run
+    if (-not $lr) { throw '預け方の歴史の「この回の記録」がありません。' }
+    # 読まないと決めているプール（公式の住所と確かめられない・始まりから読むと多すぎる）は失敗ではない
+    $skipPools = @($ph.errors | Where-Object { $_.error -like '読む量が多すぎる*' -or $_.error -like 'PoolManager が公式*' })
+    $badPools = @($ph.errors | Where-Object { -not ($_.error -like '読む量が多すぎる*' -or $_.error -like 'PoolManager が公式*') })
+    if ($badPools.Count -gt 0) { $notes += "預け方の歴史を読めなかったプール $($badPools.Count) 個（次の回に続きから読みます）: $($badPools[0].error)" }
+    if ($ff.merkl_check -and @($ff.merkl_check.errors).Count -gt 0) { $notes += "Merkl の答え合わせを計算できなかったキャンペーン $(@($ff.merkl_check.errors).Count) 件" }
+    Ok '記録は始まっています。'
 
     # --- 9. 結果のまとめ --------------------------------------------------------------------------
     Step '9/9 結果のまとめ（ここから下を全部コピーして送ってください）'
@@ -206,8 +248,6 @@ try {
     $o = Invoke-RestMethod "$NewApi/api/opportunities?amount=1000&show_excluded=true&limit=300" -TimeoutSec 120
     Say "[入れる先] total: $($o.counts.total) / computed: $($o.counts.computed) / listed: $($o.counts.listed) / above_target: $($o.counts.above_target) / recommended: $($o.counts.recommended) / target: $($o.target_apr_pct)"
     $dg = $o.counts.danger
-    # 0件の区分は空欄ではなく 0 と出す（2026-10-03 オーナー）
-    function N0($x) { if ($null -eq $x) { 0 } else { $x } }
     if ($dg) { Say "[危なさ] low: $(N0 $dg.low) / mid: $(N0 $dg.mid) / high: $(N0 $dg.high) / very_high: $(N0 $dg.very_high) / venue_verified: $(N0 $o.counts.venue_verified)" }
     foreach ($x in @($o.items | Where-Object { $_.recommended })) {
         $mk = if ($x.flags.code -contains 'SUDDEN_CHANGE') { '  [年利が急に変わった]' } else { '' }
@@ -468,17 +508,41 @@ try {
 
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
     Say "[今の版] 前: eval: $($before.eval) / open: $($before.open) / last_ok_at: $($before.last)"
+    $v1 = 'そのまま動いています（前と同じ）'
     try {
         $after = OldState
         Say "[今の版] 後: eval: $($after.eval) / open: $($after.open) / stale: $($after.stale) / last_ok_at: $($after.last)"
         if ($after.eval -ne $before.eval -or $after.open -ne $before.open -or $after.stale -eq 'True') {
             Write-Host '   注意: 今の版の状態が前と違います。このまとめを送ってください。' -ForegroundColor Yellow
+            $v1 = '注意: 状態が前と違います'
+            $notes += '今の版（18000）の状態が前と違います'
         } else {
             Ok '今の版はそのまま動いています。'
         }
     } catch {
         Write-Host "   注意: 今の版の状態を読めませんでした（$($_.Exception.Message)）。新しい版の更新は終わっています。このまとめを送ってください。" -ForegroundColor Yellow
+        $v1 = '注意: 状態を読めませんでした'
+        $notes += '今の版（18000）の状態を読めませんでした'
     }
+
+    # --- いちばん下: 成功か失敗かを一目で（2026-10-04 指示書） ----------------------------------------------
+    $tone = if ($notes.Count -eq 0) { 'Green' } else { 'Yellow' }
+    Write-Host ''
+    Write-Host '==================== 結果 ====================' -ForegroundColor $tone
+    Write-Host ("[結果] 更新: {0}" -f $(if ($notes.Count -eq 0) { '成功' } else { '成功（注意あり。下の「注意」を見てください）' })) -ForegroundColor $tone
+    Say "[結果] 今の版（18000）: $v1。フォルダーとデータには触っていません"
+    $over = if ([int](N0 $ms.over_page) -gt 0) { "100 行をこえるキャンペーン $($ms.over_page) 個も最後のページまで読めました（いちばん多い $($ms.max_rows) 行）" } else { "今は 100 行をこえるキャンペーンはありません（いちばん多い $(N0 $ms.max_rows) 行）" }
+    if ($mStarted) {
+        Say "[結果] Merkl の全部のページの記録: 始まりました。complete=1 の記録 $(N0 $ms.complete) 件（キャンペーン $(N0 $ms.complete_campaigns)）。$over"
+    } else {
+        Say '[結果] Merkl の全部のページの記録: まだです（回数制限のため。15分後に自動でやり直します）'
+    }
+    Say ("[結果] 預け方の歴史: 対象 {0} プール / この回 {1} 回読んで記録 {2} 件 / 読み終わり {3}・途中 {4}・まだ {5}・読まないプール {6} / 続きから読める {7}" -f `
+        (N0 $lr.targets), (N0 $lr.calls), (N0 $lr.events), (N0 $ph.done), (N0 $ph.partial), (N0 $ph.not_started), $skipPools.Count, `
+        $(if ([int](N0 $ph.resumable) -eq [int](N0 $ph.partial)) { 'はい（読めたところを保存しています）' } else { 'いいえ' }))
+    if ($lr.stopped) { Say "         この回は「$($lr.stopped)」で区切りました。約30分ごとに続きを読みます（全部読み終わるまで数時間かかっても正常です）" }
+    if ($notes.Count -eq 0) { Write-Host '[結果] エラー: なし' -ForegroundColor Green } else { foreach ($n in $notes) { Write-Host "[結果] 注意: $n" -ForegroundColor Yellow } }
+    Write-Host '==============================================' -ForegroundColor $tone
     Write-Host ''
     Write-Host '更新が終わりました。上の「9/9 結果のまとめ」から下を全部コピーして送ってください。' -ForegroundColor Green
     Say "（同じ内容を $Log にも残しました。画面は http://localhost:18001/explore で開けます）"
@@ -486,6 +550,7 @@ try {
     Write-Host ''
     Write-Host "止めました: $($_.Exception.Message)" -ForegroundColor Red
     Restore
+    if ($state.started) { Write-Host '新しい版（18001）は起動したままです（前の版には戻していません）。今の版（18000）には触っていません。' -ForegroundColor Red }
     Write-Host ''
     Write-Host 'この画面の文字を全部コピーして送ってください。' -ForegroundColor Red
     try { Stop-Transcript | Out-Null } catch { }

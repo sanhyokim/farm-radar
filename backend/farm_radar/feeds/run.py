@@ -324,9 +324,13 @@ def daily_due(conn: sqlite3.Connection, source: Source, settings: FeedSettings, 
 
 
 def every_due(conn: sqlite3.Connection, source: Source, now: datetime) -> bool:
-    """every_minutes の一覧を、今読むべきか（前に読めてから every_minutes たったか。一度も読めていなければすぐ）。"""
+    """every_minutes の一覧を、今読むべきか（前に読めてから every_minutes たったか。一度も読めていなければすぐ）。
+
+    due_if_empty の表がまだ空なら、すぐ読む（更新で新しく増えた記録を、次の回まで待たずに始める）。"""
     last = store.last_ok(conn, source.id)
     if last is None:
+        return True
+    if source.due_if_empty and conn.execute(f'SELECT 1 FROM "{source.due_if_empty}" LIMIT 1').fetchone() is None:
         return True
     return now - datetime.fromisoformat(last["started_at"]) >= timedelta(minutes=source.every_minutes)
 
