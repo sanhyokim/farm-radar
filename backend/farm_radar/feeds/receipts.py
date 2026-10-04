@@ -50,7 +50,7 @@ def candidates(conn: sqlite3.Connection, chains: dict[int, dict[str, Any]], coin
     return sorted(out)[:MAX_PER_RUN]
 
 
-def rpc_for(chain: dict[str, Any], env: dict[str, str] | None = None) -> RpcClient:
+def rpc_for(chain: dict[str, Any], env: dict[str, str] | None = None, cache_size: int = 5000) -> RpcClient:
     """そのチェーンの読み取り専用のクライアント（Alchemy の鍵があれば先に使う → 公式の公開の読み取り口）。
 
     config.yaml の rpc.extra_urls は Robinhood Chain 用の予備なので、ほかのチェーンには使わない。
@@ -61,7 +61,8 @@ def rpc_for(chain: dict[str, Any], env: dict[str, str] | None = None) -> RpcClie
     if key and chain.get("alchemy_rpc"):
         eps.append(Endpoint("alchemy", str(chain["alchemy_rpc"]).replace("{API_KEY}", key)))
     eps.append(Endpoint("public", str(chain["public_rpc"])))
-    client = RpcClient(eps, RpcSettings(max_retries=2, backoff_seconds=5.0, timeout_seconds=15.0))
+    # cache_size: 同じ読み取りの答えを覚えておく数（預け方の歴史は1回の答えが大きく、読み直さないので 0）
+    client = RpcClient(eps, RpcSettings(max_retries=2, backoff_seconds=5.0, timeout_seconds=15.0), cache_size=cache_size)
     client.pace_key = str(chain.get("id"))       # type: ignore[attr-defined]  チェーンごとに間隔を数える
     return client
 

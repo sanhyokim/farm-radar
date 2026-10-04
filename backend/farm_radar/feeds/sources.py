@@ -131,8 +131,11 @@ _TERM_KEYS = ("apr", "targetAPR", "mode", "rewardTokenPricing", "targetTokenPric
 _WEIGHT_KEYS = ("weightFees", "weightToken0", "weightToken1")
 # 幅に配るプール（CL）の読み方に使うもの（N3）: どのプールか（v4 は poolId と PoolManager、v3 は poolId がプールの住所）、
 # 2つのコインと桁、手数料の段、幅の外にもボーナスを配るか
+# 除外する人（blacklist）・対象の人（whitelist）: Merkl の分母の検証（2026-10-04）で、除外する人の預け方は分母から外れると
+# 分かった（作業場所の試験用の値: 除外の1件がある ETH/ClawBank は、全員の見込みがそろって実際の 0.3 倍）。持ち主の分からない
+# 預け方を分母から外せないので、一覧があるキャンペーンは検証に使わない
 _POOL_KEYS = ("poolId", "poolManager", "currency0", "currency1", "decimalsCurrency0", "decimalsCurrency1",
-              "symbolCurrency0", "symbolCurrency1", "lpFee", "isOutOfRangeIncentivized")
+              "symbolCurrency0", "symbolCurrency1", "lpFee", "isOutOfRangeIncentivized", "blacklist", "whitelist")
 
 
 def campaign_terms(c: dict[str, Any]) -> dict[str, Any]:
@@ -314,6 +317,14 @@ def merkl_positions(data: Any) -> list[Item]:
             for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
 
 
+def pool_history(data: Any) -> list[Item]:
+    """run が feeds/pool_history.py で読んだ {"<チェーン番号>:<プール>": {...}} を一覧の形にする（Merkl の分母 B の検証）。"""
+    return [Item(k, None, k.partition(":")[0], {"events": v.get("events"), "calls": v.get("calls"),
+                                                "caught_up": v.get("caught_up"), "skipped": v.get("skipped"),
+                                                "error": v.get("error")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
 # --- N5a「試す」のための記録（feeds/trial.py・feeds/shadow.py が読んだものを一覧の形にする） ----------------------
 
 def merkl_rewards(data: Any) -> list[Item]:
@@ -421,6 +432,10 @@ SOURCES: tuple[Source, ...] = (
     # 配った額を読んだあとに、約2時間に1回（配った額と同じ間隔で、前後の量が同じか確かめる）
     Source("merkl_positions", "Merkl の預け方の幅と量（チェーンの記録。答え合わせ）", "eth_call", "15min", merkl_positions,
            every_minutes=115),
+    # Merkl の分母 B（幅の中だけ）の検証（2026-10-04 指示書）。キャンペーンのプールの、預け方を足した・減らした記録を
+    # プールの始まりから読む（チェーンの記録。読んだ範囲を覚えて続きから。1回 150 回まで・1秒に1回）。読み終えたら約1時間ごとに続き
+    Source("pool_history", "Merkl のプールの預け方の歴史（チェーンの記録。分母 B の検証）", "eth_getLogs", "15min",
+           pool_history, every_minutes=25, raw_every_minutes=1440),
     # Aero の公式の住所（公開のコード置き場）。新しいファイルが出たら知らせる（判断④A: 早く出たら Aero の準備を前倒し）
     Source("aero_addresses", "Aero の公式の住所（公開のコード置き場）", "https://api.github.com", "hourly",
            aero_addresses),

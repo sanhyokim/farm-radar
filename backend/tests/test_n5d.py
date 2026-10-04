@@ -331,9 +331,12 @@ def _merkl_world(tmp_path):
     usd = a0 / 1e18 * 2500 + a1 / 1e6
     pred = 0.7 * 0.1 + 0.3 * usd / 100000
     got = int(round(pred * 1.5 * 1000000))           # 実際は見込みの 1.5 倍
-    for tid, amt in ((7, got), (8, 0)):
-        conn.execute("INSERT INTO merkl_reward_snaps(ts, campaign_id, recipient, reason, amount_raw) VALUES (?, 'c1', 'r', ?, ?)",
-                     (t[1], f"UNISWAP_V4_{pid}_{tid}", str(amt)))
+    # 配った額は、読んだ回ごとに全部の行がある（2026-10-04 から: キャンペーン全体の累計は、全部の行の合計で数える）。
+    # 99 は幅と量を読んでいない、ほかの人の預け方（全体の 1,000,000 → 2,000,000 のうち、7 以外の分）
+    for ts, amt7, rest in ((t[0], 0, 1000000), (t[1], got, 2000000 - got)):
+        for tid, amt in ((7, amt7), (8, 0), (99, rest)):
+            conn.execute("INSERT INTO merkl_reward_snaps(ts, campaign_id, recipient, reason, amount_raw) "
+                         "VALUES (?, 'c1', 'r', ?, ?)", (ts, f"UNISWAP_V4_{pid}_{tid}", str(amt)))
     conn.commit()
     return conn
 
@@ -349,7 +352,8 @@ def test_merkl_check_compares_actual_with_the_whole_pool_estimate(tmp_path):
     assert res["ratio_median"] == pytest.approx(1.5, rel=1e-3)
     # コインの分の分母が預かり額の何割に見えるか: 実際のコインの分 = (実際 − 手数料の分の見込み) ÷ コインの重み
     pid = "0x" + "cd" * 32
-    tok = conn.execute("SELECT amount_raw FROM merkl_reward_snaps WHERE reason=?", (f"UNISWAP_V4_{pid}_7",)).fetchone()[0]
+    tok = conn.execute("SELECT amount_raw FROM merkl_reward_snaps WHERE reason=? ORDER BY ts DESC",
+                       (f"UNISWAP_V4_{pid}_7",)).fetchone()[0]
     a0, a1 = merkl_check.amounts(1e14, math.sqrt(2500 * 1e6 / 1e18), *conn.execute(
         "SELECT tick_lower, tick_upper FROM merkl_position_snaps WHERE token_id=7").fetchone())
     tok_m = (a0 / 1e18 * 2500 + a1 / 1e6) / 100000
@@ -367,9 +371,11 @@ def test_merkl_check_sums_recipients_and_shows_in_trial_records(tmp_path):
     pid = "0x" + "cd" * 32
     base = merkl_check.check(conn, {4663: "robinhood"})["campaigns"][0]["ratio_median"]
     # 預け方 7 を人に渡した: 新しい受け取る人の分も足す（同じ区切りの中で、もらった額は 2 倍）
-    got = conn.execute("SELECT amount_raw FROM merkl_reward_snaps WHERE reason LIKE '%_7'").fetchone()[0]
+    got = conn.execute("SELECT amount_raw FROM merkl_reward_snaps WHERE reason LIKE '%_7' ORDER BY ts DESC").fetchone()[0]
     conn.execute("INSERT INTO merkl_reward_snaps(ts, campaign_id, recipient, reason, amount_raw) VALUES "
                  "('2026-10-04T02:00:00+00:00', 'c1', 'r2', ?, ?)", (f"UNISWAP_V4_{pid}_7", got))
+    conn.execute("UPDATE merkl_reward_snaps SET amount_raw=? WHERE reason=? AND ts='2026-10-04T02:00:00+00:00'",
+                 (str(2000000 - 2 * int(got)), f"UNISWAP_V4_{pid}_99"))   # 全体の累計は同じ（ほかの人の分が減った）
     conn.commit()
     assert merkl_check.check(conn, {4663: "robinhood"})["campaigns"][0]["ratio_median"] == pytest.approx(2 * base, rel=1e-6)
     conn.close()

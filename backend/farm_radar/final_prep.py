@@ -428,9 +428,9 @@ def risk_score(fconn: sqlite3.Connection | None, config: Any) -> dict[str, Any]:
 
 # --- 8. 1プールでの自分の割合 ----------------------------------------------------------------------------------
 
-def pool_share(mc: dict[str, Any] | None, merkl_days: float | None, cap: float) -> dict[str, Any]:
-    camps = (mc or {}).get("campaigns") or []
-    pairs = int((mc or {}).get("pairs_in_range") or 0)
+def pool_share(ab: dict[str, Any] | None, merkl_days: float | None, cap: float) -> dict[str, Any]:
+    camps = [c for c in (ab or {}).get("campaigns") or [] if c.get("ratio") is not None]
+    pairs = int(((ab or {}).get("overall") or {}).get("pairs") or 0)
     a = cap / (1 + cap)
 
     def row(name: str, d: float | None) -> list[str]:
@@ -439,16 +439,17 @@ def pool_share(mc: dict[str, Any] | None, merkl_days: float | None, cap: float) 
         b = cap / (d + cap)
         return [name, f"{d:.2f}", f"{a * 100:.2f}%", f"{b * 100:.2f}%", pct((b / a - 1) * 100)]
     body = [row("（例）分母の割合 1.0 = 全員", 1.0), row("（例）0.8", 0.8), row("（例）0.5", 0.5)]
-    for c in camps[:8]:
-        body.append(row(f"{c.get('pair')}（比べた組 {c.get('pairs_in_range', 0)}）", c.get("denominator_share_median")))
+    for c in sorted(camps, key=lambda c: c["ratio"])[:8]:
+        body.append(row(f"{c.get('pair')}（チェーンで数えた）", c.get("ratio")))
     days = merkl_days or 0.0
     return item(8, "pool_share", "1プールでの自分の割合", f"自分が預かり額の {cap * 100:g}% を超えない",
                 st(WAIT, "Merkl の分母（全員か、幅の中だけか）を決めてから見直します。計算の形はできています。"),
                 [f"自分が預かり額の {cap * 100:g}% を預けたとき、A（全員が分母）なら取り分は {a * 100:.2f}%。",
-                 "B（幅の中だけが分母）なら、分母は預かり額 × 分母の割合（d）になり、取り分は 5% ÷（d + 5%）。",
-                 "d は Merkl の答え合わせで、実際の配り方から逆算した値（キャンペーンごとのまん中）。",
-                 "A と B の取り分の差が、5% の上限が見込みのずれにどう効くかの目安です。"],
-                f"比べた組 {pairs} 件、記録 {days:.1f} 日",
+                 "B（幅の中だけが分母）なら、分母は預かり額 × B÷A（d）になり、取り分は 5% ÷（d + 5%）。",
+                 "d は、チェーンの記録で数えた「幅の中の預け方の額 ÷ 全部の額」（キャンペーンごとの、区切りのまん中）。"
+                 "d の小さいキャンペーンほど、B のときの取り分が大きくなります（下の表は d の小さい順）。",
+                 "自分の額ごとの A と B の割合は「Merkl の分母」の「5% 上限の準備」の表にあります。"],
+                f"比べた組 {pairs} 件、Merkl の記録 {days:.1f} 日",
                 "A・B それぞれの取り分と差を出す計算はできています。Merkl の A/B が決まったら、上限の案を出せます。",
                 [table("5% のときの取り分", ["分母の割合 d", "d", "A の取り分", "B の取り分", "B と A の差"], body)])
 
@@ -575,26 +576,105 @@ def rebalance_auto(bt: dict[str, Any] | None) -> dict[str, Any]:
             "days": cal}
 
 
-def merkl_ab(mc: dict[str, Any] | None, merkl_days: float | None) -> dict[str, Any]:
-    pairs = int((mc or {}).get("pairs_in_range") or 0)
-    days = merkl_days or 0.0
-    ratio = (mc or {}).get("ratio_median")
-    d = (mc or {}).get("denominator_share_median")
+def _err(v: float | None) -> str:
+    return "—" if v is None else pct(v * 100)
+
+
+def _r2(v: float | None) -> str:
+    return "—" if v is None else f"{v:.2f}"
+
+
+def merkl_ab(mc: dict[str, Any] | None, ab: dict[str, Any] | None, reading: dict[str, Any] | None) -> dict[str, Any]:
+    """Merkl の分母 A（全員）と B（幅の中だけ）を、同じ区切り・同じ預け方で実際と並べる（2026-10-04 指示書）。決めない。"""
+    ab = ab or {}
+    ov = ab.get("overall") or {}
+    pairs, days = int(ov.get("pairs") or 0), float(ov.get("days") or 0.0)
     ready = pairs >= MERKL_MIN_PAIRS and days >= MERKL_MIN_DAYS
-    body = [["A（全員が分母。今の式）", f"{ratio:.2f}" if ratio is not None else "—",
-             pct((ratio - 1) * 100) if ratio is not None else "—"],
-            ["B（幅の中だけが分母）", "—", "材料不足"]]
-    why = (f"比べた組 {pairs} 件・{days:.1f} 日分。{MERKL_MIN_PAIRS} 件・{MERKL_MIN_DAYS} 日たまるまで記録待ちです。" if not ready
-           else f"A の差は出せます（比べた組 {pairs} 件・{days:.1f} 日分）。B の見込みは、幅の中にある預け方の合計が保存されていないので出せません。")
-    return {"state": st(WAIT if not ready else LACK, why),
-            "table": table("見込みと実際の差（実際 ÷ 見込みのまん中）", ["数え方", "実際 ÷ 見込み", "差"], body,
-                           f"実際の配り方から逆算した分母の割合（まん中）: {d:.2f}（1 に近い = 全員、小さい = 幅の中だけに近い）。"
-                           if d is not None else None),
-            "pairs": pairs, "days": days,
-            "missing": lacking("キャンペーンごとの、幅の中にある預け方の合計（B の見込みの分母）", False, True,
-                               "チェーンには、預け方を足した・減らした記録がずっと残ります。あとから読み直して、その時の"
-                               "幅の中の合計を作れる見込みです（2026-10-04 に、Robinhood Chain と Base の公開の読み取り口で、"
-                               "この記録が読めることだけ確かめました。読み取りの仕組みはまだ作っていません）。")}
+    if not ab.get("present"):
+        why = "チェーンの記録（預け方を足した・減らした記録）をまだ読んでいません。次の更新のあとに読み始めます。"
+    elif not ready:
+        why = (f"比べた組 {pairs} 件・{days:.1f} 日分。{MERKL_MIN_PAIRS} 件・{MERKL_MIN_DAYS} 日たまるまで記録待ちです"
+               "（A と B は、同じ区切り・同じ預け方で数えています）。")
+    else:
+        why = f"A と B と実際を、同じ区切り・同じ預け方で並べられます（比べた組 {pairs} 件・{days:.1f} 日分）。"
+
+    def srow(name: str, x: dict[str, Any] | None) -> list[str]:
+        x = x or {}
+        return [name, _err(x.get("median")), _err(x.get("p25")), _err(x.get("p75")), share(x.get("within"))]
+    head = ["数え方", "まん中", "25%", "75%", "±30%に入った"]
+    t_all = table("見込みと実際の差（見込み ÷ 実際 − 1）", head,
+                  [srow("A（全員が分母。今の式）", ov.get("a")), srow("B（幅の中だけが分母）", ov.get("b"))],
+                  f"比べた組 {pairs} 件・キャンペーン {ov.get('campaigns', 0)} 件・記録 {days:.1f} 日。"
+                  "マイナスは見込みが小さい（控えめ）。区切りのあいだずっと幅の中にいて、量が変わらなかった組だけ。")
+    bw_rows = []
+    for name, x in (ab.get("by_weight") or {}).items():
+        bw_rows.append([name, _err((x.get("a") or {}).get("median")), _err((x.get("b") or {}).get("median")),
+                        share((x.get("a") or {}).get("within")), share((x.get("b") or {}).get("within")),
+                        str(x.get("pairs", 0))])
+    t_bw = table("重みの種類で分けた差（まん中）", ["キャンペーン", "A", "B", "A ±30%", "B ±30%", "組"], bw_rows,
+                 "実際にもらった額は重みの種類ごとに分かれていないので、キャンペーンの一番大きい重みで分けています。")
+    t_parts = table("重みの種類ごとの B", ["重み", "A の見込みに占める割合", "B"],
+                    [[v["label"], share(v.get("share_of_pred_a")), v["b"]] for v in (ab.get("parts") or {}).values()])
+    c_rows = []
+    for c in ab.get("campaigns") or []:
+        w = c["weights"]
+        c_rows.append([c["pair"], c["out_label"], f"{w['fee'] * 100:.0f}/{w['token0'] * 100:.0f}/{w['token1'] * 100:.0f}",
+                       str(c["pairs"]), "—" if c["n_all"] is None else f"{c['n_all']:g}",
+                       "—" if c["n_in"] is None else f"{c['n_in']:g}", f"{c['unusable_positions']}/{c['positions']}",
+                       _r2(c["ratio"]), _r2(c["share_backcalc_now"]), _r2(c["share_backcalc"]), _r2(c["share_chain"]),
+                       _err(c["err_a"]), _err(c["err_b"])])
+    t_c = table("キャンペーンごと", ["組み合わせ", "幅の外", "重み 手数料/0/1", "比べた組", "預け方 全部", "幅の中",
+                                    "使えない/名前", "B÷A", "逆算（今の答え合わせ）", "逆算（チェーンの A）",
+                                    "B どおりなら", "A の差", "B の差"], c_rows,
+                "B÷A = 幅の中の預け方の額 ÷ 全部の額（チェーンで数えた。区切りのまん中）。逆算 = 実際から手数料の分を引いた"
+                "残りで出した分母の割合（1 に近い = A、B どおりなら右の「B どおりなら」に近い）。"
+                "「今の答え合わせ」は前からの数え方（Merkl の預かり額で割る）。預け方 全部・幅の中は1時間ごとの数のまん中。")
+    own = ab.get("own_usd") or []
+    cap_rows = []
+    for c in ab.get("cap") or []:
+        row = [c["pair"], f"{c['ratio']:.2f}"]
+        for x in own:
+            row += [f"{c['a'][x] * 100:.2f}%", f"{c['b'][x] * 100:.2f}%"]
+        cap_rows.append(row)
+    head_cap = ["組み合わせ", "B÷A"] + [h for x in own for h in (f"${x:,} A", f"${x:,} B")]
+    t_cap = table("5% 上限の準備: 自分の額が分母の何%か", head_cap, cap_rows,
+                  "A の分母 = Merkl の預かり額（今の探すと同じ）。B の分母 = それ × B÷A。5% の上限は変えていません。")
+    reasons = {**(ab.get("skipped") or {}), **{f"預け方: {k}": v for k, v in (ab.get("unusable") or {}).items()}}
+    t_skip = table("使わなかった区切り・預け方と理由", ["理由", "数"],
+                   [[k, str(v)] for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])])
+    rd = reading or {}
+    t_read = table("チェーンの記録の読み取り", ["項目", "値"],
+                   [["読むプール", str(rd.get("pools", 0))], ["今まで読めているプール", str(rd.get("caught_up", 0))],
+                    ["読んだ記録（件）", f"{rd.get('events', 0):,}"], ["1件ずつ残した記録（件）", f"{rd.get('stored_events', 0):,}"],
+                    ["まとめた預け方（件）", f"{rd.get('base_positions', 0):,}"], ["読み取りの回数", f"{rd.get('calls', 0):,}"],
+                    ["失敗しているプール", str(len(rd.get("errors") or []))]],
+                   "同じ記録は読み直しません。止まっても続きから読みます。1秒に1回まで・1回に150回まで。")
+    old_ratio = (mc or {}).get("ratio_median")
+    return {"state": st(READY if ready else WAIT, why),
+            "table": t_all, "tables": [t_bw, t_parts, t_c, t_cap, t_skip, t_read],
+            "out_classes": ab.get("out_classes") or {}, "pairs": pairs, "days": days,
+            "old_ratio": old_ratio, "missing": None}
+
+
+def _merkl_ab(fconn: sqlite3.Connection | None, config: Any, mc: dict[str, Any] | None
+              ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if fconn is None:
+        return None, None
+    from . import merkl_ab as ab_mod
+    from .feeds import pool_history
+    from .feeds.pools import official
+    from .registry import receipt_chains
+    pms = {cid: official(c).get("v4_position_manager") for cid, c in receipt_chains(config.chains, config.root).items()}
+    back = {c["campaign_id"]: c.get("denominator_share_median") for c in (mc or {}).get("campaigns") or []}
+    old_factory, fconn.row_factory = fconn.row_factory, sqlite3.Row
+    try:
+        ab = ab_mod.check(fconn, {k: v for k, v in pms.items() if v}, back)
+        reading = pool_history.status(fconn)
+    except Exception as exc:  # noqa: BLE001  検証が落ちても、ほかの項目は出す
+        ab, reading = {"present": False, "error": f"{type(exc).__name__}: {exc}"[:200]}, None
+    finally:
+        fconn.row_factory = old_factory
+    return ab, reading
 
 
 # --- まとめ ---------------------------------------------------------------------------------------------
@@ -611,6 +691,7 @@ def build(bt_cached: dict[str, Any] | None, fconn: sqlite3.Connection | None, tr
             merkl_days = (datetime.fromisoformat(mr["to"]) - datetime.fromisoformat(mr["from"])).total_seconds() / 86400
         except ValueError:
             merkl_days = None
+    ab, reading = _merkl_ab(fconn, config, mc)
     rk, gd = config.risk, config.guard
     items = []
     for fn in (lambda: loss_lines(bt and bt.get("prep"), gd.loss_lines),
@@ -620,7 +701,7 @@ def build(bt_cached: dict[str, Any] | None, fconn: sqlite3.Connection | None, tr
                lambda: edge_grid(bt, gd, rk.rebalance_after_minutes),
                lambda: hedge_rise(fconn, config),
                lambda: risk_score(fconn, config),
-               lambda: pool_share(mc, merkl_days, config.opportunities.max_pool_share),
+               lambda: pool_share(ab, merkl_days, config.opportunities.max_pool_share),
                lambda: bonus_drop(fconn, config, coin_keys),
                lambda: reserve_gas(bt, config)):
         try:
@@ -635,7 +716,7 @@ def build(bt_cached: dict[str, Any] | None, fconn: sqlite3.Connection | None, tr
     counts = {k: sum(1 for x in items if x["state"]["code"] == k) for k in STATE_JA}
     return {
         "items": items, "counts": counts, "states": STATE_JA,
-        "rebalance": rebalance_auto(bt), "merkl": merkl_ab(mc, merkl_days),
+        "rebalance": rebalance_auto(bt), "merkl": merkl_ab(mc, ab, reading),
         "n6": [{"title": "控えめのほかの人のお金 1.5倍", "why": "練習の建玉で、ほかの人のお金がどれだけ動いたかを見てから決めます。"},
                {"title": "中身がステーブルの預かり証 月−3%", "why": "預かり証の値段の記録が、練習の間にたまってから決めます。"}],
         "backtest_days": days, "ready_on": ready_on,

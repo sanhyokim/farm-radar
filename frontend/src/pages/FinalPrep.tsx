@@ -16,7 +16,7 @@ interface FinalPrepData {
   counts: Record<Code, number>;
   states: Record<Code, string>;
   rebalance: { state: St; table: Tbl; days: number };
-  merkl: { state: St; table: Tbl; pairs: number; days: number; missing: Missing };
+  merkl: { state: St; table: Tbl; tables: Tbl[]; out_classes: Record<string, number>; pairs: number; days: number; missing: Missing | null };
   n6: { title: string; why: string }[];
   backtest_days: number; ready_on: string | null; backtest_present: boolean; computed_at: string | null;
   notes: string[];
@@ -116,8 +116,12 @@ export default function FinalPrep() {
         <Fold title={<span className="flex items-center justify-between gap-2"><span>Merkl の分母（A 全員 / B 幅の中だけ）</span><Badge s={data.merkl.state} /></span>}>
           <p className="cap">{data.merkl.state.why}</p>
           <Table t={data.merkl.table} />
-          <MissingBox m={data.merkl.missing} />
-          <p className="cap">分母はここでは決めません。</p>
+          {Object.keys(data.merkl.out_classes ?? {}).length > 0 && (
+            <p className="cap">幅の外の扱い: {Object.entries(data.merkl.out_classes).map(([k, v]) => `${k} ${v} 件`).join("・")}（「幅の外にも配る」「判断できない」は B を当てはめず、比べから外しています）</p>
+          )}
+          {(data.merkl.tables ?? []).map((t) => <Table key={t.title} t={t} />)}
+          {data.merkl.missing && <MissingBox m={data.merkl.missing} />}
+          <p className="cap">分母はここでは決めません。探すの見込みは A のままです。</p>
         </Fold>
         <Fold title="N6 で判断するもの">
           {data.n6.map((n) => <Line key={n.title} k={n.title} v={<Pill tone="n">N6で判断</Pill>} note={n.why} />)}
