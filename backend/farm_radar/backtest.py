@@ -647,11 +647,16 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
     still: list[dict[str, Any]] = []
     for p in pools:
         kinds[p["id"]] = kind = pool_kind(p, tok_book.stablecoins, stocks, rewards)
-        share = still_share(_points(conn, p["id"]))
+        pts_p = _points(conn, p["id"])
+        share = still_share(pts_p)
         if share >= STILL_SHARE:
-            # 値段が動いていない（取引がない）プールは、②③④ の比べるのから外す。保険の資金調達料は市場のものなので数える
+            # 値段が動いていない（取引がない）プールは、②③④ の比べるのから外す。保険の資金調達料は市場のものなので数える。
+            # 同じ名前のプールが会場に複数あるので、プールの住所・手数料の段・最初と最後の値段・違う値段の数も出す
+            # （2026-10-04 オーナーの質問1: WETH/USDG が入ったのはなぜか）
             still.append({"pool_id": p["id"], "pair": f"{p['token0_symbol']}/{p['token1_symbol']}", "kind": kind,
-                          "points": p["n"], "still_share": share})
+                          "points": p["n"], "still_share": share, "fee_tier": p["fee_tier"],
+                          "first_price": pts_p[0][1] if pts_p else None, "last_price": pts_p[-1][1] if pts_p else None,
+                          "distinct_prices": len({x[1] for x in pts_p})})
             fund_rows += hedge_days(conn, fconn, p, s)
             continue
         ds = pool_days(conn, p, s)

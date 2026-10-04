@@ -224,6 +224,25 @@ class Move:
         return Move(sigma=sigma, smooth=sigma, jumps=(), days=7.0)
 
 
+def funding_long(conn: sqlite3.Connection, now: datetime, days: float) -> dict[int, float]:
+    """市場ごとの、days 日の売り（保険）の1日の支払いの平均（割合。プラス = 払う）。Lighter の資金調達率の過去
+    （lighter_funding_history。1時間ごと。rate は1時間あたりの%、direction は払う側。backtest.funding_actual と同じ読み方）。
+    資金調達料の控えめの見込みに使う（2026-10-04 オーナー決定 B）。"""
+    if days <= 0:
+        return {}
+    start = int(now.timestamp() - days * 86400)
+    try:
+        rows = conn.execute("SELECT market_id, rate, direction FROM lighter_funding_history WHERE ts >= ? AND ts < ? "
+                            "AND rate IS NOT NULL", (start, int(now.timestamp()))).fetchall()
+    except sqlite3.OperationalError:
+        return {}
+    by: dict[int, list[float]] = {}
+    for mid, rate, direction in rows:
+        by.setdefault(int(mid), []).append((-1 if direction == "long" else 1) * float(rate) / 100)
+    # 半分より少ない日数の記録しかない市場は使わない（読み始めたばかりの市場で、数時間の平均にしない）
+    return {mid: sum(v) / len(v) * 24 for mid, v in by.items() if len(v) >= days * 24 / 2}
+
+
 class FeedData:
     """保存した一覧から、計算に使う数字を取り出す（読み取りだけ）。"""
 
@@ -234,6 +253,7 @@ class FeedData:
         self.coin_keys = coin_chains(config.chains, config.root)
         self._tokens: dict[str, TokenStat | None] = {}
         self.perps: dict[str, dict[str, Any]] = {}
+        self.withstand_table: dict[int, float] = {}
         self.receipts: dict[tuple[int, str], dict[str, Any]] = {}
         self.pools: dict[tuple[int, str], dict[str, Any]] = {}
         # N4a: 会場の登録（住所で見分ける）・工場の確かめ・DefiLlama の会場と事件の一覧
@@ -265,6 +285,11 @@ class FeedData:
         since = (now - timedelta(days=7)).isoformat(timespec="seconds")
         funding = {r[0]: r[1] for r in conn.execute(
             "SELECT market_id, AVG(rate_8h) FROM lighter_funding_snaps WHERE ts >= ? GROUP BY market_id", (since,))}
+        long_funding = funding_long(conn, now, self.s.funding_cautious_days)
+        # 耐える上げ幅（市場ごと。2026-10-04 オーナー決定 A）
+        from .execution.hedge_guard import withstand_from_conn
+        self.withstand_table = withstand_from_conn(conn, self.s.stay_days * 86400) \
+            if self.s.hedge_withstand_mode == "per_market" else {}
         for r in conn.execute("SELECT market_id, symbol, status, taker_pct, initial_margin_fraction, "
                               "maintenance_margin_fraction FROM lighter_markets"):
             if r["status"] != "active":
@@ -278,7 +303,15 @@ class FeedData:
             imf, mmf = r["initial_margin_fraction"], r["maintenance_margin_fraction"]
             self.perps[str(r["symbol"]).upper()] = {
                 "market_id": r["market_id"], "symbol": r["symbol"], "funding_daily": cost, "taker_pct": r["taker_pct"],
+                "funding_daily_long": long_funding.get(int(r["market_id"])),
                 "imf": imf / 10000 if imf is not None else None, "mmf": mmf / 10000 if mmf is not None else None}
+
+    def withstand(self, perp: dict[str, Any] | None) -> float:
+        """この保険が耐える上げ幅（割合）: max(hedge_withstand_rise_pct, 14日のうちのいちばんの上げ)。fixed なら前と同じ。"""
+        floor = self.s.hedge_withstand_rise_pct / 100
+        if self.s.hedge_withstand_mode != "per_market" or not perp or perp.get("market_id") is None:
+            return floor
+        return max(floor, self.withstand_table.get(int(perp["market_id"]), 0.0))
 
     def llama_row(self, slug: str) -> dict[str, Any] | None:
         if slug not in self._llama:
@@ -629,6 +662,8 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
             continue
         if hedge and leg.perp is not None:
             cost = leg.perp["funding_daily"]
+            if cautious and leg.perp.get("funding_daily_long") is not None:
+                cost = max(cost, leg.perp["funding_daily_long"])   # 控えめは 7日と30日の悪い方（2026-10-04 オーナー決定 B）
             cost = cost if config.scoring.count_funding_income else max(0.0, cost)
             taker = (leg.perp.get("taker_pct") or 0.0) / 100
             hedge_cost += exposure * cost + n_reb * exposure * taker
@@ -804,7 +839,7 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     if cl is not None and cl.lp_fee is not None and 0 < cl.lp_fee < 1_000_000:
         fee = cl.lp_fee / 1_000_000            # このプールの手数料の段（チェーンの記録。両替・置き直しの費用に使う）
     expo = 0.5 if op.kind.startswith("pool") else 1.0
-    margin_per_pool = sum(expo * margin_need(lg.perp, s.hedge_withstand_rise_pct / 100) for lg in volatile if lg.perp)
+    margin_per_pool = sum(expo * margin_need(lg.perp, data.withstand(lg.perp)) for lg in volatile if lg.perp)
     for amount in s.amounts_usd:
         row: dict[str, dict[str, Variant | None]] = {}
         for case, mult in (("normal", 1.0), ("cautious", s.cautious_tvl_multiple)):
@@ -996,7 +1031,7 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
         h = hedge_info.get(sym) or {}
         return data.perp(h.get("symbol"), alias=False) if h.get("hedge_id") == "lighter" else None
 
-    def side(i: int, hedged: bool) -> m.TokenSide | None:
+    def side(i: int, hedged: bool, cautious: bool = False) -> m.TokenSide | None:
         sym = syms[i]
         usd, sig = (inp.get("usd") or {}).get(sym), (inp.get("sigma_token") or {}).get(sym)
         if usd is None or sig is None or decs[i] is None:
@@ -1004,6 +1039,9 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
         h = hedge_info.get(sym) or {}
         # 保険は、証拠金の割合が分かる売り場（Lighter）のときだけ掛ける（分け方を自動で計算するため）
         fund = h.get("funding_daily") if hedged and h.get("hedge_id") and margin_perp(sym) else None
+        long_f = (margin_perp(sym) or {}).get("funding_daily_long") if fund is not None and cautious else None
+        if long_f is not None:
+            fund = max(float(fund), long_f)             # 控えめは 7日と30日の悪い方（2026-10-04 オーナー決定 B）
         return m.TokenSide(usd=usd, decimals=int(decs[i]), sigma_usd=sig, stable=sig == 0,
                            hedgeable=fund is not None, funding_cost_daily=fund or 0.0,
                            taker_fee=(h.get("taker_pct") or 0.0) / 100 if fund is not None else None)
@@ -1011,7 +1049,7 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
     trend_rec = inp.get("reward_token_trend_daily")
 
     def pool_inputs(hedged: bool, mult: float, cautious: bool = False) -> m.PoolInputs | None:
-        t0, t1 = side(0, hedged), side(1, hedged)
+        t0, t1 = side(0, hedged, cautious), side(1, hedged, cautious)
         if t0 is None or t1 is None:
             return None
         # 控えめ: 記録がなければ仮の値下がり（月 −30%）を当て、いる日数のあいだに下がる分も数える（evaluate_merkl と同じ）
@@ -1045,7 +1083,7 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
     params0 = m.ModelParams(ranges=tuple(x / 100 for x in sc.ranges_pct), rebalance_wait_minutes=sc.rebalance_wait_minutes,
                             gas_usd_per_tx=gas, swap_ratio=sc.swap_ratio, hedge_taker_fee=sc.hedge_taker_fee_pct / 100,
                             count_funding_income=sc.count_funding_income, reward_sell_hours=sc.reward_sell_hours)
-    margin_per_pool = sum(0.5 * margin_need(margin_perp(syms[i]), s.hedge_withstand_rise_pct / 100)
+    margin_per_pool = sum(0.5 * margin_need(margin_perp(syms[i]), data.withstand(margin_perp(syms[i])))
                           for i, t in enumerate((probe.token0, probe.token1)) if not t.stable and t.hedgeable)
     op.hedge_markets = [{"coin": syms[i], "symbol": hp.get("symbol"), "market_id": hp.get("market_id")}
                         for i, t in enumerate((probe.token0, probe.token1))

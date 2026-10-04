@@ -172,6 +172,22 @@ function HedgesCard({ data }: { data: GuardData }) {
         );
       })}
       <Note>余裕（担保 − 維持に要る額）が、はじめの半分を切ったら知らせます（仮）。練習の詳しい画面で「値段が○%上がったら」を試せます。</Note>
+      <div className="label pt-2">預け金の減り方（1時間ごとの記録）</div>
+      {(data.margin_log ?? []).length === 0 ? <Note>まだありません。保険のある練習の建玉で、1時間に1回記録します。</Note>
+        : data.margin_log.map((m) => (
+          <div key={m.position_id} className="flex flex-col gap-1 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+            <span className="cap">{m.pair ?? `建玉 ${m.position_id}`}{m.status === "closed" ? "（閉じた）" : ""} · {jst(m.since)} から {m.points} 回</span>
+            <span className="num">
+              預けたお金 {usd(m.margin_usd)} → 今 {m.equity_usd == null ? "—" : usd(m.equity_usd)}
+              {m.change_pct == null ? "" : `（${m.change_pct >= 0 ? "+" : ""}${m.change_pct.toFixed(1)}%）`}
+            </span>
+            <span className="cap num">
+              いちばん低いとき {m.low_equity_usd == null ? "—" : usd(m.low_equity_usd)}（{jst(m.low_at)}）· 置き直し {m.rebalances ?? 0} 回
+              {m.per_rebalance_usd == null ? "" : ` · 1回あたり ${signedUsd(m.per_rebalance_usd)}`}
+            </span>
+          </div>
+        ))}
+      <Note>置き直すと、保険の損は Lighter に、プールの得はチェーンに分かれてたまります。そのため長くいると、Lighter の預け金だけが減っていくことがあります。足し方の決まりは、これから決めます。</Note>
     </Card>
   );
 }

@@ -2,8 +2,9 @@
 
 1. 保険に預けるお金（担保）: 2026-10-03 直し（オーナー「預けすぎになっていれば直して」）。前は総額の 40% 決め打ち
    （今の版の 55% / 40% / 5%）で、ドルのコインが半分入るプールでは2倍以上預けていた。今は「探す」と同じ自動の計算:
-   売る量（中身の値動きするコインのドル）× margin_need（値段が hedge_withstand_rise_pct（仮 50%）上がっても強制決済されない
-   割合 = max(最初に要る割合, u ＋ (1 ＋ u) × 維持の割合)）。予備はチェーンのガス代の分だけ（$20 など）。残りをプールに置く。
+   売る量（中身の値動きするコインのドル）× margin_need（値段が u 上がっても強制決済されない
+   割合 = max(最初に要る割合, u ＋ (1 ＋ u) × 維持の割合)）。u は市場ごとに max(50%, 14日のうちのいちばんの上げ)
+   （2026-10-04 オーナー決定 A。withstand_for）。予備はチェーンのガス代の分だけ（$20 など）。残りをプールに置く。
    保険のない建玉は0。守るの画面では、このお金を「置いている場所（Lighter）」として数え、上限に入れる。
 2. 強制決済までの余裕（Lighter の決まり。venues/lighter.yaml の margin）:
    - 担保の今の価値 = 預けたお金 ＋ 保険の損益（資金調達料を引いたもの）
@@ -21,6 +22,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -88,6 +90,63 @@ def margin_need(imf: float | None, mmf: float | None, withstand_rise: float) -> 
     return max(imf or 0.0, withstand_rise + (1 + withstand_rise) * (mmf or 0.0))
 
 
+# --- 耐える上げ幅（2026-10-04 オーナー決定 A。SPEC 13.1 の追加の決定 16） ------------------------------------
+# 市場ごとに、Lighter の値段の過去（feeds の lighter_price_history。1時間の足）で「いる日数（stay_days。14日）のうちに
+# いちばん上がった幅」を出し、それと opportunities.hedge_withstand_rise_pct（50%）の大きい方に耐えるだけ預ける。
+# 値段の過去がまだない市場は 50%。計算は1時間に1回まで（足は1日1回しか増えない）。
+WITHSTAND_TTL_S = 3600
+_withstand_cache: dict[tuple[str, float], tuple[float, dict[int, float]]] = {}
+
+
+def withstand_from_conn(conn: sqlite3.Connection, window_s: float) -> dict[int, float]:
+    """市場ごとの、window_s のうちにいちばん上がった幅（割合。0.584 = 58.4%）。"""
+    from ..backtest import max_rise_hl       # backtest は scoring を読むので、ここで読む（循環を避ける）
+
+    try:
+        rows = conn.execute("SELECT market_id, ts, high, low, close FROM lighter_price_history WHERE high IS NOT NULL "
+                            "AND low IS NOT NULL AND close IS NOT NULL ORDER BY market_id, ts").fetchall()
+    except sqlite3.Error:
+        return {}
+    by: dict[int, list[tuple[int, float, float, float]]] = {}
+    for mid, t, h, lo, c in rows:
+        by.setdefault(int(mid), []).append((int(t), float(h), float(lo), float(c)))
+    out = {}
+    for mid, cs in by.items():
+        mr = max_rise_hl(cs, window_s)
+        if mr:
+            out[mid] = mr["rise_pct"] / 100
+    return out
+
+
+def withstand_table(path: Path, window_days: float) -> dict[int, float]:
+    key = (str(path), float(window_days))
+    hit = _withstand_cache.get(key)
+    if hit and time.monotonic() - hit[0] < WITHSTAND_TTL_S:
+        return hit[1]
+    table: dict[int, float] = {}
+    if path.exists():
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+            try:
+                table = withstand_from_conn(conn, window_days * 86400)
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            table = {}
+    _withstand_cache[key] = (time.monotonic(), table)
+    return table
+
+
+def withstand_for(config: Config, market_id: int | None, table: dict[int, float] | None = None) -> float:
+    """この市場の保険が耐える上げ幅（割合）。per_market なら max(50%, 14日のうちのいちばんの上げ)、fixed なら 50%。"""
+    op = config.opportunities
+    floor = op.hedge_withstand_rise_pct / 100
+    if op.hedge_withstand_mode != "per_market" or market_id is None:
+        return floor
+    table = withstand_table(config.feeds.database_path, op.stay_days) if table is None else table
+    return max(floor, table.get(int(market_id), 0.0))
+
+
 def need_for(config: Config, hedge_id: str | None, market_id: int | None,
              table: dict[int, tuple[float | None, float | None]] | None = None) -> dict[str, Any]:
     """この保険の売り1ドルあたりに預けるお金と、その元の数字。Lighter の値が読めなければ維持の割合は仮の値。"""
@@ -97,7 +156,7 @@ def need_for(config: Config, hedge_id: str | None, market_id: int | None,
         imf, mmf = table[int(market_id)]
     from_lighter = mmf is not None
     mmf = mmf if mmf is not None else config.guard.hedge_mmf_fallback
-    w = config.opportunities.hedge_withstand_rise_pct / 100
+    w = withstand_for(config, market_id if (hedge_id or "lighter") == "lighter" else None)
     return {"need": margin_need(imf, mmf, w), "imf": imf, "mmf": mmf, "from_lighter": from_lighter,
             "withstand_rise_pct": w * 100}
 

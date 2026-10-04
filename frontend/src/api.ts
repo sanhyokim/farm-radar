@@ -150,6 +150,7 @@ export interface Guard {
   pnl: { open_change_usd: number; today_usd: number };
   loss_line: { pct: number; line_usd: number | null; today_usd: number; state: "none" | "ok" | "near" | "hit"; near_frac: number; used_frac: number };
   loss_lines: LossLines; stages: StageRow[]; signals: RiskEvent[]; stage1_watch: Stage1Watch[];
+  margin_log: MarginLog[];
   hedges: { position_id: number; pair: string; margin_usd: number; status: HedgeMargin | null }[];
   notes: string[];
 }
@@ -535,6 +536,12 @@ export interface Discovery {
 }
 
 /** 段階1の合図（プールのお金の減り）のあとの「出ていたら／残っていたら」（2026-10-04 オーナー決定 A の追加1） */
+/** 保険（Lighter）の預け金の減り方（2026-10-04 オーナーのお願い1。1時間に1回の記録のまとめ） */
+export interface MarginLog {
+  position_id: number; pair: string | null; status: string | null; since: string; at: string; points: number;
+  margin_usd: number; equity_usd: number | null; low_equity_usd: number | null; low_at: string;
+  change_pct: number | null; buffer_frac: number | null; rebalances: number | null; per_rebalance_usd: number | null;
+}
 export interface Stage1Watch {
   id: number; position_id: number; pool_id: string; pair: string | null; ts: string; drop_pct: number | null;
   value_usd: number | null; exit_value_usd: number | null;

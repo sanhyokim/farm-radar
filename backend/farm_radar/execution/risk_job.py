@@ -292,6 +292,49 @@ def update_stage1_watch(conn: sqlite3.Connection, ex: PaperExecutor, now: dateti
     conn.commit()
 
 
+MARGIN_LOG_SPACING = timedelta(minutes=55)     # 預け金の減り方は1時間に1回（15分ごとの見張りの4回に1回）
+
+
+def log_margin(conn: sqlite3.Connection, pos: sqlite3.Row, ms: dict[str, Any] | None, now: datetime) -> None:
+    """保険の預け金の今の状態を記録する（2026-10-04 オーナーのお願い1。1時間に1回）。"""
+    if not ms:
+        return
+    last = conn.execute("SELECT MAX(ts) FROM hedge_margin_log WHERE position_id=?", (pos["id"],)).fetchone()[0]
+    if last and now - datetime.fromisoformat(last) < MARGIN_LOG_SPACING:
+        return
+    st = json.loads(pos["state_json"] or "{}")
+    conn.execute("INSERT INTO hedge_margin_log(position_id, ts, margin_usd, hedge_pnl_usd, equity_usd, maintenance_usd, "
+                 "buffer_frac, notional_usd, rebalances) VALUES (?,?,?,?,?,?,?,?,?)",
+                 (pos["id"], now.isoformat(timespec="seconds"), ms["margin_usd"], ms["hedge_pnl_usd"], ms["equity_usd"],
+                  ms["maintenance_usd"], ms["buffer_frac"], ms["notional_usd"], int(st.get("rebalances", 0))))
+    conn.commit()
+
+
+def margin_log_rows(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    """画面・まとめ用: 建玉ごとの、預け金の始め・今・いちばん低いとき・減った割合・置き直しの回数（新しい建玉から）。"""
+    out = []
+    pids = [r[0] for r in conn.execute("SELECT position_id FROM hedge_margin_log GROUP BY position_id "
+                                       "ORDER BY MAX(ts) DESC LIMIT ?", (limit,))]
+    for pid in pids:
+        rows = conn.execute("SELECT * FROM hedge_margin_log WHERE position_id=? ORDER BY ts", (pid,)).fetchall()
+        pos = conn.execute("SELECT p.status, p.pool_id, s.token0_symbol, s.token1_symbol FROM positions p "
+                           "LEFT JOIN pools s ON s.id = p.pool_id WHERE p.id=?", (pid,)).fetchone()
+        first, last = rows[0], rows[-1]
+        low = min(rows, key=lambda r: r["equity_usd"] if r["equity_usd"] is not None else float("inf"))
+        margin = first["margin_usd"] or 0.0
+        out.append({
+            "position_id": pid, "pair": f"{pos['token0_symbol']}/{pos['token1_symbol']}" if pos else None,
+            "status": pos["status"] if pos else None, "since": first["ts"], "at": last["ts"], "points": len(rows),
+            "margin_usd": margin, "equity_usd": last["equity_usd"], "low_equity_usd": low["equity_usd"], "low_at": low["ts"],
+            "change_pct": (last["equity_usd"] / margin - 1) * 100 if margin and last["equity_usd"] is not None else None,
+            "buffer_frac": last["buffer_frac"], "rebalances": last["rebalances"],
+            # 置き直し1回あたりの減り（ドル。置き直しがあったときだけ）
+            "per_rebalance_usd": ((last["equity_usd"] - margin) / last["rebalances"])
+            if last["rebalances"] and last["equity_usd"] is not None else None,
+        })
+    return out
+
+
 def stage1_watch_rows(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
     """画面・まとめ用: 新しい順。差（残っていたら − 出ていたら）も付ける。"""
     out = []
@@ -499,6 +542,7 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
         findings = check_position(inp, pf, s)
         # 保険の強制決済までの余裕（N4b）。0以下なら段階1（すぐ閉じる）、はじめの半分を切ったら注意
         ms = hedge_guard.margin_status(conn, config, pos, mmf_table=mmf_table)
+        log_margin(conn, pos, ms, now)
         if ms and ms["state"] == "liquidated":
             findings = [Finding("emergency", "hedge_liquidation", hedge_guard.message_ja(inp.pair, ms), ms), *findings]
         elif ms and ms["state"] == "alert":

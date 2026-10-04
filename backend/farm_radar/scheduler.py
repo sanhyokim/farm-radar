@@ -144,7 +144,9 @@ def main() -> None:
             # 保険に預けるお金は「探す」と同じ自動の計算（2026-10-03）。予備はそのチェーンのガス代の分
             margin=MarginBasis(withstand_rise=config.opportunities.hedge_withstand_rise_pct / 100,
                                reserve_usd=_reserve(config, v.venue["chain"]["id"]),
-                               mmf_fallback=config.guard.hedge_mmf_fallback, lighter_db=config.feeds.database_path),
+                               mmf_fallback=config.guard.hedge_mmf_fallback, lighter_db=config.feeds.database_path,
+                               per_market=config.opportunities.hedge_withstand_mode == "per_market",
+                               stay_days=config.opportunities.stay_days),
         )
         for v in venues
     ]

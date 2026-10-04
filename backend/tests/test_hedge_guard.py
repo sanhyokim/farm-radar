@@ -134,3 +134,22 @@ def test_guard_screen_counts_lighter_and_shows_lines_and_stages(world):  # noqa:
     assert [s["stage"] for s in g["stages"]] == [1, 2, 3, 4]
     assert g["hedges"][0]["status"]["state"] == "ok"
     assert g["loss_line"]["pct"] == 5.0
+
+
+def test_margin_log_records_hourly_and_summarises(world, calm):  # noqa: F811
+    """保険の預け金の減り方（2026-10-04 オーナーのお願い1）: 1時間に1回、建玉ごとに記録して、始め・今・いちばん低いときを出す。"""
+    from farm_radar.execution import risk_job
+    path, conn = world
+    _set_score(conn)
+    ex, ref = _open(conn, path)
+    _extend(conn, 3)
+    for minutes in (60, 75, 90, 125):
+        run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(minutes=minutes))
+    rows = conn.execute("SELECT * FROM hedge_margin_log WHERE position_id=? ORDER BY ts", (ref.position_id,)).fetchall()
+    assert [r["ts"] for r in rows] == [(NOW + timedelta(minutes=m)).isoformat(timespec="seconds") for m in (60, 125)]
+    s = risk_job.margin_log_rows(conn)[0]
+    margin = json.loads(_pos(conn, ref.position_id)["state_json"])["hedge_margin"]
+    assert s["position_id"] == ref.position_id and s["points"] == 2 and s["pair"] == "WETH/USDG"
+    assert s["margin_usd"] == pytest.approx(margin)
+    assert s["change_pct"] == pytest.approx((rows[-1]["equity_usd"] / margin - 1) * 100)
+    assert s["low_equity_usd"] == min(r["equity_usd"] for r in rows)
