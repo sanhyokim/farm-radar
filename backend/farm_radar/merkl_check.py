@@ -27,6 +27,8 @@ import statistics
 from datetime import datetime
 from typing import Any
 
+from .feeds.positions import parse_reason
+
 LIQ_SAME = 0.001             # 区切りの前後の流動性の違いがこれ以下なら「変わっていない」
 
 
@@ -97,6 +99,17 @@ def check_campaign(conn: sqlite3.Connection, c: sqlite3.Row, coins_key: str | No
     def skip(why: str) -> None:
         skipped[why] = skipped.get(why, 0) + 1
 
+    reasons: list[tuple[str, int]] = []
+    for (reason,) in conn.execute("SELECT DISTINCT reason FROM merkl_reward_snaps WHERE campaign_id=? "
+                                  "AND reason LIKE 'UNISWAP\\_V4\\_%' ESCAPE '\\'", (c["campaign_id"],)):
+        parsed = parse_reason(reason)
+        if parsed is None:
+            # 末尾が番号でなく 32バイトの印（0x…）の預け方がある（PositionManager を使わない預け方）。
+            # 番号として読もうとして /api/trial/records 全体が 500 になっていた（2026-10-04）。使わずに1つ1回数える
+            skip("預け方の番号の形でない（PositionManager を使わない預け方）")
+        elif parsed[1] in measured:
+            reasons.append((reason, parsed[1]))
+
     for a, b in zip(totals, totals[1:]):
         total_d = int(b["amount_raw"] or 0) - int(a["amount_raw"] or 0)
         if total_d <= 0:
@@ -112,17 +125,15 @@ def check_campaign(conn: sqlite3.Connection, c: sqlite3.Row, coins_key: str | No
                            (c["opportunity_id"], a["ts"], b["ts"])).fetchone()
         tvl = float(opp[0]) if opp and opp[0] else None
         p1 = _price_usd(conn, coin1, ta, tb)
-        reasons = [r[0] for r in conn.execute("SELECT DISTINCT reason FROM merkl_reward_snaps WHERE campaign_id=? "
-                                              "AND reason LIKE 'UNISWAP_V4_%'", (c["campaign_id"],))
-                   if int(r[0].rsplit("_", 1)[1]) in measured]
-        for reason in reasons:
-            token_id = int(reason.rsplit("_", 1)[1])
+        for reason, token_id in reasons:
             before, after = _amount_at(conn, c["campaign_id"], reason, a["ts"]), _amount_at(conn, c["campaign_id"], reason, b["ts"])
             if after is None:
                 continue
             got = after - (before or 0)
-            pa = _position(conn, c["chain_id"], token_id, a["ts"], True) or _position(conn, c["chain_id"], token_id, a["ts"], False)
-            pb = _position(conn, c["chain_id"], token_id, b["ts"], False) or _position(conn, c["chain_id"], token_id, b["ts"], True)
+            # 区切りの前（始まり以前）と後（終わり以後）の両方で読めた預け方だけ。片方しかないと、間に量が変わったか分からない
+            # （前は、読み始める前の区切りにも、あとで読んだ量を当てはめていた）
+            pa = _position(conn, c["chain_id"], token_id, a["ts"], True)
+            pb = _position(conn, c["chain_id"], token_id, b["ts"], False)
             if pa is None or pb is None or pa["tick_lower"] is None:
                 skip("預け方の幅と量がない")
                 continue
@@ -189,18 +200,22 @@ def check(conn: sqlite3.Connection, coins_keys: dict[int, str]) -> dict[str, Any
     """幅に配る v4 のキャンペーンすべての答え合わせ。coins_keys = チェーン番号 → DefiLlama の coins の名前。"""
     need = ("merkl_reward_totals", "merkl_reward_snaps", "merkl_position_snaps", "pool_state_snaps", "merkl_campaigns")
     if not all(_table(conn, t) for t in need):
-        return {"campaigns": [], "ratio_median": None, "pairs_in_range": 0}
-    out = []
+        return {"campaigns": [], "errors": [], "ratio_median": None, "pairs_in_range": 0}
+    out, errors = [], []
     for c in conn.execute("SELECT * FROM merkl_campaigns WHERE type='UNISWAP_V4' AND settings_json LIKE '%weightFees%' "
-                          "AND campaign_id IN (SELECT DISTINCT campaign_id FROM merkl_reward_totals)"):
+                          "AND campaign_id IN (SELECT DISTINCT campaign_id FROM merkl_reward_totals)").fetchall():
         if c["chain_id"] not in coins_keys:
             continue
-        res = check_campaign(conn, c, coins_keys.get(c["chain_id"]))
+        try:
+            res = check_campaign(conn, c, coins_keys.get(c["chain_id"]))
+        except Exception as exc:  # noqa: BLE001  1つのキャンペーンの不良で、全体（/api/trial/records）を止めない
+            errors.append({"campaign_id": c["campaign_id"], "error": f"{type(exc).__name__}: {exc}"[:200]})
+            continue
         if res["pairs"]:
             out.append(res)
     all_ratios = [m for m in (x["ratio_median"] for x in out) if m is not None]
     all_shares = [m for m in (x["denominator_share_median"] for x in out) if m is not None]
-    return {"campaigns": sorted(out, key=lambda x: -x["pairs_in_range"]),
+    return {"campaigns": sorted(out, key=lambda x: -x["pairs_in_range"]), "errors": errors,
             "ratio_median": statistics.median(all_ratios) if all_ratios else None,
             "denominator_share_median": statistics.median(all_shares) if all_shares else None,
             "pairs_in_range": sum(x["pairs_in_range"] for x in out)}
