@@ -378,3 +378,49 @@ def test_merkl_check_sums_recipients_and_shows_in_trial_records(tmp_path):
     assert f["merkl_check"]["pairs_in_range"] == 1
     # チェーンの値段の名前が分からないチェーンは比べない
     assert trial_records.feeds(tmp_path / "f.sqlite3")["merkl_check"]["campaigns"] == []
+
+
+def test_merkl_check_skips_reasons_that_are_not_position_numbers(tmp_path):
+    """2026-10-04 パソコンの1行で /api/trial/records が 500。Merkl の預け方の記録には、末尾が番号ではなく
+    32バイトの印（0x…）のもの（PositionManager を使わない預け方）があり、番号として読もうとして全体が止まっていた。
+    そういう行は使わずに理由を数え、残りの答え合わせは続ける。"""
+    from farm_radar import merkl_check
+    conn = _merkl_world(tmp_path)
+    pid = "0x" + "cd" * 32
+    conn.execute("INSERT INTO merkl_reward_snaps(ts, campaign_id, recipient, reason, amount_raw) VALUES "
+                 "('2026-10-04T02:00:00+00:00', 'c1', 'r3', ?, '5')", (f"UNISWAP_V4_{pid}_0x" + "1e" * 32,))
+    conn.commit()
+    c = merkl_check.check(conn, {4663: "robinhood"})["campaigns"][0]
+    assert c["pairs_in_range"] == 1 and c["ratio_median"] == pytest.approx(1.5, rel=1e-3)
+    assert c["skipped"]["預け方の番号の形でない（PositionManager を使わない預け方）"] == 1
+    conn.close()
+    f = trial_records.feeds(tmp_path / "f.sqlite3", {4663: "robinhood"})
+    assert f["merkl_check"]["pairs_in_range"] == 1
+
+
+def test_one_broken_campaign_does_not_stop_the_others(tmp_path, monkeypatch):
+    """1つのキャンペーンの計算で思わぬ例外が出ても、そのキャンペーンだけ「計算できなかった」にして、残りを出す。"""
+    from farm_radar import merkl_check
+    conn = _merkl_world(tmp_path)
+    real = merkl_check.check_campaign
+
+    def broken(conn_, c, key):
+        if c["campaign_id"] == "c1":
+            raise ZeroDivisionError("壊れた行")
+        return real(conn_, c, key)
+    monkeypatch.setattr(merkl_check, "check_campaign", broken)
+    res = merkl_check.check(conn, {4663: "robinhood"})
+    assert res["campaigns"] == [] and res["errors"] == [{"campaign_id": "c1", "error": "ZeroDivisionError: 壊れた行"}]
+
+
+def test_trial_records_still_answer_when_the_merkl_check_fails(tmp_path, monkeypatch):
+    """答え合わせ全体が思わぬ例外で落ちても、/api/trial/records のほかの数は返す（500 にしない）。"""
+    from farm_radar import merkl_check
+    _merkl_world(tmp_path).close()
+
+    def boom(conn, keys):
+        raise RuntimeError("こわれた")
+    monkeypatch.setattr(merkl_check, "check", boom)
+    f = trial_records.feeds(tmp_path / "f.sqlite3", {4663: "robinhood"})
+    assert f["merkl_positions"]["positions"] == 2
+    assert f["merkl_check"]["errors"][0]["error"] == "RuntimeError: こわれた" and f["merkl_check"]["campaigns"] == []

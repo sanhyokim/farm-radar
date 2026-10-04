@@ -103,8 +103,9 @@ def _merkl_check(feeds_db: Path, coins_keys: dict[int, str]) -> dict[str, Any] |
     conn.row_factory = sqlite3.Row
     try:
         return merkl_check.check(conn, coins_keys)
-    except sqlite3.OperationalError:
-        return None
+    except Exception as exc:  # noqa: BLE001  答え合わせが落ちても、ほかの記録の数（/api/trial/records）は返す
+        return {"campaigns": [], "errors": [{"campaign_id": None, "error": f"{type(exc).__name__}: {exc}"[:200]}],
+                "ratio_median": None, "denominator_share_median": None, "pairs_in_range": 0}
     finally:
         conn.close()
 

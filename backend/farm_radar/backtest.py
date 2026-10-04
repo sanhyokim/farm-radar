@@ -33,7 +33,7 @@ from .scoring import model as m
 from .scoring.run import own_series
 from .tokens import load_tokens
 
-VERSION = 7                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
+VERSION = 8                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
 STEP_MAX_S = 45 * 60            # 15分ごとの記録で、これより間があいたら、その間の時間は数えない（欠損）
 DAY_MIN_COVERAGE = 0.9          # 1日のうち、これ以上の時間の記録がある日だけ比べる
 PASS_REL = 0.30                 # 合格の目安: 差が見込みの30%以内（評価のときと同じ）
@@ -528,13 +528,19 @@ def baseline_days(conn: sqlite3.Connection, pool: sqlite3.Row, s: BacktestSettin
 
 
 def _summarize_baselines(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """年あたりの割合（建玉のお金あたり、%）の平均と、今のやり方が勝った日の割合。"""
+    """年あたりの割合（建玉のお金あたり、%）の平均と、今のやり方が勝った日の割合。
+    年あたりは、記録のある短い期間の1日あたりの平均を 365 倍した参考値（1年間の見込みではない）。"""
     def year_pct(k: str) -> float | None:
         m = _mean([x[k] / x["c_lp"] for x in rows if x.get(k) is not None and x["c_lp"]])
         return m * 365 * 100 if m is not None else None
 
     with_lend = [x for x in rows if x["lend"] is not None]
-    return {"days": len(rows), "now_year_pct": year_pct("now"), "now_income_year_pct": year_pct("now_income"),
+    # days・lend_days は「プールと日の組」の数（暦の日数ではない）。暦の日数は calendar_days・lend_calendar_days
+    # （2026-10-04 オーナー: 「貸し出し 3.9%（231日）」が 231日分の記録に見える）
+    return {"days": len(rows), "calendar_days": len({x["day"] for x in rows}),
+            "lend_calendar_days": len({x["day"] for x in with_lend}),
+            "first_day": min((x["day"] for x in rows), default=None), "last_day": max((x["day"] for x in rows), default=None),
+            "now_year_pct": year_pct("now"), "now_income_year_pct": year_pct("now_income"),
             "wide_year_pct": year_pct("wide"), "lend_year_pct": year_pct("lend"), "nothing_year_pct": 0.0 if rows else None,
             "beat_wide_share": sum(1 for x in rows if x["now"] > x["wide"]) / len(rows) if rows else None,
             "beat_lend_share": sum(1 for x in with_lend if x["now"] > x["lend"]) / len(with_lend) if with_lend else None,

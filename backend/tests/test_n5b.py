@@ -459,6 +459,8 @@ def test_baselines_compare_the_current_way_with_wide_lending_and_nothing(old_cop
     assert b["lending"]["source"].endswith(LENDING_BASELINE["pool"]) and b["wide_r_pct"] == wide
     a = b["all"]
     assert a["days"] == 3 and a["lend_days"] == 3
+    # days は「プールと日の組」の数。暦の日数は別に出す（2026-10-04 オーナー: 「231日」が日数に見える）
+    assert a["calendar_days"] == 3 and a["lend_calendar_days"] == 3 and a["first_day"] < a["last_day"]
     assert a["lend_year_pct"] == pytest.approx(3.65) and a["nothing_year_pct"] == 0.0
     # 1日のくわしい値: 今のやり方 = 見込みの収入（ずっと幅の中のとき 10/2）× 実際に幅の中にいた割合 − 実際の損
     pool = old_copy.execute("SELECT * FROM pools WHERE id='up-robinhood:0xaaa'").fetchone()
