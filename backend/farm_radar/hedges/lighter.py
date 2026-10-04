@@ -10,7 +10,8 @@
 
 from __future__ import annotations
 
-from ..external.lighter import Lighter
+from ..external.http import JsonGetter
+from ..external.lighter import RH_BASE_URL, Lighter
 from .base import HedgeAccount, HedgeMarket, HedgePosition
 
 
@@ -62,3 +63,16 @@ class LighterHedge:
         avail = a.get("available_balance")
         return HedgeAccount(self.hedge_id, float(a.get("collateral") or 0.0),
                             float(avail) if avail is not None else None, positions)
+
+
+class LighterRhHedge(LighterHedge):
+    """Lighter の Robinhood Chain 版（2026-10-04 オーナー決定 ②A。読み取りだけ）。
+
+    練習の資金調達料を、Robinhood Chain のプールでは この版の記録で積み上げるために使う。市場の番号は本体と別。
+    選ぶ先（config.yaml の hedge_venues）には入れない。本体の市場と同じ記号の市場を、練習の計算が自分で探して使う。
+    """
+    hedge_id = "lighter_rh"
+    name = "Lighter（Robinhood Chain 版）"
+
+    def __init__(self, client: Lighter | None = None):
+        super().__init__(client or Lighter(JsonGetter(RH_BASE_URL, min_interval=0.3)))

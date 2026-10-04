@@ -249,3 +249,40 @@ def test_practice_margin_tables_switch_to_rh_for_robinhood(tmp_path, monkeypatch
     assert hg.withstand_table(path, 14, True)[139] == pytest.approx(0.8)
     assert hg.withstand_table(path, 14)[139] == pytest.approx(0.6)
     assert hg.use_rh(cfg) and hg.use_rh(cfg, 4663) and not hg.use_rh(cfg, 8453)
+
+
+# --- ②A 練習の資金調達料も RH版の記録で積み上げる --------------------------------------------------------------
+
+class _RhFunding:
+    hedge_id = "lighter_rh"
+
+    def __init__(self):
+        self.asked = []
+
+    def short_funding_hourly(self, market_id, start, end):
+        self.asked.append(market_id)
+        return [(t, 0.0001) for t in range(start - start % 3600, end + 1, 3600)]   # 1時間 0.01%（本体の10倍）
+
+
+def test_practice_funding_uses_the_rh_records_for_robinhood_pools(world, monkeypatch):  # noqa: F811
+    import json as _json
+    from farm_radar.execution import jobs
+    from .test_paper import FakeLighter
+    path, conn = world
+    ex, ref = _open(conn, path)
+    _extend(conn, 6)
+    mid = _json.loads(_pos(conn, ref.position_id)["hedges_json"])[0]["market_id"]
+    monkeypatch.setattr(jobs, "rh_pairs", lambda config, ids: {m: 77 for m in ids})   # 本体の番号 → RH版 77
+    rh = _RhFunding()
+    lighter = FakeLighter()
+    hedges = {"lighter": jobs.hedge_mod.wrap(lighter), "lighter_rh": rh}
+    run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=7), hedges=hedges)
+    assert rh.asked and set(rh.asked) == {77}                                  # RH版の番号で読む
+    rows = conn.execute("SELECT DISTINCT market_id FROM hedge_funding WHERE hedge_id='lighter_rh'").fetchall()
+    assert [r[0] for r in rows] == [mid]                                       # 表には本体の番号で入れる
+    assert _json.loads(_pos(conn, ref.position_id)["state_json"])["funding_paid"] > 0
+    ex2 = jobs.PaperExecutor(conn, _config(path), TOKENS, now=NOW + timedelta(hours=7))
+    at = NOW + timedelta(hours=6)
+    assert ex2._funding(mid, at) == pytest.approx(0.0001)                      # RH版の記録があればそちら
+    conn.execute("DELETE FROM hedge_funding WHERE hedge_id='lighter_rh'")
+    assert ex2._funding(mid, at) == pytest.approx(0.00001)                     # なければ本体の記録（1時間 0.001%）

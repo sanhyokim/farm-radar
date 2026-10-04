@@ -6,9 +6,11 @@ from __future__ import annotations
 from typing import Any
 
 from .base import HedgeAdapter
-from .lighter import LighterHedge
+from .lighter import LighterHedge, LighterRhHedge
 
-REGISTRY: dict[str, Any] = {"lighter": LighterHedge}
+__all__ = ["REGISTRY", "LighterHedge", "LighterRhHedge", "build", "wrap"]
+
+REGISTRY: dict[str, Any] = {"lighter": LighterHedge, "lighter_rh": LighterRhHedge}
 
 
 def build(names: list[str] | tuple[str, ...], clients: dict[str, Any] | None = None) -> dict[str, HedgeAdapter]:
