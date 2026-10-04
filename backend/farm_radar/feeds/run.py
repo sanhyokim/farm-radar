@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 from ..config import FeedSettings
 from ..external.http import ExternalError, JsonGetter
-from . import pools, positions, receipts, shadow, store, trial, vaults, venues
+from . import pool_history, pools, positions, receipts, shadow, store, trial, vaults, venues
 from .sources import SOURCES, Item, Source
 
 log = logging.getLogger(__name__)
@@ -123,6 +123,19 @@ def _read_positions(conn: sqlite3.Connection, ctx: ReceiptContext | None,
     return data, json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"), len(data)
 
 
+def _read_pool_history(conn: sqlite3.Connection, ctx: ReceiptContext | None,
+                       now: datetime | None) -> tuple[Any, bytes, int]:
+    if ctx is None or not ctx.chains:
+        return {}, b"{}", 0
+    kw: dict[str, Any] = {}
+    if ctx.rpc_factory:
+        kw["rpc_factory"] = ctx.rpc_factory
+    if ctx.sleep:
+        kw["sleep"] = ctx.sleep
+    data = pool_history.read(conn, ctx.chains, now or datetime.now(UTC), **kw)
+    return data, json.dumps(data, ensure_ascii=False, default=str).encode("utf-8"), len(data)
+
+
 def _read_venues(conn: sqlite3.Connection, ctx: ReceiptContext | None, now: datetime | None) -> tuple[Any, bytes, int]:
     if ctx is None or not ctx.chains:
         return {}, b"{}", 0
@@ -224,6 +237,8 @@ def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, setti
             data, raw, pages = _read_positions(conn, receipt_ctx, now)
         elif source.id == "vault_states":
             data, raw, pages = _read_vaults(conn, receipt_ctx)
+        elif source.id == "pool_history":
+            data, raw, pages = _read_pool_history(conn, receipt_ctx, now)
         else:
             data, raw, pages = _read(source, fetcher)
         items: list[Item] = source.parse(data)

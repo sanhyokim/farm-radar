@@ -2,7 +2,9 @@
 
 docs/n5-plan-2026-10-03.md の 2-3（判断② A: これからの記録で答え合わせ）。読むのは feeds の保存だけ（読み取りだけ）。
 
-1回の区切り = Merkl のキャンペーン全体の「配った合計」が変わってから、次に変わるまで（約2時間）。
+1回の区切り = Merkl のキャンペーン全体の「配った累計」が変わってから、次に変わるまで（約2時間）。
+累計 = 確定した額（amount）＋まだ確定していない額（pending）。全体の累計は、預け方ごとの額と同じ時点で数える
+（boundaries。2026-10-04 に直した。前は確定した額だけと /rewards/total を比べていて、時点がずれていた）。
 - 実際: その区切りに、預け方 i がもらった額 d_i ÷ キャンペーン全体で配った額 D。
 - 見込み（今の探すの式。13.1 の追加の決定 8 の A）:
   手数料の重み × (預け方の流動性 ÷ 今の値段のところの流動性) ＋ コインの重み × (預け方のドルの額 ÷ プールの預かり額)。
@@ -59,13 +61,50 @@ def _price_usd(conn: sqlite3.Connection, coin: str | None, t0: int, t1: int) -> 
 
 
 def _amount_at(conn: sqlite3.Connection, cid: str, reason: str, ts: str) -> int | None:
-    """その時刻までにもらった累計（受け取る人ごとの最後の値の合計。預け方を人に渡すと受け取る人が変わるため）。"""
-    rows = conn.execute("SELECT s.amount_raw FROM merkl_reward_snaps s JOIN (SELECT recipient, MAX(ts) AS ts "
+    """その時刻までにもらった累計（受け取る人ごとの最後の値の合計。預け方を人に渡すと受け取る人が変わるため）。
+
+    累計 = 確定した額（amount）＋まだ確定していない額（pending）。2026-10-04 に直した: 前は amount だけで、
+    キャンペーン全体の額（amount と pending の合計）と時点がずれていた。確定（配る木の更新）が区切りの中にあると、
+    実際が約2倍に見えていた（作業場所の試験用の値: 07:57〜12:07 で、預け方の増え方の合計 ÷ 全体の増え方 = 1.9）。"""
+    rows = conn.execute("SELECT s.amount_raw, s.pending_raw FROM merkl_reward_snaps s JOIN (SELECT recipient, MAX(ts) AS ts "
                         "FROM merkl_reward_snaps WHERE campaign_id=? AND reason=? AND ts<=? GROUP BY recipient) m "
                         "ON s.recipient=m.recipient AND s.ts=m.ts WHERE s.campaign_id=? AND s.reason=?",
                         (cid, reason, ts, cid, reason)).fetchall()
-    vals = [int(r[0]) for r in rows if r[0] is not None]
+    vals = [int(r[0]) + int(r[1] or 0) for r in rows if r[0] is not None]
     return sum(vals) if vals else None
+
+
+def boundaries(conn: sqlite3.Connection, cid: str, page_rows: int = 100) -> tuple[list[tuple[str, int]], str | None]:
+    """区切りの境目: キャンペーン全体の累計（全部の預け方の amount ＋ pending）を、預け方ごとの額と同じ時点で数えられた時刻。
+
+    - 全部のページを読んだ記録（merkl_reward_sums の complete=1）があれば、その時刻と合計。
+    - それより前（1ページ = 先頭100行だけを読んでいたころ）は、キャンペーンの行が100行に届いていなければ全部の行が
+      読めているので、記録した行から合計を出す。届いていれば、全体の増え方が数えられないので使わない（理由を返す）。
+    戻り値 = ([(時刻, 合計)], 使えない期間の理由)。"""
+    sums = []
+    if _table(conn, "merkl_reward_sums"):
+        sums = conn.execute("SELECT ts, sum_raw, complete FROM merkl_reward_sums WHERE campaign_id=? ORDER BY ts",
+                            (cid,)).fetchall()
+    first = sums[0][0] if sums else None
+    out: list[tuple[str, int]] = []
+    why = None
+    cond, args = ("AND ts < ?", (cid, first)) if first else ("", (cid,))
+    n_rows = conn.execute(f"SELECT COUNT(*) FROM (SELECT DISTINCT recipient, reason FROM merkl_reward_snaps "
+                          f"WHERE campaign_id=? {cond})", args).fetchone()[0]
+    times = [r[0] for r in conn.execute(f"SELECT DISTINCT ts FROM merkl_reward_snaps WHERE campaign_id=? {cond} "
+                                        f"ORDER BY ts", args)]
+    if times and n_rows >= page_rows:
+        why = "配った額を先頭100行までしか記録していなかった期間（全体の増え方を数えられない）"
+    elif times:
+        for t in times:
+            # 大きな整数（18桁を超える）は SQLite の足し算だと小数になるので、Python で足す
+            rows = conn.execute("SELECT s.amount_raw, s.pending_raw FROM merkl_reward_snaps s JOIN (SELECT recipient, reason, "
+                                "MAX(ts) AS ts FROM merkl_reward_snaps WHERE campaign_id=? AND ts<=? GROUP BY recipient, reason) m "
+                                "ON s.recipient=m.recipient AND s.reason=m.reason AND s.ts=m.ts WHERE s.campaign_id=?",
+                                (cid, t, cid)).fetchall()
+            out.append((t, sum(int(r[0] or 0) + int(r[1] or 0) for r in rows)))
+    out += [(r[0], int(r[1])) for r in sums if int(r[2]) == 1]
+    return out, why
 
 
 def _position(conn: sqlite3.Connection, chain_id: int, token_id: int, ts: str, before: bool) -> sqlite3.Row | None:
@@ -88,8 +127,7 @@ def check_campaign(conn: sqlite3.Connection, c: sqlite3.Row, coins_key: str | No
     out_ok = bool(st.get("isOutOfRangeIncentivized"))
     d0, d1 = int(st.get("decimalsCurrency0") or 18), int(st.get("decimalsCurrency1") or 18)
     coin1 = f"{coins_key}:{str(st.get('currency1') or '').lower()}" if coins_key and st.get("currency1") else None
-    totals = conn.execute("SELECT ts, amount_raw FROM merkl_reward_totals WHERE campaign_id=? ORDER BY ts",
-                          (c["campaign_id"],)).fetchall()
+    totals, why_not = boundaries(conn, c["campaign_id"])
     rows: list[dict[str, Any]] = []
     skipped: dict[str, int] = {}
     # 幅と量を読んだ預け方だけ（読むのは配った額の多い順に PER_CAMPAIGN まで。feeds/positions.py）
@@ -98,6 +136,9 @@ def check_campaign(conn: sqlite3.Connection, c: sqlite3.Row, coins_key: str | No
 
     def skip(why: str) -> None:
         skipped[why] = skipped.get(why, 0) + 1
+
+    if why_not:
+        skip(why_not)
 
     reasons: list[tuple[str, int]] = []
     for (reason,) in conn.execute("SELECT DISTINCT reason FROM merkl_reward_snaps WHERE campaign_id=? "
@@ -110,11 +151,12 @@ def check_campaign(conn: sqlite3.Connection, c: sqlite3.Row, coins_key: str | No
         elif parsed[1] in measured:
             reasons.append((reason, parsed[1]))
 
-    for a, b in zip(totals, totals[1:]):
-        total_d = int(b["amount_raw"] or 0) - int(a["amount_raw"] or 0)
+    for (a_ts, a_sum), (b_ts, b_sum) in zip(totals, totals[1:]):
+        total_d = b_sum - a_sum
         if total_d <= 0:
             continue
-        ta, tb = _ts(a["ts"]), _ts(b["ts"])
+        ta, tb = _ts(a_ts), _ts(b_ts)
+        a, b = {"ts": a_ts}, {"ts": b_ts}
         states = conn.execute("SELECT tick, liquidity, sqrt_price_x96 FROM pool_state_snaps WHERE chain_id=? AND pool_id=? "
                               "AND checked_at>? AND checked_at<=? AND liquidity IS NOT NULL AND sqrt_price_x96 IS NOT NULL",
                               (c["chain_id"], pool, a["ts"], b["ts"])).fetchall()
@@ -202,13 +244,13 @@ def _out_paid(rows: list[dict[str, Any]]) -> float | None:
 
 def check(conn: sqlite3.Connection, coins_keys: dict[int, str]) -> dict[str, Any]:
     """幅に配る v4 のキャンペーンすべての答え合わせ。coins_keys = チェーン番号 → DefiLlama の coins の名前。"""
-    need = ("merkl_reward_totals", "merkl_reward_snaps", "merkl_position_snaps", "pool_state_snaps", "merkl_campaigns")
+    need = ("merkl_reward_snaps", "merkl_position_snaps", "pool_state_snaps", "merkl_campaigns")
     if not all(_table(conn, t) for t in need):
         return {"campaigns": [], "errors": [], "ratio_median": None, "pairs_in_range": 0}
     out, errors = [], []
     skipped: dict[str, int] = {}
     for c in conn.execute("SELECT * FROM merkl_campaigns WHERE type='UNISWAP_V4' AND settings_json LIKE '%weightFees%' "
-                          "AND campaign_id IN (SELECT DISTINCT campaign_id FROM merkl_reward_totals)").fetchall():
+                          "AND campaign_id IN (SELECT DISTINCT campaign_id FROM merkl_reward_snaps)").fetchall():
         if c["chain_id"] not in coins_keys:
             continue
         try:

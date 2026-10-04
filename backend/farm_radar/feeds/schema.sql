@@ -245,6 +245,18 @@ CREATE TABLE IF NOT EXISTS merkl_reward_totals (
   PRIMARY KEY (campaign_id, ts)
 );
 
+-- 全部の行を読めた回の「確定した額（amount）＋まだ確定していない額（pending）」のキャンペーン全体の合計（変わったときだけ）。
+-- 2026-10-04: merkl_reward_totals（/rewards/total）は、預け方ごとの額と同じ時点の値にならないことがある
+-- （07:57 は合計と一致、12:07 は預け方の未確定の額が先に増えていた）。区切りの「全体で配った額」はこちらで数える
+CREATE TABLE IF NOT EXISTS merkl_reward_sums (
+  ts TEXT NOT NULL,
+  campaign_id TEXT NOT NULL,
+  sum_raw TEXT NOT NULL,
+  rows INTEGER,
+  complete INTEGER NOT NULL,           -- 1 = 全部のページを読めた
+  PRIMARY KEY (campaign_id, ts)
+);
+
 -- DefiLlama の利回りと預かり額の毎日の記録（https://yields.llama.fi/chart/<プール>。1日1回。400日分）
 CREATE TABLE IF NOT EXISTS llama_yield_history (
   pool TEXT NOT NULL,
@@ -363,3 +375,57 @@ CREATE TABLE IF NOT EXISTS merkl_position_snaps (
   PRIMARY KEY (chain_id, token_id, ts)
 );
 CREATE INDEX IF NOT EXISTS idx_merkl_reward_reason ON merkl_reward_snaps(campaign_id, reason, ts);
+
+-- Merkl の分母 B（幅の中だけ）の検証（2026-10-04 指示書）。キャンペーンのプールの、預け方を足した・減らした記録
+-- （Uniswap v4 の公式の PoolManager の ModifyLiquidity。チェーンの記録。feeds/pool_history.py）。
+-- 読んだ範囲（next_block の手前まで）を覚えて、同じ記録を読み直さない。途中で止まっても、続きから読む。
+CREATE TABLE IF NOT EXISTS pool_liq_progress (
+  chain_id INTEGER NOT NULL,
+  pool_id TEXT NOT NULL,               -- 小文字
+  manager TEXT,                        -- 読んだ PoolManager（公式の住所と同じものだけ）
+  keep_from_ts INTEGER NOT NULL,       -- これより前の記録は、預け方ごとの合計（pool_liq_base）にまとめる
+  keep_from_block INTEGER,             -- keep_from_ts のときのブロック（ブロックの時刻を二分探索で確かめた）
+  next_block INTEGER NOT NULL DEFAULT 0,
+  done_ts INTEGER,                     -- next_block の手前のブロックの時刻（ここまでの預け方は確かめられる）
+  events INTEGER NOT NULL DEFAULT 0,   -- これまでに読んだ記録の数
+  calls INTEGER NOT NULL DEFAULT 0,    -- これまでの読み取りの回数
+  error TEXT,
+  updated_at TEXT,
+  PRIMARY KEY (chain_id, pool_id)
+);
+-- keep_from_ts より前の記録をまとめた、預け方ごとの量（0 になったものは消す）
+CREATE TABLE IF NOT EXISTS pool_liq_base (
+  chain_id INTEGER NOT NULL,
+  pool_id TEXT NOT NULL,
+  pos_key TEXT NOT NULL,               -- 預け方の印（v4 の Position の鍵: keccak(owner, 下, 上, salt)）
+  owner TEXT NOT NULL,                 -- 預けた契約（公式の PositionManager なら、salt が預け方の番号）
+  tick_lower INTEGER NOT NULL,
+  tick_upper INTEGER NOT NULL,
+  salt TEXT NOT NULL,
+  liquidity TEXT NOT NULL,             -- 大きな整数なので文字で
+  PRIMARY KEY (chain_id, pool_id, pos_key)
+);
+-- keep_from_ts 以後の記録（1件ずつ）
+CREATE TABLE IF NOT EXISTS pool_liq_events (
+  chain_id INTEGER NOT NULL,
+  pool_id TEXT NOT NULL,
+  block INTEGER NOT NULL,
+  log_index INTEGER NOT NULL,
+  ts INTEGER NOT NULL,                 -- ブロックの時刻（UNIX 秒。前後の目印のブロックの時刻から比例で出す。ずれは約20秒まで）
+  pos_key TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  tick_lower INTEGER NOT NULL,
+  tick_upper INTEGER NOT NULL,
+  salt TEXT NOT NULL,
+  delta TEXT NOT NULL,                 -- 足した量（減らしたときは負）
+  PRIMARY KEY (chain_id, pool_id, block, log_index)
+);
+CREATE INDEX IF NOT EXISTS idx_pool_liq_events_ts ON pool_liq_events(chain_id, pool_id, ts);
+-- ブロックの時刻の目印（チェーンの記録）。Robinhood Chain の公開の読み取り口は、記録の blockTimestamp を 0 で返す
+-- （2026-10-04 に確かめた）ので、目印のブロックの時刻を読んで、その間は比例で出す
+CREATE TABLE IF NOT EXISTS chain_block_times (
+  chain_id INTEGER NOT NULL,
+  block INTEGER NOT NULL,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (chain_id, block)
+);

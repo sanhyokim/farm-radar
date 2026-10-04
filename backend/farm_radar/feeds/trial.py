@@ -47,7 +47,11 @@ AERO_DIR = "deployment-addresses"
 # 一覧が読めないとき（回数制限など）に、ファイルがあるかを1つずつ確かめる名前（arc.json だけ 2026-10-03 にあった）
 AERO_GUESS = ("arc", "base", "ethereum", "mainnet", "optimism", "op", "ink", "robinhood", "arbitrum")
 
-REWARD_ROWS = 100            # キャンペーンごとに読む「受け取った人×預け方」の行（配った額の多い順の先頭）
+REWARD_ROWS = 100            # キャンペーンごとに読む「受け取った人×預け方」の行（1ページ。配った額の多い順）
+# 2026-10-04: 1ページ（先頭100行）だけでは、配った額の多いキャンペーンの預け方を全部は読めていなかった
+# （SPY/MU は 569 行。未確定の額が増えている預け方 約100 のうち 43 だけが先頭100行に入っていた）。
+# 区切りの「キャンペーン全体で配った額」を、預け方ごとの額と同じ時点で数えるため、全部のページを読む（この数まで）
+MAX_REWARD_PAGES = 15
 MAX_CAMPAIGNS = 150          # 1回に読むキャンペーンの上限
 LLAMA_TOP_TVL = 60           # 預かり額の多いプール（貸し出しなど、比べる相手になるもの）
 LLAMA_TOP_REWARD = 90        # ボーナスのあるプール
@@ -108,10 +112,18 @@ def read_merkl_rewards(conn: sqlite3.Connection, text: Callable[..., str], ctx: 
     for c in reward_campaigns(conn, ctx.chain_ids, now):
         dist = c["distribution_chain_id"] or c["chain_id"]
         cid = c["campaign_id"]
+        rows: list[dict[str, Any]] = []
+        complete = False
         try:
-            rows = _json(text(f"{MERKL}/rewards/", {"chainId": str(dist), "campaignId": cid,
-                                                     "items": str(REWARD_ROWS), "page": "0"}))
-            calls += 1
+            for page in range(MAX_REWARD_PAGES):
+                got = _json(text(f"{MERKL}/rewards/", {"chainId": str(dist), "campaignId": cid,
+                                                        "items": str(REWARD_ROWS), "page": str(page)}))
+                calls += 1
+                got = [r for r in got if isinstance(r, dict)] if isinstance(got, list) else []
+                rows += got
+                if len(got) < REWARD_ROWS:
+                    complete = True
+                    break
             total = _json(text(f"{MERKL}/rewards/total", {"chainId": str(dist), "campaignId": cid}))
             calls += 1
         except ExternalError as exc:
@@ -119,8 +131,15 @@ def read_merkl_rewards(conn: sqlite3.Connection, text: Callable[..., str], ctx: 
                 raise                       # 回数制限: この回はあきらめる（「不明」）
             out[cid] = {"error": str(exc)[:200], "dist_chain": dist}
             continue
+        seen: set[tuple[str, str]] = set()
+        uniq = []
+        for r in rows:                      # ページの境目で同じ行が2回出ることがあるので1回だけ数える
+            k = (str(r.get("recipient") or "").lower(), str(r.get("reason") or ""))
+            if k not in seen:
+                seen.add(k)
+                uniq.append(r)
         out[cid] = {"dist_chain": dist, "chain_id": c["chain_id"], "opportunity_id": c["opportunity_id"],
-                    "rows": [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else [],
+                    "rows": uniq, "complete": complete,
                     "total": (total or {}).get("amount") if isinstance(total, dict) else None}
     return out, calls
 
@@ -147,6 +166,15 @@ def write_merkl_rewards(conn: sqlite3.Connection, ts: str, data: dict[str, Any])
             conn.execute("INSERT OR REPLACE INTO merkl_reward_latest(campaign_id, recipient, reason, amount_raw, "
                          "pending_raw, ts) VALUES (?,?,?,?,?,?)", (cid, recipient, reason, amount, pending, ts))
             n += 1
+        # 全部の行を読めた回の「確定した額＋まだ確定していない額」の合計（預け方ごとの額と同じ時点の、キャンペーン全体の額）
+        rows_all = [r for r in d.get("rows") or [] if r.get("recipient")]
+        s_raw = str(sum(int(r.get("amount") or 0) + int(r.get("pending") or 0) for r in rows_all))
+        complete = 1 if d.get("complete") else 0
+        last_s = conn.execute("SELECT sum_raw, complete FROM merkl_reward_sums WHERE campaign_id=? ORDER BY ts DESC LIMIT 1",
+                              (cid,)).fetchone()
+        if last_s is None or last_s[0] != s_raw or int(last_s[1]) != complete:
+            conn.execute("INSERT OR REPLACE INTO merkl_reward_sums(ts, campaign_id, sum_raw, rows, complete) VALUES (?,?,?,?,?)",
+                         (ts, cid, s_raw, len(rows_all), complete))
         total = d.get("total")
         if total is not None:
             last = conn.execute("SELECT amount_raw FROM merkl_reward_totals WHERE campaign_id=? ORDER BY ts DESC LIMIT 1",

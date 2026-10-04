@@ -189,21 +189,44 @@ def test_seven_days_make_the_loss_and_stage_items_ready_and_the_rebalance_candid
     assert "おすすめ" not in _text({k: v for k, v in out.items() if k != "notes"})
 
 
-def test_merkl_waits_then_shows_a_and_marks_b_as_missing():
-    mc = {"campaigns": [{"pair": "WETH/USDG", "pairs_in_range": 40, "denominator_share_median": 0.8}],
-          "pairs_in_range": 40, "ratio_median": 1.25, "denominator_share_median": 0.8}
-    early = fp.build(None, None, {"feeds": {"merkl_check": mc, "merkl_rewards": {
-        "from": "2026-10-04T00:00:00+00:00", "to": "2026-10-05T00:00:00+00:00"}}}, CFG, {})
-    assert early["merkl"]["state"]["code"] == "wait"
-    later = fp.build(None, None, {"feeds": {"merkl_check": mc, "merkl_rewards": {
-        "from": "2026-10-04T00:00:00+00:00", "to": "2026-10-08T00:00:00+00:00"}}}, CFG, {})
-    m = later["merkl"]
-    assert m["state"]["code"] == "lack" and m["table"]["rows"][0][2] == "+25.0%" and m["table"]["rows"][1][2] == "材料不足"
-    assert m["missing"]["new_recording"] is False and m["missing"]["past_public"] is True
-    # 5% の上限: A は 5/105、d = 0.8 なら B は 5/85
-    rows = {r[0]: r for r in {x["key"]: x for x in later["items"]}["pool_share"]["tables"][0]["rows"]}
-    r = rows["WETH/USDG（比べた組 40）"]
-    assert r[2] == "4.76%" and r[3] == "5.88%"
+def _ab(pairs: int, days: float) -> dict:
+    st = {"median": -0.1, "p25": -0.2, "p75": 0.05, "within": 0.9}
+    camp = {"campaign_id": "c1", "pair": "WETH/USDG", "chain_id": 4663, "out_class": "in", "out_label": "幅の中だけ",
+            "weights": {"fee": 0.7, "token0": 0.15, "token1": 0.15}, "main_weight": "手数料が中心", "intervals": 3,
+            "intervals_l_ok": 3, "pairs": pairs, "positions": 10, "unusable_positions": 1, "n_all": 12.0, "n_in": 9.0,
+            "a_den_v": 1.0, "b_den_v": 0.8, "ratio": 0.8, "share_backcalc": 0.82, "share_chain": 0.8,
+            "share_backcalc_now": 0.5, "err_a": -0.1, "err_b": 0.01, "tvl": 1000.0, "skipped": {}, "unusable": {}}
+    return {"present": True, "overall": {"pairs": pairs, "campaigns": 1, "days": days, "a": st, "b": st},
+            "by_weight": {"手数料が中心": {"pairs": pairs, "a": st, "b": st}}, "campaigns": [camp],
+            "parts": {"fee": {"label": "手数料", "b": "A と同じ", "share_of_pred_a": 0.9}},
+            "skipped": {"区切りの間に預け方が変わった（足す・減らす・閉じる・作る）": 2}, "unusable": {"名前の形が違う": 1},
+            "out_classes": {"幅の中だけ": 1},
+            "cap": [{"pair": "WETH/USDG", "tvl": 1000.0, "ratio": 0.8, "b_den": 800.0,
+                     "a": {100: 100 / 1100, 500: 500 / 1500}, "b": {100: 100 / 900, 500: 500 / 1300}}],
+            "own_usd": [100, 500]}
+
+
+def test_merkl_ab_waits_then_lines_up_a_b_and_actual():
+    """2026-10-04 指示書: A（全員）と B（幅の中だけ）と実際を、同じ区切り・同じ預け方で並べる。決めない。"""
+    early = fp.merkl_ab(None, _ab(10, 1.0), {"pools": 1})
+    assert early["state"]["code"] == "wait" and early["missing"] is None
+    m = fp.merkl_ab(None, _ab(40, 4.0), {"pools": 23, "caught_up": 23, "events": 316000})
+    assert m["state"]["code"] == "ready"
+    assert m["table"]["rows"][0][:2] == ["A（全員が分母。今の式）", "-10.0%"] and m["table"]["rows"][1][4] == "90%"
+    titles = [t["title"] for t in m["tables"]]
+    assert "5% 上限の準備: 自分の額が分母の何%か" in titles and "使わなかった区切り・預け方と理由" in titles
+    cap = next(t for t in m["tables"] if t["title"].startswith("5% 上限"))
+    assert cap["head"][:4] == ["組み合わせ", "B÷A", "$100 A", "$100 B"] and cap["rows"][0][2:4] == ["9.09%", "11.11%"]
+    camp = next(t for t in m["tables"] if t["title"] == "キャンペーンごと")["rows"][0]
+    assert camp[0] == "WETH/USDG" and camp[7] == "0.80" and camp[8] == "0.50"      # B÷A と、今の答え合わせの逆算
+    # チェーンの記録をまだ読んでいない
+    assert fp.merkl_ab(None, {"present": False}, None)["state"]["code"] == "wait"
+
+
+def test_pool_share_uses_the_chain_counted_ratio():
+    rows = {r[0]: r for r in fp.pool_share(_ab(40, 4.0), 4.0, 0.05)["tables"][0]["rows"]}
+    r = rows["WETH/USDG（チェーンで数えた）"]
+    assert r[1] == "0.80" and r[2] == "4.76%" and r[3] == "5.88%"           # A は 5/105、d = 0.8 なら B は 5/85
 
 
 def _feeds(tmp_path):
