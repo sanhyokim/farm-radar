@@ -624,7 +624,7 @@ def merkl_ab(mc: dict[str, Any] | None, ab: dict[str, Any] | None, reading: dict
                        _r2(c["ratio"]), _r2(c["share_backcalc_now"]), _r2(c["share_backcalc"]), _r2(c["share_chain"]),
                        _err(c["err_a"]), _err(c["err_b"])])
     t_c = table("キャンペーンごと", ["組み合わせ", "幅の外", "重み 手数料/0/1", "比べた組", "預け方 全部", "幅の中",
-                                    "使えない/名前", "B÷A", "逆算（今の答え合わせ）", "逆算（チェーンの A）",
+                                    "使えない預け方/Merkl の名前", "B÷A", "逆算（今の答え合わせ）", "逆算（チェーンの A）",
                                     "B どおりなら", "A の差", "B の差"], c_rows,
                 "B÷A = 幅の中の預け方の額 ÷ 全部の額（チェーンで数えた。区切りのまん中）。逆算 = 実際から手数料の分を引いた"
                 "残りで出した分母の割合（1 に近い = A、B どおりなら右の「B どおりなら」に近い）。"
