@@ -282,10 +282,11 @@ def test_shadow_source_writes_rows_and_a_failure_is_recorded_without_stopping(se
 
 
 def test_hourly_runner_reads_aero_addresses_and_shadow(settings):
-    texts = {"https://aero.xyz/articles/index.md": "", BY_ID["lighter_funding"].url: "{}", LIST_URL: "[]"}
+    texts = {"https://aero.xyz/articles/index.md": "", BY_ID["lighter_funding"].url: "{}", LIST_URL: "[]",
+             BY_ID["lighter_rh_markets"].url: "{}", BY_ID["lighter_rh_funding"].url: "{}"}
     ctx = trial.TrialContext(shadow=lambda c, now: {"rows": []})
     out = FeedRunner(settings, Fake(texts), trial_ctx=ctx).run("hourly", NOW)
-    assert [o["source"] for o in out][-2:] == ["aero_addresses", "shadow_predictions"]
+    assert [o["source"] for o in out][2:4] == ["aero_addresses", "shadow_predictions"]
     assert all(o["status"] == "ok" for o in out)
 
 

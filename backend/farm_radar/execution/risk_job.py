@@ -310,6 +310,52 @@ def log_margin(conn: sqlite3.Connection, pos: sqlite3.Row, ms: dict[str, Any] | 
     conn.commit()
 
 
+def record_topup(conn: sqlite3.Connection, ex: PaperExecutor, pos: sqlite3.Row, ms: dict[str, Any] | None,
+                 line_frac: float, now: datetime) -> dict[str, Any] | None:
+    """預け金を「足したとしたら」を記録する（2026-10-04 オーナー決定 ③A。本物のお金を始めるまでは実際には足さない）。
+
+    前に足したとしたらの分も入れた余裕が、はじめの余裕の line_frac を切ったら、はじめの余裕まで戻す額を1回と数える。
+    練習の建玉そのもの（プール・売りの量）は変えない。そのため、売りを減らしたあとの損の減り方は入っていない（回数は多めに出る）。
+    """
+    if not ms or not ms.get("buffer_initial_usd") or ms["buffer_initial_usd"] <= 0:
+        return None
+    added = conn.execute("SELECT COALESCE(SUM(topup_usd), 0) FROM hedge_topup_log WHERE position_id=?",
+                         (pos["id"],)).fetchone()[0]
+    initial = ms["buffer_initial_usd"]
+    frac = (ms["buffer_usd"] + added) / initial
+    if frac >= line_frac:
+        return None
+    topup = initial - (ms["buffer_usd"] + added)
+    try:
+        est = ex.topup_estimate(PositionRef(pos["id"]), topup)
+    except Exception:  # noqa: BLE001  見込みが出せなくても、回数と額は残す
+        log.warning("topup estimate failed", extra={"data": {"position": pos["id"]}})
+        est = {}
+    conn.execute("INSERT INTO hedge_topup_log(position_id, ts, buffer_frac, line_frac, topup_usd, pool_usd, "
+                 "volatile_before_usd, volatile_after_usd, short_before_usd, short_after_usd, cost_usd, detail_json) "
+                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                 (pos["id"], now.isoformat(timespec="seconds"), frac, line_frac, topup, est.get("pool_usd"),
+                  est.get("volatile_before_usd"), est.get("volatile_after_usd"), est.get("short_before_usd"),
+                  est.get("short_after_usd"), est.get("cost_usd"), json.dumps(est.get("parts") or {})))
+    conn.commit()
+    return {"topup_usd": topup, "buffer_frac": frac, **est}
+
+
+def topup_rows(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    """画面・まとめ用: 建玉ごとの「足したとしたら」の回数・合計の額・費用と、最後の回の中身。"""
+    out = []
+    for r in conn.execute("""SELECT position_id, COUNT(*) n, SUM(topup_usd) total, SUM(cost_usd) cost, MAX(ts) at
+                             FROM hedge_topup_log GROUP BY position_id ORDER BY MAX(ts) DESC LIMIT ?""", (limit,)):
+        last = conn.execute("SELECT * FROM hedge_topup_log WHERE position_id=? ORDER BY ts DESC, id DESC LIMIT 1",
+                            (r["position_id"],)).fetchone()
+        pos = conn.execute("SELECT p.status, s.token0_symbol, s.token1_symbol FROM positions p "
+                           "LEFT JOIN pools s ON s.id = p.pool_id WHERE p.id=?", (r["position_id"],)).fetchone()
+        out.append({"position_id": r["position_id"], "pair": f"{pos['token0_symbol']}/{pos['token1_symbol']}" if pos else None,
+                    "status": pos["status"] if pos else None, "count": r["n"], "total_usd": r["total"],
+                    "cost_usd": r["cost"], "at": r["at"], "last": {k: last[k] for k in last.keys() if k != "detail_json"}})
+    return out
+
+
 def margin_log_rows(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
     """画面・まとめ用: 建玉ごとの、預け金の始め・今・いちばん低いとき・減った割合・置き直しの回数（新しい建玉から）。"""
     out = []
@@ -543,6 +589,15 @@ def run_risk(conn: sqlite3.Connection, config: Config, tokens: TokenBook, ex: Pa
         # 保険の強制決済までの余裕（N4b）。0以下なら段階1（すぐ閉じる）、はじめの半分を切ったら注意
         ms = hedge_guard.margin_status(conn, config, pos, mmf_table=mmf_table)
         log_margin(conn, pos, ms, now)
+        topup = record_topup(conn, ex, pos, ms, config.guard.hedge_topup_buffer_frac, now)
+        if topup is not None:
+            events.append(record_event(
+                conn, now, pos["id"], "caution", "hedge_topup_if",
+                f"{inp.pair}: 保険の預け金の余裕がはじめの{config.guard.hedge_topup_buffer_frac * 100:g}%を切りました。"
+                f"本物のお金なら ${topup['topup_usd']:,.2f} を足すところです（練習では足さず、記録だけ。"
+                f"見込みの費用 ${topup.get('cost_usd') or 0:,.2f}、売りは ${topup.get('short_before_usd') or 0:,.0f} → "
+                f"${topup.get('short_after_usd') or 0:,.0f} に減らす）。",
+                "recorded", {k: v for k, v in topup.items() if k != "parts"}, pos["venue_id"], pos["pool_id"]))
         if ms and ms["state"] == "liquidated":
             findings = [Finding("emergency", "hedge_liquidation", hedge_guard.message_ja(inp.pair, ms), ms), *findings]
         elif ms and ms["state"] == "alert":

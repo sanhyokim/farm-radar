@@ -431,6 +431,10 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
     sig0 = 0.0 if tokens.is_stable(t0) else _sigma(g0)
     sig1 = 0.0 if tokens.is_stable(t1) else _sigma(g1)
     sig_pair = _sigma(pair_grid)
+    # 直近24時間の値動き（2026-10-04 オーナー決定 ①A。控えめの見込みと「値動きが急に大きくなった」の印に使う）
+    sig_pair24 = vol.recent_sigma(vol.hourly_returns(pair_grid), now_s)
+    sig24 = {r["token0_symbol"]: 0.0 if tokens.is_stable(t0) else vol.recent_sigma(vol.hourly_returns(g0), now_s),
+             r["token1_symbol"]: 0.0 if tokens.is_stable(t1) else vol.recent_sigma(vol.hourly_returns(g1), now_s)}
     is_stock = tokens.is_stock(t0) or tokens.is_stock(t1)
     split = {}
     for t, g in ((t0, g0), (t1, g1)):
@@ -530,6 +534,7 @@ def _score_pool(r, ctx, params, sparams, base_warns, prices, own_ok, token_grid,
         "inputs": {
             "price": r["price"], "usd": {r["token0_symbol"]: prices.get(t0), r["token1_symbol"]: prices.get(t1)},
             "sigma_token": {r["token0_symbol"]: sig0, r["token1_symbol"]: sig1}, "sigma_pair": sig_pair,
+            "sigma_pair_24h": sig_pair24, "sigma_token_24h": sig24,
             "sigma_stock_split": split, "vol_source": src,
             "reward_usd_day": reward_usd_day, "fees_usd_day": fees_day, "fee": fee,
             "volume_24h_usd": volume, "tvl_usd": tvl,

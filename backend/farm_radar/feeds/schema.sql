@@ -277,6 +277,46 @@ CREATE TABLE IF NOT EXISTS lighter_price_history (
   PRIMARY KEY (market_id, ts)
 );
 
+-- Lighter の Robinhood Chain 版（別の取引所。預け金は USDG。市場の番号は本体と別。2026-10-04 オーナー決定 ②A）。
+-- 本体と同じ形で、別の表に保存する（番号がぶつからないように）。読み取りだけ
+CREATE TABLE IF NOT EXISTS lighter_rh_markets (
+  market_id INTEGER PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  status TEXT,
+  taker_pct REAL,
+  maker_pct REAL,
+  initial_margin_fraction INTEGER,     -- default_initial_margin_fraction（本体と同じ欄。÷10000 が割合）
+  min_initial_margin_fraction INTEGER, -- いちばん高い倍率のときの最初に要る割合（参考）
+  maintenance_margin_fraction INTEGER,
+  open_interest REAL,
+  daily_quote_volume REAL,
+  mark_price REAL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lighter_rh_funding_snaps (
+  ts TEXT NOT NULL,
+  market_id INTEGER NOT NULL,
+  symbol TEXT,
+  rate_8h REAL,
+  PRIMARY KEY (ts, market_id)
+);
+CREATE TABLE IF NOT EXISTS lighter_rh_funding_history (
+  market_id INTEGER NOT NULL,
+  ts INTEGER NOT NULL,
+  symbol TEXT,
+  rate REAL,
+  value REAL,
+  direction TEXT,
+  PRIMARY KEY (market_id, ts)
+);
+CREATE TABLE IF NOT EXISTS lighter_rh_price_history (
+  market_id INTEGER NOT NULL,
+  ts INTEGER NOT NULL,
+  symbol TEXT,
+  open REAL, high REAL, low REAL, close REAL,
+  PRIMARY KEY (market_id, ts)
+);
+
 -- Aero の公式の住所のファイル（公開のコード置き場の deployment-addresses。1時間に1回）
 CREATE TABLE IF NOT EXISTS aero_address_files (
   name TEXT PRIMARY KEY,

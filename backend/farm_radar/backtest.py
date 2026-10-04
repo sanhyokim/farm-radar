@@ -33,7 +33,7 @@ from .scoring import model as m
 from .scoring.run import own_series
 from .tokens import load_tokens
 
-VERSION = 4                     # 計算を変えたら上げる（とっておいた結果を使わない）
+VERSION = 5                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
 STEP_MAX_S = 45 * 60            # 15分ごとの記録で、これより間があいたら、その間の時間は数えない（欠損）
 DAY_MIN_COVERAGE = 0.9          # 1日のうち、これ以上の時間の記録がある日だけ比べる
 PASS_REL = 0.30                 # 合格の目安: 差が見込みの30%以内（評価のときと同じ）
@@ -181,6 +181,32 @@ def _points(conn: sqlite3.Connection, pool_id: str) -> list[tuple[int, float, fl
         t = _ts(row["block_time"] or row["ts"])
         if t is not None:
             out.append((t, float(row["price"]), float(row["liquidity_total"]) if row["liquidity_total"] else None, row))
+    return out
+
+
+def fee_pct(fee_tier: Any) -> float | None:
+    """プールの手数料の段（100 万分の1 の単位。100 = 0.01%、500 = 0.05%）を % で。"""
+    try:
+        return int(fee_tier) / 10000
+    except (TypeError, ValueError):
+        return None
+
+
+def same_pair(still: list[dict[str, Any]], pools: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    """値段が動いていないプールごとに、写しの中の同じ組（コインの組が同じ）のほかのプールを付ける。
+    同じ名前のプールが会場に複数あるので、どれが動いていないのかを見分ける（2026-10-04 オーナーの質問1）。"""
+    still_ids = {x["pool_id"] for x in still}
+    out = []
+    for x in still:
+        me = next((p for p in pools if p["id"] == x["pool_id"]), None)
+        others = []
+        if me is not None:
+            pair = {str(me["token0"]).lower(), str(me["token1"]).lower()}
+            for p in pools:
+                if p["id"] != me["id"] and {str(p["token0"]).lower(), str(p["token1"]).lower()} == pair:
+                    others.append({"pool_id": p["id"], "fee_pct": fee_pct(p["fee_tier"]), "points": p["n"],
+                                   "still": p["id"] in still_ids})
+        out.append({**x, "same_pair": others})
     return out
 
 
@@ -655,6 +681,7 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
             # （2026-10-04 オーナーの質問1: WETH/USDG が入ったのはなぜか）
             still.append({"pool_id": p["id"], "pair": f"{p['token0_symbol']}/{p['token1_symbol']}", "kind": kind,
                           "points": p["n"], "still_share": share, "fee_tier": p["fee_tier"],
+                          "fee_pct": fee_pct(p["fee_tier"]), "gauge": p["gauge_address"],
                           "first_price": pts_p[0][1] if pts_p else None, "last_price": pts_p[-1][1] if pts_p else None,
                           "distinct_prices": len({x[1] for x in pts_p})})
             fund_rows += hedge_days(conn, fconn, p, s)
@@ -746,7 +773,7 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
                    **{f"kind_{k}": _summarize_ranges([x for x in rows if x["kind"] == k], s) for k in KINDS}},
         "kinds": {k: sum(1 for v in kinds.values() if v == k) for k in KINDS},
         "per_pool_best": per_pool,
-        "still_pools": still,
+        "still_pools": same_pair(still, pools),
         "still_share_line": STILL_SHARE,
         # 見込みと実際のずれが大きいプール（1日の損 = 値動きの損 + 置き直しの費用 の、見込みと実際の差のドル。大きい順に10）。
         # 前は割合（見込み ÷ 実際）の順で、値動きの小さいプールが上に来ていた（2026-10-04 オーナーの質問5）
@@ -790,6 +817,16 @@ def _funding_rows(feeds_db: Path | None) -> int | None:
         return None
 
 
+def _source_mark() -> str:
+    """このファイルの中身の印。行を足したのに VERSION を上げ忘れても、とっておいた古い結果を使わないため
+    （2026-10-04: still_pools の欄を足したのに古い結果が出て、パソコンの表示が空欄になった）。"""
+    import hashlib
+    try:
+        return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
 def cached(data_dir: Path, config: Config, feeds_db: Path | None = None, now: datetime | None = None) -> dict[str, Any]:
     from . import trial_records
     copy = data_dir / trial_records.OLD_COPY
@@ -797,7 +834,7 @@ def cached(data_dir: Path, config: Config, feeds_db: Path | None = None, now: da
         return {"present": False, "text": "今の版のデータの写しがないので、さかのぼりの計算はまだできません。"}
     manifest_path = data_dir / trial_records.OLD_MANIFEST
     manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
-    key = {"version": VERSION, "copied_at": manifest.get("copied_at"), "bytes": copy.stat().st_size,
+    key = {"version": VERSION, "source": _source_mark(), "copied_at": manifest.get("copied_at"), "bytes": copy.stat().st_size,
            "funding_rows": _funding_rows(feeds_db)}
     out_path = data_dir / "import" / "backtest.json"
     if out_path.exists():

@@ -40,6 +40,9 @@ export const VenueMatchPill = () => <Pill tone="y" icon="alert">仮・会場の�
 /** 年利が急に変わった印（オーナー依頼 2026-10-03 17:59 JST。預かり額かボーナスの額が24時間で大きく動いた。おすすめからは外さない） */
 export const isSudden = (o: Opportunity) => o.flags.some((f) => f.code === "SUDDEN_CHANGE");
 export const SuddenPill = () => <Pill tone="y" icon="alert">年利が急に変わった</Pill>;
+/** 値動きが急に大きくなった印（2026-10-04 オーナー決定 ①A。直近24時間の値動きが7日の1.5倍をこえた。控えめの見込みは大きい方） */
+export const isVolJump = (o: Opportunity) => o.flags.some((f) => f.code === "VOL_JUMP");
+export const VolJumpPill = () => <Pill tone="y" icon="alert">値動きが急に大きくなった</Pill>;
 /** おすすめ（狙い以上で会場の見分けが確か）。見分けが不確かな行はおすすめに入れない（オーナー 2026-10-02 23:15 JST） */
 export const isRecommended = (o: Opportunity) => !o.excluded && !!o.recommended;
 

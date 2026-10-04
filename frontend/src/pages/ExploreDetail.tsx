@@ -3,7 +3,7 @@ import { useApi, type OppCampaign, type OppDetailResp, type Safety } from "../ap
 import { bigUsd, jst, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Folds, Line, Loading, Note, PageHead, Pill, Segmented, Term } from "../ui";
-import { Breakdown, GuessPill, KIND, SafetyPill, Side, SuddenPill, VenueMatchPill, apr, days, isGuess, isRecommended, isSudden, isUncertainVenue } from "./opp";
+import { Breakdown, GuessPill, KIND, SafetyPill, Side, SuddenPill, VenueMatchPill, VolJumpPill, apr, days, isGuess, isRecommended, isSudden, isUncertainVenue, isVolJump } from "./opp";
 
 /**
  * 入れる先の詳しい画面（N2c。N4a で危なさの点数）: 計算の内訳、保険あり・なし、印、危なさと推奨金額、「$1,000 を試す」。
@@ -43,6 +43,7 @@ export default function ExploreDetail() {
             : o.above_target ? <Pill icon="info">狙い以上（会場の見分けが不確かなので、おすすめに入れない）</Pill> : <Pill>狙いより低い</Pill>}
           <SafetyPill s={o.safety} />
           {isSudden(o) && <SuddenPill />}
+          {isVolJump(o) && <VolJumpPill />}
           {isGuess(o) && <GuessPill />}
           {isUncertainVenue(o) && <VenueMatchPill />}
           {o.new_pool && <Pill tone="y" icon="info">始まったばかり</Pill>}

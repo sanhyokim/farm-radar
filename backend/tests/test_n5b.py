@@ -404,10 +404,30 @@ def test_pool_with_a_still_price_is_left_out_of_the_comparison(old_copy, feeds):
     old_copy.commit()
     res = bt.run(old_copy, CFG, feeds)
     assert [x["pair"] for x in res["still_pools"]] == ["WETH/WOOD"]
-    assert res["still_pools"][0]["still_share"] == 1.0
+    st = res["still_pools"][0]
+    assert st["still_share"] == 1.0
+    # 2026-10-04: パソコンの表示で空欄だった欄（手数料の段・違う値段の数・最初と最後の値段）が入っている
+    assert st["fee_pct"] == pytest.approx(0.3) and st["distinct_prices"] == 1
+    assert st["first_price"] == pytest.approx(1234.5) and st["last_price"] == pytest.approx(1234.5)
+    assert st["same_pair"] == []
     assert "WETH/WOOD" not in {x["pair"] for x in res["per_pool_best"]}
     assert "WETH/WOOD" not in {x["pair"] for x in res["misses"]}
     assert res["pool_days"] == 3                                   # WETH/USDG の3日だけ（前と同じ）
+
+
+def test_still_pool_lists_the_other_pools_of_the_same_pair():
+    """同じ組のプールが複数あるとき（up. の WETH/USDG は 0.01%・0.05%・0.3% など）、どれが動いていないかを見分ける。"""
+    pools = [{"id": "up:0xa", "token0": "0xW", "token1": "0xU", "fee_tier": 100, "n": 600},
+             {"id": "up:0xb", "token0": "0xu", "token1": "0xw", "fee_tier": 500, "n": 600},
+             {"id": "up:0xc", "token0": "0xW", "token1": "0xX", "fee_tier": 500, "n": 600}]
+    out = bt.same_pair([{"pool_id": "up:0xa", "pair": "WETH/USDG"}], pools)
+    assert out[0]["same_pair"] == [{"pool_id": "up:0xb", "fee_pct": 0.05, "points": 600, "still": False}]
+    assert bt.fee_pct(100) == 0.01 and bt.fee_pct(None) is None
+
+
+def test_saved_backtest_is_not_reused_after_the_code_changes():
+    """VERSION を上げ忘れても、このファイルの中身が変われば、とっておいた結果を使わない（キーに中身の印を入れる）。"""
+    assert len(bt._source_mark()) == 16
 
 
 def test_long_margins_cover_every_hedge_market_of_up():

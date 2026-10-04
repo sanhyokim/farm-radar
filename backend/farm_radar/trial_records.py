@@ -87,9 +87,51 @@ def feeds(feeds_db: Path) -> dict[str, Any]:
             pass
         return {"merkl_rewards": rewards, "llama_history": llama, "lighter_history": lighter, "lighter_prices": lighter_prices,
                 "shadow": shadow,
-                "aero_addresses": files}
+                "aero_addresses": files, "lighter_rh": lighter_rh(conn)}
     finally:
         conn.close()
+
+
+def _funding_daily(conn: sqlite3.Connection, table: str) -> dict[str, float]:
+    """銘柄ごとの、7日の売り（保険）の1日の支払い（割合。プラス = 払う）。opportunities.FeedData と同じ読み方
+    （funding-rates の exchange=lighter の rate は8時間あたり。プラス = 買いが払う → 売りの1日 = −rate × 3）。"""
+    rows = _rows(conn, f"SELECT symbol, AVG(rate_8h) FROM {table} WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-7 days') "
+                       "GROUP BY symbol")
+    return {str(r[0]).upper(): -float(r[1]) * 3 for r in rows if r[0] and r[1] is not None}
+
+
+def _rows(conn: sqlite3.Connection, sql: str) -> list[Any]:
+    try:
+        return conn.execute(sql).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
+def lighter_rh(conn: sqlite3.Connection) -> dict[str, Any] | None:
+    """Lighter の Robinhood Chain 版で読めたもの（2026-10-04 オーナー決定 ②A）と、本体との比べ（保険に使う市場だけ）。
+    保険に使う市場 = 値段の過去を読んだ市場（feeds/trial.rh_targets: up. の保険の市場のうち、その版にあるもの）。"""
+    r = _count(conn, "SELECT COUNT(*), MAX(updated_at) FROM lighter_rh_markets WHERE status='active'")
+    if r is None:
+        return None
+    hist = {int(x[0]): x for x in _rows(conn, "SELECT market_id, symbol, COUNT(*), MIN(ts), MAX(ts) "
+                                              "FROM lighter_rh_price_history GROUP BY market_id")}
+    fh = {int(x[0]): x[1] for x in _rows(conn, "SELECT market_id, COUNT(*) FROM lighter_rh_funding_history GROUP BY market_id")}
+    rh = {int(x[0]): x for x in _rows(conn, "SELECT market_id, symbol, mark_price, maintenance_margin_fraction "
+                                            "FROM lighter_rh_markets WHERE status='active'")}
+    main = {str(x[0]).upper(): x for x in _rows(conn, "SELECT symbol, mark_price, maintenance_margin_fraction, market_id "
+                                                      "FROM lighter_markets WHERE status='active'")}
+    f_rh, f_main = _funding_daily(conn, "lighter_rh_funding_snaps"), _funding_daily(conn, "lighter_funding_snaps")
+    rows = []
+    for mid in sorted(hist, key=lambda m: str(hist[m][1])):
+        sym = str(hist[mid][1]).upper()
+        a, b = rh.get(mid), main.get(sym)
+        rows.append({"symbol": sym, "rh_market_id": mid, "main_market_id": b[3] if b else None,
+                     "price_rh": a[2] if a else None, "price_main": b[1] if b else None,
+                     "mmf_rh_pct": a[3] / 100 if a and a[3] is not None else None,
+                     "mmf_main_pct": b[2] / 100 if b and b[2] is not None else None,
+                     "funding_daily_rh": f_rh.get(sym), "funding_daily_main": f_main.get(sym),
+                     "price_points": hist[mid][2], "funding_points": fh.get(mid, 0)})
+    return {"markets": r[0], "updated_at": r[1], "hedge_markets": len(rows), "rows": rows}
 
 
 def summary(data_dir: Path, feeds_db: Path) -> dict[str, Any]:

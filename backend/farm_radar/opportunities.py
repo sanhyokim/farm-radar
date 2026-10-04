@@ -184,6 +184,7 @@ class TokenStat:
     grid: tuple[tuple[int, float], ...]
     sigma30: float | None = None     # 30日の値動き（4時間ごとの値段から。N4b）
     grid30: tuple[tuple[int, float], ...] = ()
+    sigma24: float | None = None     # 直近24時間の値動き（1日あたり。2026-10-04 オーナー決定 ①A）
 
 
 FLAT_7D = 6 * 3600                   # 1時間ごとの値段: 6時間止まっていたあとの変化を「飛び」とみなす（N4b。仮）
@@ -206,13 +207,22 @@ class Move:
     smooth30: float | None = None
     jumps30: tuple[float, ...] = ()
     days30: float | None = None
+    sigma24: float | None = None     # 直近24時間（全部）。2026-10-04 オーナー決定 ①A
+    smooth24: float | None = None    # 直近24時間（飛びを除いたもの）
+
+    def jumped(self, ratio: float) -> bool:
+        """直近24時間の値動きが、7日の値動きの ratio 倍をこえたか（「値動きが急に大きくなった」の印）。"""
+        return self.sigma24 is not None and self.sigma > 0 and self.sigma24 > ratio * self.sigma
 
     def case(self, cautious: bool) -> tuple[float, float, tuple[float, ...], float]:
-        """(全部の値動き, なめらかな値動き, 飛び, 飛びを数えた日数)。"""
-        if not cautious or self.smooth30 is None or not self.days30:
+        """(全部の値動き, なめらかな値動き, 飛び, 飛びを数えた日数)。
+        控えめは、7日・30日・直近24時間のうち大きいもの（30日は N4b、24時間は 2026-10-04 オーナー決定 ①A）。"""
+        if not cautious:
             return self.sigma, self.smooth, self.jumps, self.days
-        sigma = max(self.sigma, self.sigma30 or 0.0)
-        smooth = max(self.smooth, self.smooth30)
+        sigma = max(self.sigma, self.sigma30 or 0.0, self.sigma24 or 0.0)
+        smooth = max(self.smooth, self.smooth30 or 0.0, self.smooth24 or 0.0)
+        if self.smooth30 is None or not self.days30:
+            return sigma, smooth, self.jumps, self.days
         rate7 = sum(j * j for j in self.jumps) / self.days if self.days else 0.0
         rate30 = sum(j * j for j in self.jumps30) / self.days30
         if rate30 >= rate7:
@@ -369,8 +379,9 @@ class FeedData:
                 g30 = vol.step_grid(allpts, allpts[0][0], end, STEP_30D)
                 ok30 = len(g30) >= 60
                 s30 = vol.daily_sigma([r for _, r in vol.hourly_returns(g30)], per_day=6) if ok30 else None
+                s24 = vol.recent_sigma(vol.hourly_returns(grid), end)
                 self._tokens[coin] = TokenStat(coin, sym[0] if sym else None, grid[-1][1], sigma, trend, tuple(grid),
-                                               s30, tuple(g30) if ok30 else ())
+                                               s30, tuple(g30) if ok30 else (), s24)
         return self._tokens[coin]
 
     def token_by_symbol(self, chain_id: int | None, symbol: str | None) -> TokenStat | None:
@@ -400,17 +411,21 @@ class FeedData:
             total = vol.daily_sigma([r for _, r in rets], per_day=per_day)
             sm = vol.daily_sigma(smooth, min_count=1, per_day=per_day) if smooth else 0.0
             days = max(1e-9, (g[-1][0] - g[0][0]) / 86400)
-            return total, sm, tuple(gaps), days
+            if per_day != 24:
+                return total, sm, tuple(gaps), days, None, None
+            end = g[-1][0]
+            recent = [(t, r) for t, r in rets if t > end - 86400]
+            sm24 = vol.recent_sigma([(t, r) for t, r in recent if t not in jt], end)
+            return total, sm, tuple(gaps), days, vol.recent_sigma(recent, end), sm24
         if a is None:
             return None
         r7 = one(a.grid, b.grid if b else None, FLAT_7D, 24)
         if r7 is None:
             return None
         r30 = one(a.grid30, b.grid30 if b else None, FLAT_30D, 6) if a.grid30 and (b is None or b.grid30) else None
-        mv = Move(sigma=r7[0], smooth=r7[1], jumps=r7[2], days=r7[3])
+        mv = Move(sigma=r7[0], smooth=r7[1], jumps=r7[2], days=r7[3], sigma24=r7[4], smooth24=r7[5])
         if r30 is not None:
-            mv = Move(sigma=r7[0], smooth=r7[1], jumps=r7[2], days=r7[3], sigma30=r30[0], smooth30=r30[1],
-                      jumps30=r30[2], days30=r30[3])
+            mv = replace(mv, sigma30=r30[0], smooth30=r30[1], jumps30=r30[2], days30=r30[3])
         return mv
 
     def perp(self, symbol: str | None, alias: bool = True) -> dict[str, Any] | None:
@@ -670,8 +685,9 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
             hedged_notional += exposure
         else:
             sig = leg.stat.sigma if leg.stat and leg.stat.sigma is not None else 0.0
-            if cautious and leg.stat and leg.stat.sigma30 is not None:
-                sig = max(sig, leg.stat.sigma30)          # 控えめは 7日と30日の大きい方（N4b）
+            if cautious and leg.stat:
+                # 控えめは 7日・30日・直近24時間の大きい方（30日は N4b、24時間は 2026-10-04 オーナー決定 ①A）
+                sig = max(sig, leg.stat.sigma30 or 0.0, leg.stat.sigma24 or 0.0)
             direction += exposure * 0.4 * sig          # 承認済みの C_lp × 0.5 × 0.4 × σ と同じ（プールは exposure = C_lp × 0.5）
     net = income - gamma_day - reb - hedge_cost - haircut - direction
     # 入る・出る費用: 両替（プールは半分、1つのコインを持つ型は値動きするときだけ全部）× 2回、ガス代4回、保険の開け閉め
@@ -711,6 +727,22 @@ def _pool_state(campaigns: list[dict[str, Any]], base: StandardOpportunity, data
             if st is not None:
                 return st
     return None
+
+
+def vol_jump_flag(move: Move | None, legs: list[Leg], ratio: float) -> Flag | None:
+    """「値動きが急に大きくなった」の印（2026-10-04 オーナー決定 ①A）: 直近24時間の値動きが7日の ratio 倍をこえた。
+    控えめの見込みは、7日・30日・直近24時間の大きいもので計算している（Move.case・_variant）。"""
+    parts = []
+    if move is not None and move.jumped(ratio):
+        parts.append(f"2つのコインの比率は直近24時間 {move.sigma24 * 100:.1f}%／7日 {move.sigma * 100:.1f}%")
+    for lg in legs:
+        st = lg.stat
+        if st and st.sigma24 is not None and st.sigma and st.sigma24 > ratio * st.sigma:
+            parts.append(f"{lg.symbol} は直近24時間 {st.sigma24 * 100:.1f}%／7日 {st.sigma * 100:.1f}%")
+    if not parts:
+        return None
+    return Flag("VOL_JUMP", LEVEL_WARN, f"値動きが急に大きくなった（1日あたりの値動き。{ratio:g}倍をこえた）: "
+                f"{'、'.join(parts)}。控えめの見込みは大きい方で計算")
 
 
 def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: list[dict[str, Any]], data: FeedData,
@@ -783,6 +815,10 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
         if move is None:
             op.computable, op.reason = False, "2つのコインの比率の値動きが分からない"
             return op
+    jump = vol_jump_flag(move if op.kind.startswith("pool") and len(legs) >= 2 else None,
+                         [lg for lg in legs if not lg.stable], s.vol_jump_ratio)
+    if jump is not None:
+        op.flags.append(jump)
     # ボーナスのコインの値動き（同じチェーンで値段の記録があるときだけ）。キャンペーンごとに印を付けて _variant で使う
     reward_syms, guessed, receipt_syms = set(), set(), set()
     guess_notes: dict[str, str] = {}
@@ -1036,13 +1072,16 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
         usd, sig = (inp.get("usd") or {}).get(sym), (inp.get("sigma_token") or {}).get(sym)
         if usd is None or sig is None or decs[i] is None:
             return None
+        stable = sig == 0
+        if cautious:
+            sig = max(sig, (inp.get("sigma_token_24h") or {}).get(sym) or 0.0)   # 控えめは直近24時間とも比べる（①A）
         h = hedge_info.get(sym) or {}
         # 保険は、証拠金の割合が分かる売り場（Lighter）のときだけ掛ける（分け方を自動で計算するため）
         fund = h.get("funding_daily") if hedged and h.get("hedge_id") and margin_perp(sym) else None
         long_f = (margin_perp(sym) or {}).get("funding_daily_long") if fund is not None and cautious else None
         if long_f is not None:
             fund = max(float(fund), long_f)             # 控えめは 7日と30日の悪い方（2026-10-04 オーナー決定 B）
-        return m.TokenSide(usd=usd, decimals=int(decs[i]), sigma_usd=sig, stable=sig == 0,
+        return m.TokenSide(usd=usd, decimals=int(decs[i]), sigma_usd=sig, stable=stable,
                            hedgeable=fund is not None, funding_cost_daily=fund or 0.0,
                            taker_fee=(h.get("taker_pct") or 0.0) / 100 if fund is not None else None)
 
@@ -1062,7 +1101,9 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
         return m.PoolInputs(price=float(inp["price"]), token0=t0, token1=t1, fee=float(inp.get("fee") or 0),
                             unstaked_fee=(row["uf"] or 0) / 1e6, liquidity_total=int(lt * mult),
                             liquidity_staked=int(ls * mult), reward_usd_day=reward_day,
-                            fees_usd_day=inp.get("fees_usd_day"), sigma_pair=float(inp["sigma_pair"]),
+                            fees_usd_day=inp.get("fees_usd_day"),
+                            sigma_pair=max(float(inp["sigma_pair"]), float(inp.get("sigma_pair_24h") or 0.0))
+                            if cautious else float(inp["sigma_pair"]),
                             reward_trend_daily=trend,
                             slippage=float(inp.get("slippage") or 0),
                             rewards_only=mechanic_value(venue, "lp_receives_swap_fees", True) is False)
@@ -1113,6 +1154,17 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
         op.calc[_akey(amount)] = row_out
     if volatile and not can_hedge:
         op.flags.append(Flag("NO_HEDGE", LEVEL_INFO, "保険の売り場がないので、保険なしだけ"))
+    jumps = []
+    sp, sp24 = inp.get("sigma_pair"), inp.get("sigma_pair_24h")
+    if sp and sp24 is not None and sp24 > s.vol_jump_ratio * sp:
+        jumps.append(f"2つのコインの比率は直近24時間 {sp24 * 100:.1f}%／7日 {sp * 100:.1f}%")
+    for sym in syms:
+        a, b = (inp.get("sigma_token") or {}).get(sym), (inp.get("sigma_token_24h") or {}).get(sym)
+        if a and b is not None and b > s.vol_jump_ratio * a:
+            jumps.append(f"{sym} は直近24時間 {b * 100:.1f}%／7日 {a * 100:.1f}%")
+    if jumps:
+        op.flags.append(Flag("VOL_JUMP", LEVEL_WARN, f"値動きが急に大きくなった（1日あたりの値動き。{s.vol_jump_ratio:g}倍をこえた）: "
+                             f"{'、'.join(jumps)}。控えめの見込みは大きい方で計算"))
     if trend_rec is None:
         op.flags.append(Flag("RWD_GUESS", LEVEL_WARN, f"値下がり未計算（仮の値で計算）: ボーナスのコイン（{base.bonus_token or '報酬のコイン'}）の"
                              f"値動きの記録がない。控えめの見込みは月 −{s.unknown_reward_drop_monthly_pct:g}% とみなした"))

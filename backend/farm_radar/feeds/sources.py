@@ -258,8 +258,11 @@ def lighter_markets(data: Any) -> list[Item]:
             "status": m.get("status"), "taker_pct": _num(m.get("taker_fee")), "maker_pct": _num(m.get("maker_fee")),
             "imf": _int(m.get("default_initial_margin_fraction")), "mmf": _int(m.get("maintenance_margin_fraction")),
             "open_interest": _num(m.get("open_interest")), "daily_quote_volume": _num(m.get("daily_quote_token_volume")),
-            "mark_price": _num(m.get("mark_price"))}))
+            "mark_price": _num(m.get("mark_price")), "min_imf": _int(m.get("min_initial_margin_fraction"))}))
     return out
+
+
+LIGHTER_RH = "https://api.rh.lighter.xyz/api/v1"   # Robinhood Chain 版（別の取引所。2026-10-04 オーナー決定 ②A）
 
 
 def lighter_funding(data: Any) -> list[Item]:
@@ -420,6 +423,16 @@ SOURCES: tuple[Source, ...] = (
            "daily", lighter_history, raw_every_minutes=10080),
     # Lighter の値段の過去（1時間の足。保険の預け金の「50% に耐える」の見直し。2026-10-04 オーナーの質問4）
     Source("lighter_price_history", "Lighter の値段の過去（試す）", "https://mainnet.zklighter.elliot.ai/api/v1/candles",
+           "daily", lighter_history, raw_every_minutes=10080),
+    # Lighter の Robinhood Chain 版（2026-10-04 オーナー決定 ②A: その版にある市場はそちらを使う方針。N6 の前に読めるように）。
+    # 銘柄（維持の割合・今の値段・市場があるか）と今の資金調達率は1時間に1回、過去は1日1回（up. の保険に使う市場だけ）
+    Source("lighter_rh_markets", "Lighter（Robinhood Chain 版）の銘柄", f"{LIGHTER_RH}/orderBookDetails", "hourly",
+           lighter_markets, raw_every_minutes=1440),
+    Source("lighter_rh_funding", "Lighter（Robinhood Chain 版）の資金調達率", f"{LIGHTER_RH}/funding-rates", "hourly",
+           lighter_funding, raw_every_minutes=1440),
+    Source("lighter_rh_funding_history", "Lighter（Robinhood Chain 版）の資金調達率の過去", f"{LIGHTER_RH}/fundings",
+           "daily", lighter_history, raw_every_minutes=10080),
+    Source("lighter_rh_price_history", "Lighter（Robinhood Chain 版）の値段の過去", f"{LIGHTER_RH}/candles",
            "daily", lighter_history, raw_every_minutes=10080),
 )
 
