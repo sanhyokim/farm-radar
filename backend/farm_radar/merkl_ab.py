@@ -23,6 +23,7 @@ Merkl の資料（docs.merkl.xyz の concentrated-liquidity-mechanisms）の式:
 
 from __future__ import annotations
 
+import bisect
 import json
 import sqlite3
 import statistics
@@ -30,7 +31,7 @@ from datetime import datetime
 from typing import Any
 
 from .feeds.pool_history import position_key
-from .merkl_check import _amount_at, amounts, boundaries
+from .merkl_check import amounts, boundaries
 
 L_CHECK = 0.01           # 組み立て直した「幅の中の流動性」と、チェーンで読んだ流動性のずれがこれ以下なら合っている
 EDGE_S = 60              # 区切りの境目の前後この秒数の中で自分の預け方が変わったら、時刻を確かめきれないので使わない
@@ -167,6 +168,30 @@ class Book:
         return None, "名前の形が違う"
 
 
+class Cum:
+    """1つのキャンペーンの、預け方ごとの累計（確定した額＋まだ確定していない額。受け取る人ごとの最後の値の合計）。
+    merkl_check._amount_at と同じ値を、記録をまとめて読んでから出す（預け方が数百あるキャンペーンでも速く）。"""
+
+    def __init__(self, conn: sqlite3.Connection, cid: str):
+        self.by: dict[str, dict[str, tuple[list[str], list[int]]]] = {}
+        for reason, rcp, ts, amt, pend in conn.execute(
+                "SELECT reason, recipient, ts, amount_raw, pending_raw FROM merkl_reward_snaps WHERE campaign_id=? "
+                "ORDER BY ts", (cid,)):
+            if amt is None:
+                continue
+            ts_list, vals = self.by.setdefault(reason, {}).setdefault(rcp, ([], []))
+            ts_list.append(ts)
+            vals.append(int(amt) + int(pend or 0))
+
+    def at(self, reason: str, ts: str) -> int | None:
+        out, found = 0, False
+        for ts_list, vals in self.by.get(reason, {}).values():
+            i = bisect.bisect_right(ts_list, ts)
+            if i:
+                out, found = out + vals[i - 1], True
+        return out if found else None
+
+
 def _in_l(book: Book, live: dict[str, int], tick: int) -> int:
     return sum(liq for k, liq in live.items() if liq > 0 and book.meta[k][1] <= tick < book.meta[k][2])
 
@@ -271,6 +296,7 @@ def check_campaign(conn: sqlite3.Connection, c: sqlite3.Row, books: dict[tuple[i
         else:
             own[reason] = k
     res["positions"] = len(reasons)
+    cum = Cum(conn, cid)
     totals, why_not = boundaries(conn, cid)
     if why_not:
         skip(why_not)
@@ -311,7 +337,7 @@ def check_campaign(conn: sqlite3.Connection, c: sqlite3.Row, books: dict[tuple[i
             skip("組み立て直した流動性がチェーンで読んだ値と合わない区切り")
             continue
         for reason, k in own.items():
-            before, after = _amount_at(conn, cid, reason, a["ts"]), _amount_at(conn, cid, reason, b["ts"])
+            before, after = cum.at(reason, a["ts"]), cum.at(reason, b["ts"])
             if after is None:
                 continue
             got = after - (before or 0)
