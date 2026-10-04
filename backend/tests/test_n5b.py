@@ -439,3 +439,32 @@ def test_long_margins_cover_every_hedge_market_of_up():
     assert set(got) == lighter | {0}
     assert len(got) >= 29 and got[0] == "ETH"
     assert got[139] == "SNDK" and got[189] == "NBIS"
+
+
+def test_baselines_compare_the_current_way_with_wide_lending_and_nothing(old_copy, feeds):
+    """比べる相手（N5c。計画 2-4）: 今のやり方・広い幅で置きっぱなし・貸し出し・何もしない。"""
+    from farm_radar.feeds.trial import LENDING_BASELINE
+    wide = max(CFG.scoring.ranges_pct)
+    ranges = [{"r_pct": r, "income": 10.0 / r * 0.8, "in_range_ratio": 0.8} for r in CFG.scoring.ranges_pct]
+    det = json.loads(old_copy.execute("SELECT details_json FROM scores LIMIT 1").fetchone()[0])
+    old_copy.execute("UPDATE scores SET details_json=?", (json.dumps({**det, "ranges": ranges}),))
+    for d in range(DAYS + 1):
+        day = datetime.fromtimestamp(START + d * 86400, UTC).strftime("%Y-%m-%d")
+        feeds.execute("INSERT INTO llama_yield_history(pool, day, apy) VALUES (?, ?, 3.65)", (LENDING_BASELINE["pool"], day))
+    old_copy.commit()
+    feeds.commit()
+    res = bt.run(old_copy, CFG, feeds)
+    b = res["baselines"]
+    assert b["lending"]["source"].endswith(LENDING_BASELINE["pool"]) and b["wide_r_pct"] == wide
+    a = b["all"]
+    assert a["days"] == 3 and a["lend_days"] == 3
+    assert a["lend_year_pct"] == pytest.approx(3.65) and a["nothing_year_pct"] == 0.0
+    # 1日のくわしい値: 今のやり方 = 見込みの収入（ずっと幅の中のとき 10/2）× 実際に幅の中にいた割合 − 実際の損
+    pool = old_copy.execute("SELECT * FROM pools WHERE id='up-robinhood:0xaaa'").fetchone()
+    rows = bt.baseline_days(old_copy, pool, bt.BacktestSettings.from_config(CFG), bt.lending_daily(feeds))
+    x = rows[0]
+    assert x["r_pct"] == 2.0 and x["wide_r_pct"] == wide
+    assert 0 <= x["now_income"] <= 10.0 / 2 + 1e-9
+    assert x["lend"] == pytest.approx(x["c_lp"] * 0.0365 / 365) and x["nothing"] == 0.0
+    assert a["now_year_pct"] == pytest.approx(sum(r["now"] / r["c_lp"] for r in rows) / 3 * 365 * 100)
+    assert 0 <= a["beat_lend_share"] <= 1 and res["baselines"]["kind_coin"]["days"] == 3

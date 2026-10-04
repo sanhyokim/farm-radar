@@ -33,7 +33,7 @@ from .scoring import model as m
 from .scoring.run import own_series
 from .tokens import load_tokens
 
-VERSION = 5                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
+VERSION = 6                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
 STEP_MAX_S = 45 * 60            # 15分ごとの記録で、これより間があいたら、その間の時間は数えない（欠損）
 DAY_MIN_COVERAGE = 0.9          # 1日のうち、これ以上の時間の記録がある日だけ比べる
 PASS_REL = 0.30                 # 合格の目安: 差が見込みの30%以内（評価のときと同じ）
@@ -409,6 +409,96 @@ def _summarize_ranges(rows: list[dict[str, Any]], s: BacktestSettings) -> list[d
     return out
 
 
+# --- 比べる相手（N5c。docs/n5-plan-2026-10-03.md 2-4。SPEC 13.2「何もしない場合、レンディングに置いた場合と比べる」） ---
+
+def lending_daily(fconn: sqlite3.Connection | None) -> dict[str, float]:
+    """比べる相手の貸し出しの、日ごとの年あたりの利回り（%。DefiLlama の毎日の記録。feeds/trial.LENDING_BASELINE）。"""
+    from .feeds.trial import LENDING_BASELINE
+    if fconn is None:
+        return {}
+    try:
+        return {str(d): float(a) for d, a in fconn.execute(
+            "SELECT day, apy FROM llama_yield_history WHERE pool=? AND apy IS NOT NULL", (LENDING_BASELINE["pool"],))}
+    except sqlite3.OperationalError:
+        return {}
+
+
+def _full_income(x: dict[str, Any] | None) -> float | None:
+    """スコアの幅ごとの収入（幅の中にいる割合の見込みをかけた値）を、ずっと幅の中にいたときの1日の額に戻す。"""
+    if not x or x.get("income") is None or not x.get("in_range_ratio"):
+        return None
+    return float(x["income"]) / float(x["in_range_ratio"])
+
+
+def baseline_days(conn: sqlite3.Connection, pool: sqlite3.Row, s: BacktestSettings,
+                  lend: dict[str, float]) -> list[dict[str, Any]]:
+    """1つのプールの日ごとに、今のやり方と比べる相手の1日の損益（ドル。建玉のお金 c_lp あたり）。
+
+    - 今のやり方: その日のスコアのいちばん良い幅で、外に出たら置き直す（②〜④ と同じ動かし方）。
+    - 広い幅で置きっぱなし: 設定のいちばん広い幅で、記録の最初に1回置いて、置き直さない。
+    - 貸し出し: 同じ額を LENDING_BASELINE に置く。何もしない: 0。
+    収入（手数料とボーナス）は今の版のスコアの見込みに、実際に幅の中にいた時間の割合をかけたもの（実際の収入の記録はないため）。
+    値動きの損と置き直しの費用は実際の値段の並びで計算した値。保険の資金調達料はどちらにも入れない（⑤ で別に比べる）。"""
+    pts = _points(conn, pool["id"])
+    scores = _scores(conn, pool["id"])
+    if len(pts) < 96 or not scores:
+        return []
+    series = [(t, p, liq) for t, p, liq, _ in pts]
+    first_day = _day(pts[0][0])
+    det0 = _details(_score_at(scores, pts[0][0], 10 ** 9) or scores[0][1])
+    c_lp = s.amount_usd * float((det0.get("split") or {}).get("lp") or s.lp_share)
+    cost_fn, _ = _cost_fn(det0, pool, s, c_lp)
+    wide = max(s.ranges_pct)
+    alone = replay(series, wide / 100, math.inf)
+    moved: dict[float, dict[str, DayReplay]] = {}
+    out = []
+    for day, d in sorted(alone.items()):
+        if day == first_day or d.seconds < 86400 * DAY_MIN_COVERAGE:
+            continue
+        sc = _score_at(scores, int(datetime.fromisoformat(day + "T00:00:00+00:00").timestamp()))
+        if sc is None or sc["best_r"] is None:
+            continue
+        ranges = {round(float(x["r_pct"]), 6): x for x in _details(sc).get("ranges") or [] if x.get("r_pct") is not None}
+        best = round(float(sc["best_r"]), 6)
+        inc_b, inc_w = _full_income(ranges.get(best)), _full_income(ranges.get(round(wide, 6)))
+        if inc_b is None or inc_w is None:
+            continue
+        if best not in moved:
+            moved[best] = replay(series, best / 100, s.wait_minutes * 60, cost_fn)
+        db = moved[best].get(day)
+        if db is None or db.seconds < 86400 * DAY_MIN_COVERAGE:
+            continue
+        k_b, k_w = 86400 / db.seconds, 86400 / d.seconds
+        now_usd = inc_b * db.in_range_seconds / db.seconds - (db.gamma + db.rebalance_cost) * k_b * c_lp
+        wide_usd = inc_w * d.in_range_seconds / d.seconds - d.gamma * k_w * c_lp
+        apy = lend.get(day)
+        out.append({"day": day, "c_lp": c_lp, "r_pct": best, "wide_r_pct": wide,
+                    "now": now_usd, "now_income": inc_b * db.in_range_seconds / db.seconds,
+                    "wide": wide_usd, "wide_in_range": d.in_range_seconds / d.seconds,
+                    "lend": c_lp * apy / 100 / 365 if apy is not None else None, "nothing": 0.0})
+    return out
+
+
+def _summarize_baselines(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """年あたりの割合（建玉のお金あたり、%）の平均と、今のやり方が勝った日の割合。"""
+    def year_pct(k: str) -> float | None:
+        m = _mean([x[k] / x["c_lp"] for x in rows if x.get(k) is not None and x["c_lp"]])
+        return m * 365 * 100 if m is not None else None
+
+    with_lend = [x for x in rows if x["lend"] is not None]
+    return {"days": len(rows), "now_year_pct": year_pct("now"), "now_income_year_pct": year_pct("now_income"),
+            "wide_year_pct": year_pct("wide"), "lend_year_pct": year_pct("lend"), "nothing_year_pct": 0.0 if rows else None,
+            "beat_wide_share": sum(1 for x in rows if x["now"] > x["wide"]) / len(rows) if rows else None,
+            "beat_lend_share": sum(1 for x in with_lend if x["now"] > x["lend"]) / len(with_lend) if with_lend else None,
+            "beat_nothing_share": sum(1 for x in rows if x["now"] > 0) / len(rows) if rows else None,
+            "lend_days": len(with_lend)}
+
+
+def _lending_info() -> dict[str, str]:
+    from .feeds.trial import LENDING_BASELINE
+    return {k: LENDING_BASELINE[k] for k in ("name", "source", "checked")}
+
+
 # --- ⑤ 保険 ----------------------------------------------------------------------------------------------
 
 def funding_actual(fconn: sqlite3.Connection | None, market_id: int, start: int, end: int) -> float | None:
@@ -671,6 +761,8 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
     per_pool: list[dict[str, Any]] = []
     kinds: dict[str, str] = {}
     still: list[dict[str, Any]] = []
+    base_rows: list[dict[str, Any]] = []
+    lend = lending_daily(fconn)
     for p in pools:
         kinds[p["id"]] = kind = pool_kind(p, tok_book.stablecoins, stocks, rewards)
         pts_p = _points(conn, p["id"])
@@ -688,6 +780,7 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
             continue
         ds = pool_days(conn, p, s)
         rows += [{**x, "pool_id": p["id"], "stock": kind == "stock", "kind": kind} for x in ds]
+        base_rows += [{**x, "pool_id": p["id"], "kind": kind} for x in baseline_days(conn, p, s, lend)]
         fund_rows += hedge_days(conn, fconn, p, s)
         best = [x for x in ds if x["best_r_pct"] is not None and abs(x["r_pct"] - x["best_r_pct"]) < 1e-9]
         if best:
@@ -781,6 +874,9 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
                          key=lambda x: -x["gap_usd_day"])[:10],
         "spy": [x for x in per_pool if "SPY" in x["pair"].upper()],
         "funding": _summarize_funding(fund_rows, s),
+        "baselines": {"lending": _lending_info(), "wide_r_pct": max(s.ranges_pct),
+                      "all": _summarize_baselines(base_rows),
+                      **{f"kind_{k}": _summarize_baselines([x for x in base_rows if x["kind"] == k]) for k in KINDS}},
         "margins": margins,
         "margins_long": margins_long(fconn, hedge_markets(tok_book, fund_rows), s),
         "stage1": {"threshold_pct": s.funds_drop_pct,
@@ -799,17 +895,20 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
 # --- 写しの結果をとっておく（計算は数秒〜数十秒。写しが変わるか、計算を変えたら作り直す） ---------------------
 
 def _funding_rows(feeds_db: Path | None) -> int | None:
-    """Lighter の記録の数（資金調達率と値段。1日1回増える。増えたら資金調達料・預け金の比べ方を作り直す）。"""
+    """Lighter の記録の数（資金調達率と値段）と、比べる相手の貸し出しの記録の数。1日1回増える。増えたら作り直す。"""
     if feeds_db is None or not feeds_db.exists():
         return None
     try:
         c = sqlite3.connect(f"file:{feeds_db.as_posix()}?mode=ro", uri=True, timeout=10)
         try:
             n = c.execute("SELECT COUNT(*) FROM lighter_funding_history").fetchone()[0]
-            try:
-                n += c.execute("SELECT COUNT(*) FROM lighter_price_history").fetchone()[0]
-            except sqlite3.OperationalError:
-                pass
+            from .feeds.trial import LENDING_BASELINE
+            for sql, args in (("SELECT COUNT(*) FROM lighter_price_history", ()),
+                              ("SELECT COUNT(*) FROM llama_yield_history WHERE pool=?", (LENDING_BASELINE["pool"],))):
+                try:
+                    n += c.execute(sql, args).fetchone()[0]
+                except sqlite3.OperationalError:
+                    pass
             return n
         finally:
             c.close()

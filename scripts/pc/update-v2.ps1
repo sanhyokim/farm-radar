@@ -409,6 +409,19 @@ try {
                 Say ("   {0}: 1時間の合図 {1} 回 / 24時間の合図 {2} 回 / 最初 {3} 日本時間 {4}% → そのあと24時間の最低 {5}%・24時間後 {6}%" -f $x.symbol, `
                     @($x.events_1h).Count, @($x.events_24h).Count, $at, (BtNum $f.change_pct 1), (BtNum $f.min_24h_pct 1), (BtNum $f.after_24h_pct 1))
             }
+            # N5c: 比べる相手（年あたり、建玉のお金あたり。収入は今の版の見込み × 実際に幅の中にいた割合、損は実際の値段で計算）
+            $bl = $r.baselines
+            if ($bl -and $bl.all.days -gt 0) {
+                Say ("[さかのぼり 比べる相手] 貸し出し = {0}（出典 {1}、確認 {2}）/ 広い幅 = ±{3}% で置きっぱなし" -f $bl.lending.name, $bl.lending.source, $bl.lending.checked, $bl.wide_r_pct)
+                foreach ($k in @('all', 'kind_stock', 'kind_coin', 'kind_bonus', 'kind_stable')) {
+                    $g = $bl.$k
+                    if (-not $g -or $g.days -eq 0) { continue }
+                    $nm = @{ all = 'ぜんぶ'; kind_stock = '株'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン'; kind_stable = 'ステーブル' }[$k]
+                    Say ("   {0}（プールと日 {1}件）: 今のやり方 年 {2}%（収入だけ {3}%）/ 広い幅で置きっぱなし {4}% / 貸し出し {5}%（{6}日）/ 何もしない 0% ・今のやり方が勝った日: 広い幅に {7}% / 貸し出しに {8}% / 何もしないに {9}%" -f `
+                        $nm, $g.days, (BtNum $g.now_year_pct 1), (BtNum $g.now_income_year_pct 1), (BtNum $g.wide_year_pct 1), (BtNum $g.lend_year_pct 1), $g.lend_days, `
+                        (BtPct $g.beat_wide_share 0), (BtPct $g.beat_lend_share 0), (BtPct $g.beat_nothing_share 0))
+                }
+            } else { Say "[さかのぼり 比べる相手] まだ比べられません（スコアの幅ごとの収入か、貸し出しの毎日の記録がありません）" }
         }
     } catch {
         Write-Host "   注意: さかのぼりの計算を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
