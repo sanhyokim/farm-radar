@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from .http import JsonGetter
 
 BASE_URL = "https://mainnet.zklighter.elliot.ai/api/v1"
+# Lighter の Robinhood Chain 版（別の取引所。読み取り口の形は本体と同じ。venues/lighter.yaml の robinhood_chain）
+RH_BASE_URL = "https://api.rh.lighter.xyz/api/v1"
 
 
 @dataclass(frozen=True)

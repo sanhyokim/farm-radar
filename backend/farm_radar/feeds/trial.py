@@ -52,6 +52,12 @@ MAX_CAMPAIGNS = 150          # 1回に読むキャンペーンの上限
 LLAMA_TOP_TVL = 60           # 預かり額の多いプール（貸し出しなど、比べる相手になるもの）
 LLAMA_TOP_REWARD = 90        # ボーナスのあるプール
 LLAMA_MIN_TVL = 50_000.0
+# 比べる相手の「ドルのコインの貸し出し」（N5c。docs/n5-plan-2026-10-03.md 2-4）。預かり額の順に関係なく、毎日の記録を必ず読む。
+# Aave v3 の USDC（Base。中身のコインは Circle の USDC 0x8335…2913）。2026-10-04 に DefiLlama で確認:
+# https://yields.llama.fi/pools の pool 7e0661bf-…（chain Base・project aave-v3・symbol USDC・stablecoin・single）、
+# 過去は https://yields.llama.fi/chart/7e0661bf-8cf3-45e6-9424-31916d4c7b84（2024-03-10 から。10/4 は年 3.75%）
+LENDING_BASELINE = {"pool": "7e0661bf-8cf3-45e6-9424-31916d4c7b84", "chain": "Base", "name": "Aave v3 の USDC（Base）",
+                    "source": "https://yields.llama.fi/chart/7e0661bf-8cf3-45e6-9424-31916d4c7b84", "checked": "2026-10-04"}
 LLAMA_KEEP_DAYS = 400
 LIGHTER_DAYS = 90            # 資金調達率の過去を読む日数（最初の回）
 LIGHTER_PAGE = 750           # 1回の応答の点の数の上限（2026-10-03 に確かめた: 90日分を頼んでも最後の750点だけ返る）
@@ -154,7 +160,7 @@ def write_merkl_rewards(conn: sqlite3.Connection, ts: str, data: dict[str, Any])
 # --- DefiLlama の毎日の記録 -----------------------------------------------------------------------------
 
 def llama_pools(conn: sqlite3.Connection, llama_chains: tuple[str, ...]) -> list[str]:
-    """読むプール: 登録したチェーンで、預かり額の多いもの（比べる相手の貸し出しなど）と、ボーナスのあるもの。"""
+    """読むプール: 比べる相手の貸し出し（LENDING_BASELINE）と、登録したチェーンで預かり額の多いもの・ボーナスのあるもの。"""
     if not llama_chains:
         return []
     rows = []
@@ -167,7 +173,8 @@ def llama_pools(conn: sqlite3.Connection, llama_chains: tuple[str, ...]) -> list
             rows.append((r[0], tvl, (info.get("apy_reward") or 0) > 0))
     by_tvl = [k for k, _, _ in sorted(rows, key=lambda x: -x[1])]
     reward = [k for k, _, rw in sorted(rows, key=lambda x: -x[1]) if rw]
-    return list(dict.fromkeys(by_tvl[:LLAMA_TOP_TVL] + reward[:LLAMA_TOP_REWARD]))
+    base = [LENDING_BASELINE["pool"]] if LENDING_BASELINE["chain"] in llama_chains else []
+    return list(dict.fromkeys(base + by_tvl[:LLAMA_TOP_TVL] + reward[:LLAMA_TOP_REWARD]))
 
 
 def read_llama_history(conn: sqlite3.Connection, text: Callable[..., str], ctx: TrialContext,

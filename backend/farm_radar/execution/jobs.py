@@ -18,6 +18,7 @@ from .. import hedges as hedge_mod
 from ..config import Config
 from ..fx import Frankfurter, fill_ledger_jpy
 from ..tokens import TokenBook
+from . import hedge_guard
 from .paper import PaperExecutor
 from . import contract_watch
 from .risk_job import record_stable_price, run_risk
@@ -53,6 +54,35 @@ def refresh_funding(conn: sqlite3.Connection, hedges, markets: set[tuple[str, in
         n += len(rows)
     conn.commit()
     return n
+
+
+def refresh_funding_rh(conn: sqlite3.Connection, adapter, pairs: dict[int, int], now: datetime, hours: int = 6) -> int:
+    """Lighter の Robinhood Chain 版の資金調達率を hedge_funding 表に入れる（2026-10-04 オーナー決定 ②A）。
+
+    pairs = 本体の市場の番号 → RH版の市場の番号。表には hedge_id "lighter_rh"・本体の番号で入れる（練習の保険は本体の番号を持つ）。
+    """
+    end = int(now.timestamp())
+    n = 0
+    for mid, rh_id in sorted(pairs.items()):
+        try:
+            rows = adapter.short_funding_hourly(rh_id, end - hours * 3600, end)
+        except Exception as exc:
+            log.warning("funding fetch failed", extra={"data": {"hedge": "lighter_rh", "market_id": rh_id,
+                                                                "error": str(exc)}})
+            continue
+        conn.executemany("INSERT OR REPLACE INTO hedge_funding(hedge_id, market_id, ts, short_rate) VALUES (?,?,?,?)",
+                         [("lighter_rh", mid, t // 3600 * 3600, r) for t, r in rows])
+        n += len(rows)
+    conn.commit()
+    return n
+
+
+def rh_pairs(config: Config, main_ids: set[int]) -> dict[int, int]:
+    """練習の保険の市場（本体の番号）のうち、RH版にもあるもの（本体の番号 → RH版の番号）。RH版を使わない設定なら空。"""
+    if not main_ids or not hedge_guard.use_rh(config):
+        return {}
+    table = hedge_guard._read(config.feeds.database_path, hedge_guard.rh_markets) or {}
+    return {mid: v[0] for mid, v in table.items() if mid in main_ids}
 
 
 def refresh_perp_fees(conn: sqlite3.Connection, hedges, now: datetime, max_age_hours: float = 1.0) -> int:
@@ -142,6 +172,10 @@ def run_paper(conn: sqlite3.Connection, config: Config, tokens: TokenBook, light
             oldest = min(datetime.fromisoformat(p["last_ts"]) for p in positions)
             hours = min(168, max(6, int((now - oldest).total_seconds() // 3600) + 2))
             refresh_funding(conn, hedges, markets, now, hours)
+            # Robinhood Chain のプールの保険は、RH版にその市場があれば RH版の資金調達率で積み上げる（②A）
+            pairs = rh_pairs(config, {mid for hid, mid in markets if hid == "lighter"})
+            if pairs:
+                refresh_funding_rh(conn, hedges.get("lighter_rh") or hedge_mod.LighterRhHedge(), pairs, now, hours)
     ex = PaperExecutor(conn, config, tokens, fx=fx, now=now)
     n = 0
     for p in positions:

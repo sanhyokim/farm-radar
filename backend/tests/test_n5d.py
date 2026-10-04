@@ -249,3 +249,132 @@ def test_practice_margin_tables_switch_to_rh_for_robinhood(tmp_path, monkeypatch
     assert hg.withstand_table(path, 14, True)[139] == pytest.approx(0.8)
     assert hg.withstand_table(path, 14)[139] == pytest.approx(0.6)
     assert hg.use_rh(cfg) and hg.use_rh(cfg, 4663) and not hg.use_rh(cfg, 8453)
+
+
+# --- ②A 練習の資金調達料も RH版の記録で積み上げる --------------------------------------------------------------
+
+class _RhFunding:
+    hedge_id = "lighter_rh"
+
+    def __init__(self):
+        self.asked = []
+
+    def short_funding_hourly(self, market_id, start, end):
+        self.asked.append(market_id)
+        return [(t, 0.0001) for t in range(start - start % 3600, end + 1, 3600)]   # 1時間 0.01%（本体の10倍）
+
+
+def test_practice_funding_uses_the_rh_records_for_robinhood_pools(world, monkeypatch):  # noqa: F811
+    import json as _json
+    from farm_radar.execution import jobs
+    from .test_paper import FakeLighter
+    path, conn = world
+    ex, ref = _open(conn, path)
+    _extend(conn, 6)
+    mid = _json.loads(_pos(conn, ref.position_id)["hedges_json"])[0]["market_id"]
+    monkeypatch.setattr(jobs, "rh_pairs", lambda config, ids: {m: 77 for m in ids})   # 本体の番号 → RH版 77
+    rh = _RhFunding()
+    lighter = FakeLighter()
+    hedges = {"lighter": jobs.hedge_mod.wrap(lighter), "lighter_rh": rh}
+    run_paper(conn, _config(path), TOKENS, fx=FakeFx(), now=NOW + timedelta(hours=7), hedges=hedges)
+    assert rh.asked and set(rh.asked) == {77}                                  # RH版の番号で読む
+    rows = conn.execute("SELECT DISTINCT market_id FROM hedge_funding WHERE hedge_id='lighter_rh'").fetchall()
+    assert [r[0] for r in rows] == [mid]                                       # 表には本体の番号で入れる
+    assert _json.loads(_pos(conn, ref.position_id)["state_json"])["funding_paid"] > 0
+    ex2 = jobs.PaperExecutor(conn, _config(path), TOKENS, now=NOW + timedelta(hours=7))
+    at = NOW + timedelta(hours=6)
+    assert ex2._funding(mid, at) == pytest.approx(0.0001)                      # RH版の記録があればそちら
+    conn.execute("DELETE FROM hedge_funding WHERE hedge_id='lighter_rh'")
+    assert ex2._funding(mid, at) == pytest.approx(0.00001)                     # なければ本体の記録（1時間 0.001%）
+
+
+# --- N5c Merkl の答え合わせ ----------------------------------------------------------------------------------
+
+def test_position_reason_and_info_are_parsed():
+    from farm_radar.feeds import positions
+    pid = "0x" + "ab" * 32
+    assert positions.parse_reason(f"UNISWAP_V4_{pid}_3508794") == (pid, 3508794)
+    assert positions.parse_reason("UNISWAP_V3_0xabc_1") is None
+    info = (int("ab" * 25, 16) << 56) | ((14109 & 0xFFFFFF) << 32) | ((-60 & 0xFFFFFF) << 8) | 1
+    assert positions.parse_info(info) == ("0x" + "ab" * 25, 14109, -60)
+
+
+def _merkl_world(tmp_path):
+    from farm_radar import merkl_check
+    conn = store.connect(tmp_path / "f.sqlite3")
+    pid = "0x" + "cd" * 32
+    st = {"poolId": pid, "weightFees": 7000, "weightToken0": 1500, "weightToken1": 1500, "isOutOfRangeIncentivized": False,
+          "decimalsCurrency0": 18, "decimalsCurrency1": 6, "currency1": "0xUSD", "symbolCurrency0": "ETH",
+          "symbolCurrency1": "USDG"}
+    conn.execute("INSERT INTO merkl_campaigns(campaign_id, chain_id, type, settings_json, opportunity_id, first_seen, "
+                 "last_seen) VALUES ('c1', 4663, 'UNISWAP_V4', ?, 'o1', 'x', 'x')", (json.dumps(st),))
+    t = ["2026-10-04T00:00:00+00:00", "2026-10-04T02:00:00+00:00"]
+    conn.execute("INSERT INTO merkl_reward_totals(ts, campaign_id, amount_raw) VALUES (?, 'c1', '1000000')", (t[0],))
+    conn.execute("INSERT INTO merkl_reward_totals(ts, campaign_id, amount_raw) VALUES (?, 'c1', '2000000')", (t[1],))
+    # 値段 ETH = 2500 USDG（sqrtPrice は raw の比: 2500 × 10^6 / 10^18）
+    sq = math.sqrt(2500 * 1e6 / 1e18)
+    tick = int(math.log(sq * sq) / math.log(1.0001))
+    l_act = 10 ** 15
+    for h in (1, 2):
+        conn.execute("INSERT INTO pool_state_snaps(chain_id, pool_id, checked_at, kind, sqrt_price_x96, tick, liquidity) "
+                     "VALUES (4663, ?, ?, 'v4', ?, ?, ?)",
+                     (pid, f"2026-10-04T0{h}:00:00+00:00", str(int(sq * 2 ** 96)), tick, str(l_act)))
+    conn.execute("INSERT INTO merkl_opportunity_snaps(ts, opportunity_id, tvl) VALUES ('2026-10-04T01:00:00+00:00', 'o1', 100000)")
+    conn.execute("INSERT INTO token_prices(coin, ts, price) VALUES ('robinhood:0xusd', ?, 1.0)",
+                 (int(datetime(2026, 10, 4, 1, tzinfo=UTC).timestamp()),))
+    # 預け方 7（幅の中、流動性は全体の 10%）と 8（ずっと幅の外）
+    for tid, lo, hi in ((7, tick - 600, tick + 600), (8, tick + 1200, tick + 2400)):
+        for ts in t:
+            conn.execute("INSERT INTO merkl_position_snaps(chain_id, token_id, ts, pool_id, tick_lower, tick_upper, liquidity) "
+                         "VALUES (4663, ?, ?, ?, ?, ?, ?)", (tid, ts, pid, lo, hi, str(10 ** 14)))
+    a0, a1 = merkl_check.amounts(1e14, sq, tick - 600, tick + 600)
+    usd = a0 / 1e18 * 2500 + a1 / 1e6
+    pred = 0.7 * 0.1 + 0.3 * usd / 100000
+    got = int(round(pred * 1.5 * 1000000))           # 実際は見込みの 1.5 倍
+    for tid, amt in ((7, got), (8, 0)):
+        conn.execute("INSERT INTO merkl_reward_snaps(ts, campaign_id, recipient, reason, amount_raw) VALUES (?, 'c1', 'r', ?, ?)",
+                     (t[1], f"UNISWAP_V4_{pid}_{tid}", str(amt)))
+    conn.commit()
+    return conn
+
+
+def test_merkl_check_compares_actual_with_the_whole_pool_estimate(tmp_path):
+    from farm_radar import merkl_check
+    conn = _merkl_world(tmp_path)
+    res = merkl_check.check(conn, {4663: "robinhood"})
+    c = res["campaigns"][0]
+    assert c["pair"] == "ETH/USDG" and c["intervals"] == 1 and c["pairs"] == 2 and c["pairs_in_range"] == 1
+    assert c["ratio_median"] == pytest.approx(1.5, rel=1e-3)        # 今の見込みは実際の 1/1.5（控えめ）
+    assert c["out_of_range_paid_share"] == 0.0                       # 幅の外の預け方は何ももらっていない
+    assert res["ratio_median"] == pytest.approx(1.5, rel=1e-3)
+    # コインの分の分母が預かり額の何割に見えるか: 実際のコインの分 = (実際 − 手数料の分の見込み) ÷ コインの重み
+    pid = "0x" + "cd" * 32
+    tok = conn.execute("SELECT amount_raw FROM merkl_reward_snaps WHERE reason=?", (f"UNISWAP_V4_{pid}_7",)).fetchone()[0]
+    a0, a1 = merkl_check.amounts(1e14, math.sqrt(2500 * 1e6 / 1e18), *conn.execute(
+        "SELECT tick_lower, tick_upper FROM merkl_position_snaps WHERE token_id=7").fetchone())
+    tok_m = (a0 / 1e18 * 2500 + a1 / 1e6) / 100000
+    assert c["denominator_share_median"] == pytest.approx(tok_m / ((int(tok) / 1e6 - 0.07) / 0.3), rel=1e-3)
+    assert c["denominator_share_median"] < 1                          # 全員より少ない額が分母に見える
+    # 区切りの間に量が変わった預け方は使わない
+    conn.execute("UPDATE merkl_position_snaps SET liquidity='200000000000000' WHERE token_id=7 AND ts LIKE '%T02:%'")
+    c = merkl_check.check(conn, {4663: "robinhood"})["campaigns"][0]
+    assert c["pairs_in_range"] == 0 and c["skipped"]["区切りの間に預け方の量が変わった"] == 1
+
+
+def test_merkl_check_sums_recipients_and_shows_in_trial_records(tmp_path):
+    from farm_radar import merkl_check
+    conn = _merkl_world(tmp_path)
+    pid = "0x" + "cd" * 32
+    base = merkl_check.check(conn, {4663: "robinhood"})["campaigns"][0]["ratio_median"]
+    # 預け方 7 を人に渡した: 新しい受け取る人の分も足す（同じ区切りの中で、もらった額は 2 倍）
+    got = conn.execute("SELECT amount_raw FROM merkl_reward_snaps WHERE reason LIKE '%_7'").fetchone()[0]
+    conn.execute("INSERT INTO merkl_reward_snaps(ts, campaign_id, recipient, reason, amount_raw) VALUES "
+                 "('2026-10-04T02:00:00+00:00', 'c1', 'r2', ?, ?)", (f"UNISWAP_V4_{pid}_7", got))
+    conn.commit()
+    assert merkl_check.check(conn, {4663: "robinhood"})["campaigns"][0]["ratio_median"] == pytest.approx(2 * base, rel=1e-6)
+    conn.close()
+    f = trial_records.feeds(tmp_path / "f.sqlite3", {4663: "robinhood"})
+    assert f["merkl_positions"]["positions"] == 2 and f["merkl_positions"]["errors"] == 0
+    assert f["merkl_check"]["pairs_in_range"] == 1
+    # チェーンの値段の名前が分からないチェーンは比べない
+    assert trial_records.feeds(tmp_path / "f.sqlite3")["merkl_check"]["campaigns"] == []

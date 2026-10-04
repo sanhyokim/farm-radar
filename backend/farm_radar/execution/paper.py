@@ -555,6 +555,13 @@ class PaperExecutor:
 
     def _funding(self, market_id: int, at: datetime, hedge_id: str = "lighter") -> float | None:
         hour = int(at.timestamp()) // 3600 * 3600
+        if hedge_id == "lighter" and hedge_guard.use_rh(self.config):
+            # Robinhood Chain のプールの保険は、RH版の記録があればそちら（2026-10-04 オーナー決定 ②A）。なければ本体
+            row = self.conn.execute("SELECT short_rate FROM hedge_funding WHERE hedge_id='lighter_rh' AND market_id=? "
+                                    "AND ts<=? AND ts>? ORDER BY ts DESC LIMIT 1",
+                                    (market_id, hour, hour - 3 * 3600)).fetchone()
+            if row is not None:
+                return float(row[0])
         row = self.conn.execute("SELECT short_rate FROM hedge_funding WHERE hedge_id=? AND market_id=? AND ts<=? AND ts>? "
                                 "ORDER BY ts DESC LIMIT 1", (hedge_id, market_id, hour, hour - 3 * 3600)).fetchone()
         if row is None and hedge_id == "lighter":

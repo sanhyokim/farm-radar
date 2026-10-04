@@ -307,6 +307,13 @@ def pool_states(data: Any) -> list[Item]:
             for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
 
 
+def merkl_positions(data: Any) -> list[Item]:
+    """run が feeds/positions.py で読んだ {"<チェーン番号>:<番号>": {...}} を一覧の形にする（N5c）。"""
+    return [Item(k, None, k.partition(":")[0], {"pool_id": v.get("pool_id"), "tick_lower": v.get("tick_lower"),
+                                                "tick_upper": v.get("tick_upper"), "error": v.get("error")})
+            for k, v in (data or {}).items() if isinstance(v, dict)] if isinstance(data, dict) else []
+
+
 # --- N5a「試す」のための記録（feeds/trial.py・feeds/shadow.py が読んだものを一覧の形にする） ----------------------
 
 def merkl_rewards(data: Any) -> list[Item]:
@@ -410,6 +417,10 @@ SOURCES: tuple[Source, ...] = (
     # Merkl の配った額（預け方ごと）: 配る木（root）の更新は Base で約2時間ごと（2026-10-02〜03 に12回）。約2時間に1回読む
     Source("merkl_rewards", "Merkl の配った額（預け方ごと。答え合わせ）", f"{MERKL}/rewards/", "15min", merkl_rewards,
            every_minutes=115, raw_every_minutes=720),
+    # N5c: Merkl の答え合わせ。配った額の多い預け方の幅と量（チェーンの公開の読み取り口。公式の v4 PositionManager だけ）。
+    # 配った額を読んだあとに、約2時間に1回（配った額と同じ間隔で、前後の量が同じか確かめる）
+    Source("merkl_positions", "Merkl の預け方の幅と量（チェーンの記録。答え合わせ）", "eth_call", "15min", merkl_positions,
+           every_minutes=115),
     # Aero の公式の住所（公開のコード置き場）。新しいファイルが出たら知らせる（判断④A: 早く出たら Aero の準備を前倒し）
     Source("aero_addresses", "Aero の公式の住所（公開のコード置き場）", "https://api.github.com", "hourly",
            aero_addresses),

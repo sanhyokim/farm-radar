@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\merkl_check.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -286,6 +286,25 @@ try {
                 Say ("[Lighter RH版] 探すの保険の見込み: RH版の数字 {0} 件 / 本体の数字 {1} 件" -f $nr, ($hm.Count - $nr))
             }
         } else { Say "[Lighter RH版] まだ読めていません" }
+        # N5c: Merkl の答え合わせ（実際に配った額 ÷ 探すの見込み。1 に近いほど見込みどおり。読むだけ）
+        $mp = $f.merkl_positions
+        if ($mp) { Say "[答え合わせ Merkl] 幅と量を読んだ預け方 $(N0 $mp.positions)（読めた回 $(N0 $mp.ok) / 読めなかった回 $(N0 $mp.errors)・最後 $($mp.last)）" }
+        $mc = $f.merkl_check
+        if ($mc -and @($mc.campaigns).Count -gt 0) {
+            $med = if ($null -eq $mc.ratio_median) { '-' } else { [math]::Round([double]$mc.ratio_median, 2) }
+            $dsh = if ($null -eq $mc.denominator_share_median) { '-' } else { "$([math]::Round([double]$mc.denominator_share_median * 100))%" }
+            Say "[答え合わせ Merkl] 比べた組 $(N0 $mc.pairs_in_range)・実際 ÷ 見込み（まん中）$med（1 より大きい = 見込みは控えめ）"
+            Say "[答え合わせ Merkl] コインの分の分母は、預かり額の $dsh に見える（100% に近い = 全員が分母。小さい = 幅の中の預け方だけに近い）"
+            foreach ($x in @($mc.campaigns | Select-Object -First 8)) {
+                $m = if ($null -eq $x.ratio_median) { '-' } else { [math]::Round([double]$x.ratio_median, 2) }
+                $lo = if ($null -eq $x.ratio_p25) { '-' } else { [math]::Round([double]$x.ratio_p25, 2) }
+                $hi = if ($null -eq $x.ratio_p75) { '-' } else { [math]::Round([double]$x.ratio_p75, 2) }
+                $op = if ($null -eq $x.out_of_range_paid_share) { '-' } else { "$([math]::Round([double]$x.out_of_range_paid_share * 100))%" }
+                $ds = if ($null -eq $x.denominator_share_median) { '-' } else { "$([math]::Round([double]$x.denominator_share_median * 100))%" }
+                Say ("   {0}: 区切り {1} / 幅の中の組 {2} / 実際 ÷ 見込み {3}（{4} 〜 {5}）/ 分母 {6} / 幅の外でももらえた組 {7}" -f `
+                    $x.pair, $x.intervals, $x.pairs_in_range, $m, $lo, $hi, $ds, $op)
+            }
+        } else { Say "[答え合わせ Merkl] まだ比べられる記録がありません（2時間ごとに増えます）" }
     } catch {
         Write-Host "   注意: 試すための記録の数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
     }
@@ -334,13 +353,23 @@ try {
             Say ("[さかのぼり 値段が動いていないプール] {0} 個（となりの記録と同じ値段が {1}% 以上。比べるのから外しました）" -f $st.Count, (BtPct $r.still_share_line 0))
             # 同じ名前のプールが複数あるので、プールの住所と手数料の段・最初と最後の値段も出す（2026-10-04 オーナーの質問1）
             # 空欄なら、とっておいた古い計算の結果を読んでいる（2026-10-04。VERSION の上げ忘れ。今はファイルの中身の印もキーに入れた）
+            # 手数料の段は、今の版が15分ごとにチェーンから読んだ値（2026-10-04: up. の工場の記録には手数料がないので、前は「不明」だった）。
+            # 手数料が動くプールは、記録の中の最小〜最大も出す
+            function FeeText($f) {
+                if ($null -eq $f.fee_pct) { return '不明' }
+                $t = "$($f.fee_pct)%"
+                if ($null -ne $f.fee_min_pct -and $f.fee_min_pct -ne $f.fee_max_pct) { $t += "（記録の中で $($f.fee_min_pct)〜$($f.fee_max_pct)%）" }
+                return $t
+            }
             foreach ($x in $st) {
-                $fee = if ($null -eq $x.fee_pct) { '不明' } else { "$($x.fee_pct)%" }
-                Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}" -f $x.pair, $x.pool_id, $fee, `
-                    (BtPct $x.still_share 1), $x.points, $x.distinct_prices, (BtNum $x.first_price 6), (BtNum $x.last_price 6))
+                $edge = ''
+                if ($x.at_edge -eq 'max' -or $x.at_edge -eq 'min') {
+                    $edge = " ※プールが空（流動性 0）で、値段が仕組みの{0}の端にあります（本当のコインの値段ではありません）" -f $(if ($x.at_edge -eq 'max') { '上' } else { '下' })
+                } elseif ($x.empty) { $edge = ' ※プールが空（流動性 0）' }
+                Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}{8}" -f $x.pair, $x.pool_id, (FeeText $x), `
+                    (BtPct $x.still_share 1), $x.points, $x.distinct_prices, (BtNum $x.first_price 6), (BtNum $x.last_price 6), $edge)
                 foreach ($o in @($x.same_pair)) {
-                    $of = if ($null -eq $o.fee_pct) { '不明' } else { "$($o.fee_pct)%" }
-                    Say ("      同じ組のほかのプール: {0}（手数料の段 {1}・記録 {2} 点・{3}）" -f $o.pool_id, $of, $o.points, $(if ($o.still) { '値段が動いていない' } else { '値段が動いている' }))
+                    Say ("      同じ組のほかのプール: {0}（手数料の段 {1}・記録 {2} 点・{3}）" -f $o.pool_id, (FeeText $o), $o.points, $(if ($o.still) { '値段が動いていない' } else { '値段が動いている' }))
                 }
             }
             # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ
@@ -390,6 +419,19 @@ try {
                 Say ("   {0}: 1時間の合図 {1} 回 / 24時間の合図 {2} 回 / 最初 {3} 日本時間 {4}% → そのあと24時間の最低 {5}%・24時間後 {6}%" -f $x.symbol, `
                     @($x.events_1h).Count, @($x.events_24h).Count, $at, (BtNum $f.change_pct 1), (BtNum $f.min_24h_pct 1), (BtNum $f.after_24h_pct 1))
             }
+            # N5c: 比べる相手（年あたり、建玉のお金あたり。収入は今の版の見込み × 実際に幅の中にいた割合、損は実際の値段で計算）
+            $bl = $r.baselines
+            if ($bl -and $bl.all.days -gt 0) {
+                Say ("[さかのぼり 比べる相手] 貸し出し = {0}（出典 {1}、確認 {2}）/ 広い幅 = ±{3}% で置きっぱなし" -f $bl.lending.name, $bl.lending.source, $bl.lending.checked, $bl.wide_r_pct)
+                foreach ($k in @('all', 'kind_stock', 'kind_coin', 'kind_bonus', 'kind_stable')) {
+                    $g = $bl.$k
+                    if (-not $g -or $g.days -eq 0) { continue }
+                    $nm = @{ all = 'ぜんぶ'; kind_stock = '株'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン'; kind_stable = 'ステーブル' }[$k]
+                    Say ("   {0}（プールと日 {1}件）: 今のやり方 年 {2}%（収入だけ {3}%）/ 広い幅で置きっぱなし {4}% / 貸し出し {5}%（{6}日）/ 何もしない 0% ・今のやり方が勝った日: 広い幅に {7}% / 貸し出しに {8}% / 何もしないに {9}%" -f `
+                        $nm, $g.days, (BtNum $g.now_year_pct 1), (BtNum $g.now_income_year_pct 1), (BtNum $g.wide_year_pct 1), (BtNum $g.lend_year_pct 1), $g.lend_days, `
+                        (BtPct $g.beat_wide_share 0), (BtPct $g.beat_lend_share 0), (BtPct $g.beat_nothing_share 0))
+                }
+            } else { Say "[さかのぼり 比べる相手] まだ比べられません（スコアの幅ごとの収入か、貸し出しの毎日の記録がありません）" }
         }
     } catch {
         Write-Host "   注意: さかのぼりの計算を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow

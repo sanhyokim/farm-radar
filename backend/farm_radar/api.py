@@ -166,9 +166,11 @@ def feeds_status_api() -> dict:
 def trial_records_api() -> dict:
     """N5「試す」に使える記録（N5a）: 今の版のデータの写し（あれば）と、新しい版が集めている記録の数と期間。"""
     from . import trial_records
+    from .registry import coin_chains
 
     config = load_config()
-    return trial_records.summary(config.database_path.parent, config.feeds.database_path)
+    return trial_records.summary(config.database_path.parent, config.feeds.database_path,
+                                 coin_chains(config.chains, config.root))
 
 
 @app.get("/api/trial/backtest")

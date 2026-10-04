@@ -127,7 +127,9 @@ def test_llama_pools_take_big_pools_and_bonus_pools_on_registered_chains(setting
     _yield_item(conn, "bonus3", "Base", 9e5, 30.0)               # ボーナスのある3番目（上限2なので入らない）
     _yield_item(conn, "tiny", "Base", 1e4, 30.0)                 # 小さすぎる
     _yield_item(conn, "other", "Ethereum", 9e9, 5.0)             # 登録していないチェーン
-    assert trial.llama_pools(conn, CTX.llama_chains) == ["big-lend", "bonus1", "bonus2"]
+    lend = trial.LENDING_BASELINE["pool"]                         # 比べる相手の貸し出しは、順に関係なく必ず読む
+    assert trial.llama_pools(conn, CTX.llama_chains) == [lend, "big-lend", "bonus1", "bonus2"]
+    assert trial.llama_pools(conn, ("Robinhood Chain",)) == ["bonus1"]
 
 
 def test_llama_history_is_written_per_day_and_old_days_are_dropped(settings):
@@ -136,9 +138,11 @@ def test_llama_history_is_written_per_day_and_old_days_are_dropped(settings):
     pts = [{"timestamp": "2025-01-01T00:00:00.000Z", "tvlUsd": 1, "apy": 1},
            {"timestamp": "2026-10-01T00:00:00.000Z", "tvlUsd": 2e6, "apy": 12.5, "apyBase": 2.5, "apyReward": 10.0},
            {"timestamp": "2026-10-02T00:00:00.000Z", "tvlUsd": 2.1e6, "apy": 11.0}]
-    data, calls = trial.read_llama_history(conn, Fake({f"{trial.LLAMA_CHART}/p1": {"status": "success", "data": pts}}).text,
+    lend = trial.LENDING_BASELINE["pool"]
+    data, calls = trial.read_llama_history(conn, Fake({f"{trial.LLAMA_CHART}/p1": {"status": "success", "data": pts},
+                                                       f"{trial.LLAMA_CHART}/{lend}": {"status": "success", "data": []}}).text,
                                            CTX, NOW)
-    assert calls == 1 and trial.write_llama_history(conn, NOW, data) == 3
+    assert calls == 2 and trial.write_llama_history(conn, NOW, data) == 3
     days = [r[0] for r in conn.execute("SELECT day FROM llama_yield_history ORDER BY day")]
     assert days == ["2026-10-01", "2026-10-02"]                  # 400日より前は消す
     assert conn.execute("SELECT apy_reward FROM llama_yield_history WHERE day='2026-10-01'").fetchone()[0] == 10.0
