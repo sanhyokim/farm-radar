@@ -478,6 +478,12 @@ class OpportunitySettings:
     stable_max_sigma: float = 0.005                       # 1日の値動きがこれ未満で $1 から2%以内なら「値動きしない」
     perp_alias: dict[str, str] = field(default_factory=lambda: {"WETH": "ETH", "WBTC": "BTC", "cbBTC": "BTC"})
     hedge_withstand_rise_pct: float = 50.0                # 保険に預けるお金: 値段がこの%上がっても強制的に閉じられない額（仮）
+    # 耐える上げ幅の決め方（2026-10-04 オーナー決定 A）: per_market = 市場ごとに max(上の%, 14日のうちのいちばんの上げ)、
+    # fixed = どの市場も上の%
+    hedge_withstand_mode: str = "per_market"
+    # 資金調達料の控えめの見込み（2026-10-04 オーナー決定 B）: 7日の平均と、この日数の平均（Lighter の資金調達率の過去）の
+    # 悪い方（払う額が大きい方）を使う。0 なら使わない（7日だけ）
+    funding_cautious_days: float = 30.0
     # 予備はガス代の分だけ（チェーンごとのドル。2026-10-02 13:44 JST オーナー決定。額は仮）
     reserve_usd: dict[str, float] = field(default_factory=lambda: {"robinhood": 20.0, "base": 10.0})
     # 値段の記録がないボーナスのコイン: 控えめの見込みで、この%だけ月に下がるとみなす（2026-10-02 オーナー決定。仮）
@@ -512,6 +518,8 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             stable_max_sigma=float(o.get("stable_max_sigma", d.stable_max_sigma)),
             perp_alias={str(k): str(v) for k, v in (o.get("perp_alias") or d.perp_alias).items()},
             hedge_withstand_rise_pct=float(o.get("hedge_withstand_rise_pct", d.hedge_withstand_rise_pct)),
+            hedge_withstand_mode=str(o.get("hedge_withstand_mode", d.hedge_withstand_mode)),
+            funding_cautious_days=float(o.get("funding_cautious_days", d.funding_cautious_days)),
             reserve_usd={str(k): float(v) for k, v in (o.get("reserve_usd") or d.reserve_usd).items()},
             unknown_reward_drop_monthly_pct=float(o.get("unknown_reward_drop_monthly_pct",
                                                         d.unknown_reward_drop_monthly_pct)),
@@ -529,8 +537,10 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             or not 0 < out.hedge_withstand_rise_pct <= 500 or any(v < 0 for v in out.reserve_usd.values()) \
             or not 0 <= out.unknown_reward_drop_monthly_pct < 100 or not 0 <= out.receipt_stable_drop_monthly_pct < 100 \
             or out.receipt_price_alert_pct <= 0 or out.pool_state_max_age_hours <= 0 \
-            or out.sudden_change_hours <= 0 or out.sudden_change_pct <= 0:
-        raise ConfigError("config.yaml の opportunities の数字を確かめてください（金額は正、割合は0〜1、倍率は1以上）。")
+            or out.sudden_change_hours <= 0 or out.sudden_change_pct <= 0 \
+            or out.hedge_withstand_mode not in ("per_market", "fixed") or out.funding_cautious_days < 0:
+        raise ConfigError("config.yaml の opportunities の数字を確かめてください（金額は正、割合は0〜1、倍率は1以上。"
+                          "hedge_withstand_mode は per_market か fixed）。")
     return out
 
 

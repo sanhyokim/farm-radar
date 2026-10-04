@@ -342,3 +342,19 @@ CREATE TABLE IF NOT EXISTS stage1_watch (
   close_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_stage1_watch_pos ON stage1_watch(position_id, ts);
+
+-- 保険（Lighter）の預け金の減り方（2026-10-04 オーナーのお願い1）。置き直すと保険の損は Lighter に、プールの得はチェーンに
+-- 分かれてたまるので、長くいると Lighter の預け金だけが減る。練習の建玉ごとに1時間に1回記録する（読み取りと計算だけ）
+CREATE TABLE IF NOT EXISTS hedge_margin_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_id INTEGER NOT NULL,
+  ts TEXT NOT NULL,
+  margin_usd REAL,            -- 預けたお金（建てたとき）
+  hedge_pnl_usd REAL,         -- 保険の損益（資金調達料を含む。置き直しで固めた分も）
+  equity_usd REAL,            -- 担保の今の価値 = 預けたお金 + 保険の損益
+  maintenance_usd REAL,       -- 維持に要る額
+  buffer_frac REAL,           -- 余裕 ÷ はじめの余裕
+  notional_usd REAL,          -- 売りの額（今の値段）
+  rebalances INTEGER          -- それまでの置き直しの回数
+);
+CREATE INDEX IF NOT EXISTS idx_hedge_margin_log_pos ON hedge_margin_log(position_id, ts);

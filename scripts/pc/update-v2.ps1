@@ -231,6 +231,13 @@ try {
     Say "[守る] placed: $($g.placed_usd) / left: $($g.total_left_usd) / loss_line: $($g.loss_line.state) / venues: $(@($g.venues).Count) / chains: $(@($g.chains).Count)"
     $lv = if ($g.loss_lines.level) { $g.loss_lines.level } else { 'なし' }     # 線を越えていなければ「なし」
     Say "[守る] loss_lines: $(@($g.loss_lines.periods).Count) / level: $lv / stages: $(@($g.stages).Count) / lighter: $(@($g.venues | Where-Object { $_.venue_id -eq 'lighter' }).Count)"
+    # 保険（Lighter）の預け金の減り方（2026-10-04 オーナーのお願い1。練習の建玉ごと、1時間に1回の記録）
+    Say "[守る] 預け金の減り方: 建玉 $(@($g.margin_log).Count)"
+    foreach ($m in @($g.margin_log | Select-Object -First 5)) {
+        Say ("   {0}: 預けたお金 `${1} → 今 `${2}（{3}%）/ いちばん低いとき `${4} / 置き直し {5} 回" -f $m.pair, [math]::Round([double]$m.margin_usd, 2), `
+            $(if ($null -eq $m.equity_usd) { '-' } else { [math]::Round([double]$m.equity_usd, 2) }), $(if ($null -eq $m.change_pct) { '-' } else { [math]::Round([double]$m.change_pct, 1) }), `
+            $(if ($null -eq $m.low_equity_usd) { '-' } else { [math]::Round([double]$m.low_equity_usd, 2) }), $m.rebalances)
+    }
     $vs = @($fs.sources | Where-Object { $_.id -eq 'vault_states' })[0]
     $vc = @($fs.sources | Where-Object { $_.id -eq 'venue_checks' })[0]
     # 「今回」は最後の回に読んだ数。答えが出たものは読み直さないので、たまった数（確かめ済み・金庫）も出す
@@ -293,7 +300,11 @@ try {
             # 値段が動いていないプール（取引がほとんどない）は、見込みと実際を比べるのから外した（2026-10-04 オーナーの質問3）
             $st = @($r.still_pools)
             Say ("[さかのぼり 値段が動いていないプール] {0} 個（となりの記録と同じ値段が {1}% 以上。比べるのから外しました）" -f $st.Count, (BtPct $r.still_share_line 0))
-            foreach ($x in @($st | Select-Object -First 5)) { Say ("   {0}: 同じ値段の割合 {1}%（記録 {2} 点）" -f $x.pair, (BtPct $x.still_share 1), $x.points) }
+            # 同じ名前のプールが複数あるので、プールの住所と手数料の段・最初と最後の値段も出す（2026-10-04 オーナーの質問1）
+            foreach ($x in $st) {
+                Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}" -f $x.pair, $x.pool_id, $x.fee_tier, `
+                    (BtPct $x.still_share 1), $x.points, $x.distinct_prices, $x.first_price, $x.last_price)
+            }
             # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ
             $kn = @{ kind_stock = '株'; kind_stable = 'ステーブル'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン' }
             Say "[さかのぼり 種類] 株 $($r.kinds.stock) / ステーブル $($r.kinds.stable) / ふつうのコイン $($r.kinds.coin) / ボーナスのコイン $($r.kinds.bonus)（プールの数）"
@@ -332,7 +343,15 @@ try {
                 $e = $x.events
                 Say "[さかのぼり 段階2] $($x.symbol) 24時間で -10%: $(@($e.'-10').Count) 回 / -15%: $(@($e.'-15').Count) 回 / -20%: $(@($e.'-20').Count) 回 / -25%: $(@($e.'-25').Count) 回"
             }
-            Say "[さかのぼり 投げ売り] 合図が出たコイン: $(@($r.stage2_dump.tokens).Count)"
+            Say "[さかのぼり 投げ売り] 合図が出たコイン: $(@($r.stage2_dump.tokens).Count)（1時間で $($r.stage2_dump.threshold_1h_pct)% 以下、または24時間で $($r.stage2_dump.threshold_24h_pct)% 以下）"
+            # コインごとの回数と、最初の合図のあと24時間（2026-10-04 オーナーの質問3）
+            foreach ($x in @($r.stage2_dump.tokens)) {
+                $ev = @(@($x.events_1h) + @($x.events_24h) | Sort-Object { [long]$_.at })
+                $f = $ev[0]
+                $at = [DateTimeOffset]::FromUnixTimeSeconds([long]$f.at).ToOffset([TimeSpan]::FromHours(9)).ToString('MM/dd HH:mm')
+                Say ("   {0}: 1時間の合図 {1} 回 / 24時間の合図 {2} 回 / 最初 {3} 日本時間 {4}% → そのあと24時間の最低 {5}%・24時間後 {6}%" -f $x.symbol, `
+                    @($x.events_1h).Count, @($x.events_24h).Count, $at, (BtNum $f.change_pct 1), (BtNum $f.min_24h_pct 1), (BtNum $f.after_24h_pct 1))
+            }
         }
     } catch {
         Write-Host "   注意: さかのぼりの計算を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow

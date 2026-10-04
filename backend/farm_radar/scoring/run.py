@@ -56,6 +56,9 @@ class MarginBasis:
     reserve_usd: float = 20.0
     mmf_fallback: float = 0.05
     lighter_db: Path | None = None
+    # 市場ごとに max(withstand_rise, stay_days のうちのいちばんの上げ)（2026-10-04 オーナー決定 A。hedge_guard.withstand_for）
+    per_market: bool = False
+    stay_days: float = 14.0
 
 
 @dataclass
@@ -381,8 +384,11 @@ def _split_for(m: MarginBasis, c_total: float, table: dict[int, tuple[float | No
             imf, mmf = table[int(mid)]
         from_lighter = mmf is not None
         mmf = mmf if mmf is not None else m.mmf_fallback
-        needs[sym] = {"need": hedge_guard.margin_need(imf, mmf, m.withstand_rise), "imf": imf, "mmf": mmf,
-                      "from_lighter": from_lighter, "hedge_id": ch.get("hedge_id")}
+        w = m.withstand_rise
+        if m.per_market and m.lighter_db is not None and ch.get("hedge_id") == "lighter" and mid is not None:
+            w = max(w, hedge_guard.withstand_table(m.lighter_db, m.stay_days).get(int(mid), 0.0))
+        needs[sym] = {"need": hedge_guard.margin_need(imf, mmf, w), "imf": imf, "mmf": mmf,
+                      "from_lighter": from_lighter, "hedge_id": ch.get("hedge_id"), "withstand_rise_pct": w * 100}
     sp = hedge_guard.split(c_total, m.reserve_usd, [(0.5, n["need"]) for n in needs.values()])
     return {"lp": sp["pool"] / c_total, "hedge_margin": sp["hedge_margin"] / c_total, "reserve": sp["reserve"] / c_total,
             "lp_usd": sp["pool"], "hedge_margin_usd": sp["hedge_margin"], "reserve_usd": sp["reserve"],
