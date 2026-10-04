@@ -353,13 +353,23 @@ try {
             Say ("[さかのぼり 値段が動いていないプール] {0} 個（となりの記録と同じ値段が {1}% 以上。比べるのから外しました）" -f $st.Count, (BtPct $r.still_share_line 0))
             # 同じ名前のプールが複数あるので、プールの住所と手数料の段・最初と最後の値段も出す（2026-10-04 オーナーの質問1）
             # 空欄なら、とっておいた古い計算の結果を読んでいる（2026-10-04。VERSION の上げ忘れ。今はファイルの中身の印もキーに入れた）
+            # 手数料の段は、今の版が15分ごとにチェーンから読んだ値（2026-10-04: up. の工場の記録には手数料がないので、前は「不明」だった）。
+            # 手数料が動くプールは、記録の中の最小〜最大も出す
+            function FeeText($f) {
+                if ($null -eq $f.fee_pct) { return '不明' }
+                $t = "$($f.fee_pct)%"
+                if ($null -ne $f.fee_min_pct -and $f.fee_min_pct -ne $f.fee_max_pct) { $t += "（記録の中で $($f.fee_min_pct)〜$($f.fee_max_pct)%）" }
+                return $t
+            }
             foreach ($x in $st) {
-                $fee = if ($null -eq $x.fee_pct) { '不明' } else { "$($x.fee_pct)%" }
-                Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}" -f $x.pair, $x.pool_id, $fee, `
-                    (BtPct $x.still_share 1), $x.points, $x.distinct_prices, (BtNum $x.first_price 6), (BtNum $x.last_price 6))
+                $edge = ''
+                if ($x.at_edge -eq 'max' -or $x.at_edge -eq 'min') {
+                    $edge = " ※プールが空（流動性 0）で、値段が仕組みの{0}の端にあります（本当のコインの値段ではありません）" -f $(if ($x.at_edge -eq 'max') { '上' } else { '下' })
+                } elseif ($x.empty) { $edge = ' ※プールが空（流動性 0）' }
+                Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}{8}" -f $x.pair, $x.pool_id, (FeeText $x), `
+                    (BtPct $x.still_share 1), $x.points, $x.distinct_prices, (BtNum $x.first_price 6), (BtNum $x.last_price 6), $edge)
                 foreach ($o in @($x.same_pair)) {
-                    $of = if ($null -eq $o.fee_pct) { '不明' } else { "$($o.fee_pct)%" }
-                    Say ("      同じ組のほかのプール: {0}（手数料の段 {1}・記録 {2} 点・{3}）" -f $o.pool_id, $of, $o.points, $(if ($o.still) { '値段が動いていない' } else { '値段が動いている' }))
+                    Say ("      同じ組のほかのプール: {0}（手数料の段 {1}・記録 {2} 点・{3}）" -f $o.pool_id, (FeeText $o), $o.points, $(if ($o.still) { '値段が動いていない' } else { '値段が動いている' }))
                 }
             }
             # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ

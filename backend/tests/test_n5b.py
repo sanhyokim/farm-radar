@@ -421,7 +421,8 @@ def test_still_pool_lists_the_other_pools_of_the_same_pair():
              {"id": "up:0xb", "token0": "0xu", "token1": "0xw", "fee_tier": 500, "n": 600},
              {"id": "up:0xc", "token0": "0xW", "token1": "0xX", "fee_tier": 500, "n": 600}]
     out = bt.same_pair([{"pool_id": "up:0xa", "pair": "WETH/USDG"}], pools)
-    assert out[0]["same_pair"] == [{"pool_id": "up:0xb", "fee_pct": 0.05, "points": 600, "still": False}]
+    o = out[0]["same_pair"]
+    assert [(x["pool_id"], x["fee_pct"], x["fee_source"], x["points"], x["still"]) for x in o] == [("up:0xb", 0.05, "pools", 600, False)]
     assert bt.fee_pct(100) == 0.01 and bt.fee_pct(None) is None
 
 
@@ -468,3 +469,32 @@ def test_baselines_compare_the_current_way_with_wide_lending_and_nothing(old_cop
     assert x["lend"] == pytest.approx(x["c_lp"] * 0.0365 / 365) and x["nothing"] == 0.0
     assert a["now_year_pct"] == pytest.approx(sum(r["now"] / r["c_lp"] for r in rows) / 3 * 365 * 100)
     assert 0 <= a["beat_lend_share"] <= 1 and res["baselines"]["kind_coin"]["days"] == 3
+
+
+def test_fee_comes_from_the_chain_reads_of_the_copy_when_the_pool_row_has_none(old_copy, feeds):
+    """2026-10-04 オーナー: 手数料の段がすべて「不明」。up. の工場の作成の記録には手数料がなく pools.fee_tier は空。
+    今の版が15分ごとにチェーンから読んだ fee()（pool_snapshots.fee）を使う。手数料が動くプールは最小と最大も出す。"""
+    old_copy.execute("UPDATE pools SET fee_tier=NULL, tick_spacing=10 WHERE id='up-robinhood:0xaaa'")
+    rows = old_copy.execute("SELECT rowid FROM pool_snapshots WHERE pool_id='up-robinhood:0xaaa' ORDER BY ts").fetchall()
+    for i, (rid,) in enumerate(rows):
+        old_copy.execute("UPDATE pool_snapshots SET fee=? WHERE rowid=?", (75 + i % 22, rid))
+    old_copy.execute("UPDATE pool_snapshots SET fee=77 WHERE rowid=?", (rows[-1][0],))
+    pool = old_copy.execute("SELECT * FROM pools WHERE id='up-robinhood:0xaaa'").fetchone()
+    f = bt.pool_fee(old_copy, pool)
+    assert f["fee_pct"] == pytest.approx(0.0077) and f["fee_source"] == "snapshots" and f["tick_spacing"] == 10
+    assert f["fee_min_pct"] == pytest.approx(0.0075) and f["fee_max_pct"] == pytest.approx(0.0096)
+    # 記録にも pools にもなければ「不明」のまま（推測しない）
+    old_copy.execute("UPDATE pools SET fee_tier=NULL WHERE id='up-robinhood:0xbbb'")
+    other = old_copy.execute("SELECT * FROM pools WHERE id='up-robinhood:0xbbb'").fetchone()
+    assert bt.pool_fee(old_copy, other)["fee_pct"] is None
+
+
+def test_price_at_the_v3_edge_with_no_liquidity_is_marked():
+    """3.4E+38 の値段 = v3 の値段の上の端（MAX_SQRT_RATIO − 1、tick 887271）で、流動性 0（2026-10-04 チェーンの記録）。"""
+    top = {"sqrt_price_x96": str(bt.MAX_SQRT_RATIO - 1)}
+    assert bt.price_edge([(0, 3.4025678683638813e38, 0.0, top)]) == {"empty": True, "at_edge": "max"}
+    assert (bt.MAX_SQRT_RATIO - 1) ** 2 / 2 ** 192 == pytest.approx(3.4025678683638813e38)
+    low = {"sqrt_price_x96": "4295128740"}
+    assert bt.price_edge([(0, 2.9e-27, None, low)]) == {"empty": True, "at_edge": "min"}
+    mid = {"sqrt_price_x96": str(2 ** 96)}
+    assert bt.price_edge([(0, 1.0, 1e15, mid)]) == {"empty": False, "at_edge": ""}

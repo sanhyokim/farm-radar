@@ -33,7 +33,7 @@ from .scoring import model as m
 from .scoring.run import own_series
 from .tokens import load_tokens
 
-VERSION = 6                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
+VERSION = 7                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
 STEP_MAX_S = 45 * 60            # 15分ごとの記録で、これより間があいたら、その間の時間は数えない（欠損）
 DAY_MIN_COVERAGE = 0.9          # 1日のうち、これ以上の時間の記録がある日だけ比べる
 PASS_REL = 0.30                 # 合格の目安: 差が見込みの30%以内（評価のときと同じ）
@@ -192,7 +192,55 @@ def fee_pct(fee_tier: Any) -> float | None:
         return None
 
 
-def same_pair(still: list[dict[str, Any]], pools: list[sqlite3.Row]) -> list[dict[str, Any]]:
+# Uniswap v3 の値段の端（TickMath の MIN_SQRT_RATIO・MAX_SQRT_RATIO）。流動性が 0 のプールで売り買いされると、
+# 値段がここまで動いたまま残る（2026-10-04 チェーンの記録: WETH/ARROW・SPCX/USDG は tick 887271・流動性 0）
+MIN_SQRT_RATIO = 4295128739
+MAX_SQRT_RATIO = 1461446703485210103287273052203988822378723970342
+
+
+def pool_fee(conn: sqlite3.Connection | None, pool: Any) -> dict[str, Any]:
+    """プールの手数料の段（%）。up. の工場は作成の記録に手数料を入れないので、今の版の pools.fee_tier は空。
+    今の版が15分ごとにチェーンから読んだ fee()（pool_snapshots.fee）を使う（最後の値と、記録の中の最小・最大。
+    up. は手数料が動くプールがある）。それもなければ pools.fee_tier。どちらもなければ None（推測しない）。"""
+    out: dict[str, Any] = {"fee_pct": None, "fee_min_pct": None, "fee_max_pct": None, "fee_source": None,
+                           "tick_spacing": _get(pool, "tick_spacing")}
+    if conn is not None:
+        try:
+            r = conn.execute("SELECT MIN(fee), MAX(fee), (SELECT fee FROM pool_snapshots WHERE pool_id=? AND fee IS NOT NULL "
+                             "ORDER BY ts DESC LIMIT 1) FROM pool_snapshots WHERE pool_id=? AND fee IS NOT NULL",
+                             (pool["id"], pool["id"])).fetchone()
+        except sqlite3.OperationalError:              # 古い写しで fee の列がない
+            r = None
+        if r and r[2] is not None:
+            return {**out, "fee_pct": fee_pct(r[2]), "fee_min_pct": fee_pct(r[0]), "fee_max_pct": fee_pct(r[1]),
+                    "fee_source": "snapshots"}
+    f = fee_pct(_get(pool, "fee_tier"))
+    return {**out, "fee_pct": f, "fee_min_pct": f, "fee_max_pct": f, "fee_source": "pools" if f is not None else None}
+
+
+def _get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def price_edge(pts: list[tuple[int, float, float | None, Any]]) -> dict[str, Any]:
+    """最後の記録で、プールが空（流動性 0）か、値段が v3 の端にあるか（とても大きい・小さい値段の見分け）。"""
+    if not pts:
+        return {"empty": None, "at_edge": None}
+    row = pts[-1][3]
+    liq = pts[-1][2]
+    try:
+        sq = int(row["sqrt_price_x96"]) if row["sqrt_price_x96"] is not None else None
+    except (TypeError, ValueError, KeyError, IndexError):
+        sq = None
+    edge = None if sq is None else ("max" if sq >= MAX_SQRT_RATIO - 1 else "min" if sq <= MIN_SQRT_RATIO + 1 else "")
+    return {"empty": (liq or 0) == 0, "at_edge": edge}
+
+
+def same_pair(still: list[dict[str, Any]], pools: list[sqlite3.Row],
+              conn: sqlite3.Connection | None = None) -> list[dict[str, Any]]:
     """値段が動いていないプールごとに、写しの中の同じ組（コインの組が同じ）のほかのプールを付ける。
     同じ名前のプールが会場に複数あるので、どれが動いていないのかを見分ける（2026-10-04 オーナーの質問1）。"""
     still_ids = {x["pool_id"] for x in still}
@@ -204,7 +252,7 @@ def same_pair(still: list[dict[str, Any]], pools: list[sqlite3.Row]) -> list[dic
             pair = {str(me["token0"]).lower(), str(me["token1"]).lower()}
             for p in pools:
                 if p["id"] != me["id"] and {str(p["token0"]).lower(), str(p["token1"]).lower()} == pair:
-                    others.append({"pool_id": p["id"], "fee_pct": fee_pct(p["fee_tier"]), "points": p["n"],
+                    others.append({"pool_id": p["id"], **pool_fee(conn, p), "points": p["n"],
                                    "still": p["id"] in still_ids})
         out.append({**x, "same_pair": others})
     return out
@@ -773,7 +821,7 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
             # （2026-10-04 オーナーの質問1: WETH/USDG が入ったのはなぜか）
             still.append({"pool_id": p["id"], "pair": f"{p['token0_symbol']}/{p['token1_symbol']}", "kind": kind,
                           "points": p["n"], "still_share": share, "fee_tier": p["fee_tier"],
-                          "fee_pct": fee_pct(p["fee_tier"]), "gauge": p["gauge_address"],
+                          **pool_fee(conn, p), **price_edge(pts_p), "gauge": p["gauge_address"],
                           "first_price": pts_p[0][1] if pts_p else None, "last_price": pts_p[-1][1] if pts_p else None,
                           "distinct_prices": len({x[1] for x in pts_p})})
             fund_rows += hedge_days(conn, fconn, p, s)
@@ -866,7 +914,7 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
                    **{f"kind_{k}": _summarize_ranges([x for x in rows if x["kind"] == k], s) for k in KINDS}},
         "kinds": {k: sum(1 for v in kinds.values() if v == k) for k in KINDS},
         "per_pool_best": per_pool,
-        "still_pools": same_pair(still, pools),
+        "still_pools": same_pair(still, pools, conn),
         "still_share_line": STILL_SHARE,
         # 見込みと実際のずれが大きいプール（1日の損 = 値動きの損 + 置き直しの費用 の、見込みと実際の差のドル。大きい順に10）。
         # 前は割合（見込み ÷ 実際）の順で、値動きの小さいプールが上に来ていた（2026-10-04 オーナーの質問5）
