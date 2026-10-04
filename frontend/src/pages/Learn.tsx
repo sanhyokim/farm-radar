@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { useApi, type PlanItem, type Reports } from "../api";
 import { jst, jstDay, untilText } from "../format";
 import { GLOSSARY } from "../glossary";
@@ -21,6 +21,7 @@ export default function Learn() {
       <PageHead title="学ぶ" />
       <div className="grid items-start gap-4 lg:grid-cols-2 lg:gap-6">
         <div className="flex flex-col gap-4 lg:gap-6">
+          <TrialLink />
           <PlansCard />
           <Card title="今日の学び">
             {data?.learning.length ? data.learning.slice(0, 3).map((n) => (
@@ -62,6 +63,20 @@ export default function Learn() {
         </section>
       </div>
     </>
+  );
+}
+
+/** N5d「試す」の結果の画面への入り口 */
+function TrialLink() {
+  return (
+    <Link to="/learn/trial" className="card flex items-center gap-4 p-6">
+      <Icon name="flask" />
+      <div className="min-w-0 flex-1">
+        <div className="bold">試すの結果</div>
+        <div className="cap">見込みと実際を6つの項目で比べています（確認できた・要注意・記録中）</div>
+      </div>
+      <Icon name="right" />
+    </Link>
   );
 }
 
