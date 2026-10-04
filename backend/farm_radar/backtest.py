@@ -32,8 +32,9 @@ from .config import Config, contract_address, load_venue
 from .scoring import model as m
 from .scoring.run import own_series
 from .tokens import load_tokens
+from .views import next_epoch_flip
 
-VERSION = 8                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
+VERSION = 9                     # 計算を変えたら上げる（とっておいた結果を使わない）。このファイルの中身の印もキーに入れる（_source_mark）
 STEP_MAX_S = 45 * 60            # 15分ごとの記録で、これより間があいたら、その間の時間は数えない（欠損）
 DAY_MIN_COVERAGE = 0.9          # 1日のうち、これ以上の時間の記録がある日だけ比べる
 PASS_REL = 0.30                 # 合格の目安: 差が見込みの30%以内（評価のときと同じ）
@@ -53,6 +54,7 @@ KINDS = ("stock", "stable", "bonus", "coin")   # 株 / ステーブルどうし 
 # 見込み（外の値動き）と比べると、実際の損が 0 に見えて「ずれ」が大きく出るので、比べるのから外して別に並べる
 # （2026-10-04 オーナーの質問3。WETH/WOOD）
 STILL_SHARE = 0.95
+FLIP_S = 3600                   # 置き直してからこの時間のうちに前の幅に戻ったら「行ったり来たり」（N5 最終判断の準備の 5）
 
 
 # --- v3 の式（token1 建て。幅 [pa, pb]、流動性 L） --------------------------------------------------------
@@ -110,13 +112,16 @@ class DayReplay:
     rebalance_cost: float = 0.0     # 置き直しの費用（建玉のお金に対する割合）
     var: float = 0.0                # その日の実際の値動き（15分ごとの対数の変化の2乗の合計）
     rebalance_slips: list[float] = field(default_factory=list)
+    flips: int = 0                  # 置き直したあと FLIP_S のうちに、値段が前の幅に戻った回数（行ったり来たり）
 
 
 def replay(points: list[tuple[int, float, float | None]], r: float, wait_s: float,
-           cost_of: Any = None) -> dict[str, DayReplay]:
+           cost_of: Any = None, buffer: float = 0.0) -> dict[str, DayReplay]:
     """値段の並び (UNIX秒, 値段, 今の値段のところの流動性) で、幅 ±r を置き直しながら動かす。日ごと（UTC）の結果。
 
-    cost_of(値段, 流動性) は置き直し1回の (費用の割合, 両替のずれ) を返す（None なら0）。"""
+    cost_of(値段, 流動性) は置き直し1回の (費用の割合, 両替のずれ) を返す（None なら0）。
+    buffer は境目の余裕（幅の大きさに対する割合。N5 最終判断の準備の 5）: 境目からさらに幅 × buffer 外に出たまま
+    wait_s たったら置き直す。0 なら前と同じ（境目を出たら数え始める）。幅の中にいた時間は、余裕を入れない本当の幅で数える。"""
     out: dict[str, DayReplay] = defaultdict(DayReplay)
     if len(points) < 2:
         return {}
@@ -124,6 +129,8 @@ def replay(points: list[tuple[int, float, float | None]], r: float, wait_s: floa
     realized = 0.0
     prev_total = 0.0
     out_since: int | None = None
+    old: Segment | None = None          # 置き直す前の幅（行ったり来たりを数える）
+    old_t = 0
     for i in range(1, len(points)):
         t_prev, p_prev, _ = points[i - 1]
         t, p, liq = points[i]
@@ -138,13 +145,21 @@ def replay(points: list[tuple[int, float, float | None]], r: float, wait_s: floa
         total = realized + seg.pnl(p)
         out[_day(t)].gamma -= total - prev_total
         prev_total = total
-        if seg.inside(p):
+        if old is not None:
+            if t - old_t > FLIP_S:
+                old = None
+            elif old.inside(p):             # 置き直さなくても、まもなく前の幅に戻っていた
+                out[_day(t)].flips += 1
+                old = None
+        edge = buffer * (seg.pb - seg.pa)
+        if seg.pa - edge <= p <= seg.pb + edge:
             out_since = None
             continue
         if out_since is None:
             out_since = t
         if t - out_since >= wait_s:
             realized = total
+            old, old_t = seg, t
             seg = Segment.at(p, r)
             prev_total = realized              # 置き直した直後の損益は realized と同じ（pnl = 0）
             out_since = None
@@ -340,6 +355,8 @@ class BacktestSettings:
     reward_drop_pct: float = -15.0
     dump_1h_pct: float = -15.0
     dump_24h_pct: float = -30.0
+    target_apr_pct: float = 30.0        # 段階2「狙い以下3回」と段階4（N5 最終判断の準備）。設定の初めの値（画面で変えた値ではない）
+    below_target_times: int = 3
 
     @classmethod
     def from_config(cls, config: Config) -> BacktestSettings:
@@ -349,7 +366,8 @@ class BacktestSettings:
                    withstand_rise_pct=float(op.hedge_withstand_rise_pct), stay_days=float(op.stay_days),
                    funds_drop_pct=float(rk.emergency_pool_funds_drop_1h_pct),
                    reward_drop_pct=float(rk.exit_reward_token_24h_pct),
-                   dump_1h_pct=float(rk.exit_dump_1h_pct), dump_24h_pct=float(rk.exit_dump_24h_pct))
+                   dump_1h_pct=float(rk.exit_dump_1h_pct), dump_24h_pct=float(rk.exit_dump_24h_pct),
+                   target_apr_pct=float(op.target_apr_pct), below_target_times=int(config.guard.below_target_times))
 
 
 def _cost_fn(det: dict[str, Any], pool: sqlite3.Row, s: BacktestSettings, c_lp: float):
@@ -718,7 +736,7 @@ def changes(points: list[tuple[int, float]], hours: float) -> list[tuple[int, fl
 
 
 def events(chs: list[tuple[int, float, float]], hit, after_points: list[tuple[int, float]]) -> list[dict[str, Any]]:
-    """合図が出た時点（同じ出来事は EVENT_GAP_S あいたら別）と、そのあと24時間の値段の動き。"""
+    """合図が出た時点（同じ出来事は EVENT_GAP_S あいたら別）と、そのあと6時間・24時間の値段の動き。"""
     out = []
     last = None
     for t, p, ch in chs:
@@ -730,7 +748,9 @@ def events(chs: list[tuple[int, float, float]], hit, after_points: list[tuple[in
         last = t
         later = [(tt, pp) for tt, pp in after_points if t < tt <= t + 86400]
         p24 = _at_or_before(after_points, t + 86400, 3600) if later and later[-1][0] >= t + 86400 - 3600 else None
+        p6 = _at_or_before(after_points, t + 6 * 3600, 3600) if later and later[-1][0] >= t + 6 * 3600 - 3600 else None
         out.append({"at": t, "price": p, "change_pct": ch * 100,
+                     "after_6h_pct": (p6 / p - 1) * 100 if p6 and p > 0 else None,
                      "min_24h_pct": (min(pp for _, pp in later) / p - 1) * 100 if later and p > 0 else None,
                      "after_24h_pct": (p24 / p - 1) * 100 if p24 and p > 0 else None})
     return out
@@ -764,6 +784,9 @@ def stage1_detail(t: int, funds: list[tuple[int, float, float]], coins: list[lis
     before = next((ago for tt, _, ago in funds if tt == t), None)
     later = [(tt, now) for tt, now, _ in funds if t < tt <= t + RECOVER_S]
     recovered = bool(before and any(now >= RECOVER_SHARE * before for _, now in later))
+    # 24時間後のプールのお金（合図の時点と比べる。N5 最終判断の準備の 2「24時間でさらに悪化した割合」）
+    at_now = next((now for tt, now, _ in funds if tt == t), None)
+    f24 = _at_or_before([(tt, now) for tt, now, _ in funds], t + 86400, 3600)
     drops = []
     for pts in coins:
         p0 = _at_or_before(pts, t)
@@ -773,6 +796,7 @@ def stage1_detail(t: int, funds: list[tuple[int, float, float]], coins: list[lis
     worst = min(drops) if drops else None
     return {"funds_before_usd": before, "small": bool(before is not None and before < SMALL_POOL_USD),
             "recovered_6h": recovered, "coin_min_24h_pct": worst,
+            "funds_after_24h_pct": (f24 / at_now - 1) * 100 if f24 and at_now else None,
             "big_drop": worst is not None and worst <= BIG_DROP_PCT}
 
 
@@ -789,6 +813,229 @@ def miss(x: dict[str, Any]) -> dict[str, Any]:
     pred = (x["gamma_pred"] + (x.get("cost_pred") or 0.0)) * (x.get("c_lp") or 0.0)
     real = (x["gamma_real"] + (x.get("cost_real") or 0.0)) * (x.get("c_lp") or 0.0)
     return {**x, "loss_pred_usd_day": pred, "loss_real_usd_day": real, "gap_usd_day": abs(pred - real)}
+
+
+# --- N5 最終判断の準備（2026-10-04 18:20 JST オーナーの指示書。仮の数字の見直し案の材料。決めるのはオーナー） ---------
+# ここは材料を数えるだけ。線や式は変えない。どれが「判断できる」「記録待ち」「材料不足」かは final_prep が決める。
+
+GRID_BUFFERS = (0.0, 0.05, 0.10, 0.15)      # 5: 境目の余裕（幅の大きさに対する割合）
+GRID_WAITS_MIN = (15.0, 30.0, 60.0)          # 5: 外に出てから直すまでの待ち時間（分）
+MOVE_MULTIPLES = (1.0, 1.5, 2.0, 3.0)        # 4: 移る費用の何倍の得なら移るか（今は2倍）
+
+
+def _round(xs: list[float], nd: int = 4) -> list[float]:
+    return [round(x, nd) for x in xs]
+
+
+def loss_series(base_rows: list[dict[str, Any]], amount_usd: float) -> dict[str, Any]:
+    """1: 損の線の材料。今のやり方（その日のいちばん良い幅で置き直す）でプールを1つ持ったときの、総資産あたりの損益（%）。
+    1日 = プールと日の組ごと、7日 = 記録が7日続いた窓ごと、始めてから = プールごとの、記録の最初からのいちばん悪いところ。
+    保険の資金調達料とボーナスのコインの値下がりは入らない（比べる相手と同じ作り）。"""
+    by_pool: dict[str, dict[str, float]] = defaultdict(dict)
+    for x in base_rows:
+        by_pool[x["pool_id"]][x["day"]] = x["now"]
+    day, week, start, spans = [], [], [], []
+    for days in by_pool.values():
+        ds = sorted(days)
+        vals = [days[d] / amount_usd * 100 for d in ds]
+        day += vals
+        dates = [datetime.fromisoformat(d + "T00:00:00+00:00") for d in ds]
+        for i in range(len(ds) - 6):
+            if (dates[i + 6] - dates[i]).days == 6:
+                week.append(sum(vals[i:i + 7]))
+        cum, worst = 0.0, 0.0
+        for v in vals:
+            cum += v
+            worst = min(worst, cum)
+        start.append(worst)
+        spans.append(len(ds))
+    return {"day": _round(day), "week": _round(week), "since_start": _round(start), "pools": len(by_pool),
+            "since_start_days_median": _median([float(x) for x in spans]),
+            "calendar_days": len({x["day"] for x in base_rows})}
+
+
+def stage1_table(stage1: dict[int, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    """2: 段階1 の線（−20/−30/−40/−50%）ごとに、出た回数と、そのあとどうなったか。全部と、大きいプールだけ。"""
+    def part(evs: list[dict[str, Any]]) -> dict[str, Any]:
+        n = len(evs)
+        w = [e for e in evs if e.get("funds_after_24h_pct") is not None]
+        return {"count": n,
+                "recovered_6h_share": sum(1 for e in evs if e["recovered_6h"]) / n if n else None,
+                "worse_24h_share": sum(1 for e in w if e["funds_after_24h_pct"] < 0) / len(w) if w else None,
+                "worse_24h_known": len(w),
+                "big_drop_share": sum(1 for e in evs if e["big_drop"]) / n if n else None,
+                # 空振りらしい: 6時間のうちに戻り、そのあとコインも大きく下がらなかった
+                "false_alarm_share": sum(1 for e in evs if e["recovered_6h"] and not e["big_drop"]) / n if n else None}
+    return [{"threshold_pct": th, "all": part(evs), "big": part([e for e in evs if not e["small"]])}
+            for th, evs in sorted(stage1.items())]
+
+
+def below_target_events(scores: list[tuple[int, sqlite3.Row]], target_apr_pct: float, times: int) -> list[dict[str, Any]]:
+    """3: 狙い利回り以下が times 回続いた合図（risk_job.count_below_target と同じ比べ方。年 = 1日の純利回り × 365）。
+    前に狙い以上だったプールで、下がったときだけ数える（入っている建玉にだけ働く決まりのため）。
+    そのあと6時間・24時間のうちに、また狙い以上に戻ったか。"""
+    seq = [(t, float(r["net_daily_pct"])) for t, r in scores if r["net_daily_pct"] is not None]
+    out = []
+    above, n = False, 0
+    for i, (t, net) in enumerate(seq):
+        if net * 365 >= target_apr_pct:
+            above, n = True, 0
+            continue
+        n += 1
+        if n == times and above:
+            later = [(tt, v) for tt, v in seq[i + 1:] if tt <= t + 86400]
+            known_24h = bool(later) and later[-1][0] >= t + 86400 - 3600
+            out.append({"at": t, "apr_pct": net * 365,
+                        "back_6h": any(v * 365 >= target_apr_pct for tt, v in later if tt <= t + 6 * 3600),
+                        "back_24h": any(v * 365 >= target_apr_pct for _, v in later) if known_24h else None})
+            above = False
+    return out
+
+
+def _next_day_pnl(evs: list[dict[str, Any]], base_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """3: 狙い以下3回で出たとして、そのプールの次の日（UTC）の「今のやり方」の実際の損益（ドル）。
+    マイナス = 出て避けた損、プラス = 出て逃した分。"""
+    now = {(x["pool_id"], x["day"]): x["now"] for x in base_rows}
+    vals = []
+    for e in evs:
+        nxt = datetime.fromtimestamp(e["at"], UTC).date().toordinal() + 1
+        v = now.get((e["pool_id"], datetime.fromordinal(nxt).strftime("%Y-%m-%d")))
+        if v is not None:
+            vals.append(v)
+    neg, pos = [-v for v in vals if v < 0], [v for v in vals if v >= 0]
+    return {"known": len(vals), "avoided_n": len(neg), "missed_n": len(pos),
+            "avoided_mean_usd": _mean(neg), "missed_mean_usd": _mean(pos)}
+
+
+def _side_cost(sc: sqlite3.Row, s: BacktestSettings) -> float:
+    """移るときの片側（閉じる・始める）の費用（ドル）: 両替する額 ×（手数料 + ずれ）+ ガス代2回（risk_job.better_place と同じ）。"""
+    det = _details(sc)
+    inp = det.get("inputs") or {}
+    lp = float((det.get("split") or {}).get("lp") or s.lp_share)
+    return s.amount_usd * lp * s.swap_ratio * (float(inp.get("fee") or 0) + float(inp.get("slippage") or 0)) \
+        + 2 * float(inp.get("gas_usd_per_tx") or 0)
+
+
+def move_sim(info: dict[str, dict[str, dict[str, Any]]], now_usd: dict[tuple[str, str], float],
+             flip_days: dict[str, dict[str, float]], s: BacktestSettings, mult: float | None) -> dict[str, Any]:
+    """4: 1日ごとに、今のプールより（利回りの差 × 次の切り替えまでの日数）が移る費用の mult 倍より大きいプールがあれば移る。
+    mult が None なら移らない。損益はそのプールのその日の「今のやり方」の実際（比べる相手と同じ）。最初の1つは同じ。"""
+    days = sorted({d for x in info.values() for d in x})
+    held: str | None = None
+    pnl, cost, moves, missing, n = 0.0, 0.0, 0, 0, 0
+    for day in days:
+        cands = {pid: x[day] for pid, x in info.items() if day in x and (pid, day) in now_usd}
+        if not cands:
+            continue
+        good = {pid: c for pid, c in cands.items() if c["net"] * 365 >= s.target_apr_pct}
+        if held is None:
+            held = max(good or cands, key=lambda k: (good or cands)[k]["net"])
+        elif mult is not None and held in cands:
+            cur = cands[held]
+            alts = sorted(((pid, c) for pid, c in good.items() if pid != held), key=lambda x: -x[1]["net"])
+            if alts:
+                pid, alt = alts[0]
+                gain = (alt["net"] - cur["net"]) / 100 * s.amount_usd * flip_days.get(pid, {}).get(day, 0.0)
+                move_cost = cur["side_cost"] + alt["side_cost"]
+                if gain > 0 and gain > mult * move_cost:
+                    held = pid
+                    moves += 1
+                    cost += move_cost
+        v = now_usd.get((held, day))
+        if v is None:
+            missing += 1
+            continue
+        pnl += v
+        n += 1
+    return {"multiple": mult, "moves": moves, "move_cost_usd": cost, "pnl_before_cost_usd": pnl,
+            "pnl_usd": pnl - cost, "days": n, "missing_days": missing}
+
+
+def grid_days(conn: sqlite3.Connection, pool: sqlite3.Row, s: BacktestSettings) -> list[dict[str, Any]]:
+    """5: 境目の余裕 × 待ち時間を変えて、その日のいちばん良い幅で動かした日ごとの結果（今のやり方と同じ作り）。"""
+    pts = _points(conn, pool["id"])
+    scores = _scores(conn, pool["id"])
+    if len(pts) < 96 or not scores:
+        return []
+    series = [(t, p, liq) for t, p, liq, _ in pts]
+    first_day = _day(pts[0][0])
+    det0 = _details(_score_at(scores, pts[0][0], 10 ** 9) or scores[0][1])
+    c_lp = s.amount_usd * float((det0.get("split") or {}).get("lp") or s.lp_share)
+    cost_fn, _ = _cost_fn(det0, pool, s, c_lp)
+    runs: dict[tuple[float, float, float], dict[str, DayReplay]] = {}
+    out = []
+    for day in sorted({_day(t) for t, _, _ in series}):
+        if day == first_day:
+            continue
+        sc = _score_at(scores, int(datetime.fromisoformat(day + "T00:00:00+00:00").timestamp()))
+        if sc is None or sc["best_r"] is None:
+            continue
+        ranges = {round(float(x["r_pct"]), 6): x for x in _details(sc).get("ranges") or [] if x.get("r_pct") is not None}
+        best = round(float(sc["best_r"]), 6)
+        inc = _full_income(ranges.get(best))
+        if inc is None:
+            continue
+        for b in GRID_BUFFERS:
+            for w in GRID_WAITS_MIN:
+                key = (best, b, w)
+                if key not in runs:
+                    runs[key] = replay(series, best / 100, w * 60, cost_fn, b)
+                d = runs[key].get(day)
+                if d is None or d.seconds < 86400 * DAY_MIN_COVERAGE:
+                    continue
+                k = 86400 / d.seconds
+                share = d.in_range_seconds / d.seconds
+                out.append({"day": day, "buffer": b, "wait_min": w, "rebalances": d.rebalances * k, "flips": d.flips * k,
+                            "cost_usd": d.rebalance_cost * k * c_lp, "out_share": 1 - share,
+                            "net_usd": inc * share - (d.gamma + d.rebalance_cost) * k * c_lp})
+    return out
+
+
+def grid_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by: dict[tuple[float, float], list[dict[str, Any]]] = defaultdict(list)
+    for x in rows:
+        by[(x["buffer"], x["wait_min"])].append(x)
+    out = []
+    for (b, w), xs in sorted(by.items()):
+        out.append({"buffer": b, "wait_min": w, "pool_days": len(xs),
+                    "rebalances_day": _mean([x["rebalances"] for x in xs]),
+                    "flips_day": _mean([x["flips"] for x in xs]),
+                    "flip_share": (sum(x["flips"] for x in xs) / sum(x["rebalances"] for x in xs))
+                    if sum(x["rebalances"] for x in xs) else None,
+                    "cost_usd_day": _mean([x["cost_usd"] for x in xs]),
+                    "out_share": _mean([x["out_share"] for x in xs]),
+                    "net_usd_day": _mean([x["net_usd"] for x in xs]),
+                    "net_usd_total": sum(x["net_usd"] for x in xs),
+                    "calendar_days": len({x["day"] for x in xs})})
+    return out
+
+
+def gas_series(conn: sqlite3.Connection) -> dict[str, Any]:
+    """10: 今の版が15分ごとに読んだ Robinhood Chain のガス代（1回の取引。チェーンの gas price × 決めた量 × ETH の値段）。"""
+    seen: dict[str, float] = {}
+    for ts, dj in conn.execute("SELECT ts, details_json FROM scores WHERE details_json IS NOT NULL ORDER BY ts"):
+        if ts in seen:
+            continue
+        try:
+            g = ((json.loads(dj) or {}).get("inputs") or {}).get("gas_usd_per_tx")
+        except ValueError:
+            continue
+        if g is not None:
+            seen[ts] = float(g)
+    vals = list(seen.values())
+    return {"chain": "robinhood", "points": len(vals), "first": min(seen, default=None), "last": max(seen, default=None),
+            "median": _median(vals), "p90": _quantile(vals, 0.9), "p99": _quantile(vals, 0.99),
+            "max": max(vals) if vals else None, "distinct": len(set(vals))}
+
+
+def _quantile(xs: list[float], q: float) -> float | None:
+    if not xs:
+        return None
+    ys = sorted(xs)
+    i = q * (len(ys) - 1)
+    lo = int(math.floor(i))
+    hi = min(lo + 1, len(ys) - 1)
+    return ys[lo] + (ys[hi] - ys[lo]) * (i - lo)
 
 
 # --- まとめ ----------------------------------------------------------------------------------------------
@@ -816,6 +1063,17 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
     kinds: dict[str, str] = {}
     still: list[dict[str, Any]] = []
     base_rows: list[dict[str, Any]] = []
+    grid_rows: list[dict[str, Any]] = []
+    below: list[dict[str, Any]] = []
+    move_info: dict[str, dict[str, dict[str, Any]]] = {}
+    flip_days: dict[str, dict[str, float]] = {}
+    epochs: dict[str, tuple[int, int]] = {}
+    for v in venues:
+        try:
+            ep = (load_venue(v, config.root).get("mechanics") or {}).get("epoch") or {}
+            epochs[v] = (int(ep.get("length_seconds") or 0), int(ep.get("offset_seconds") or 0))
+        except Exception:
+            epochs[v] = (0, 0)
     lend = lending_daily(fconn)
     for p in pools:
         kinds[p["id"]] = kind = pool_kind(p, tok_book.stablecoins, stocks, rewards)
@@ -834,7 +1092,21 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
             continue
         ds = pool_days(conn, p, s)
         rows += [{**x, "pool_id": p["id"], "stock": kind == "stock", "kind": kind} for x in ds]
-        base_rows += [{**x, "pool_id": p["id"], "kind": kind} for x in baseline_days(conn, p, s, lend)]
+        bd = baseline_days(conn, p, s, lend)
+        base_rows += [{**x, "pool_id": p["id"], "kind": kind} for x in bd]
+        grid_rows += grid_days(conn, p, s)
+        sc_p = _scores(conn, p["id"])
+        below += [{**e, "pool_id": p["id"], "pair": f"{p['token0_symbol']}/{p['token1_symbol']}"}
+                  for e in below_target_events(sc_p, s.target_apr_pct, s.below_target_times)]
+        length, offset = epochs.get(p["venue_id"], (0, 0))
+        for x in bd:
+            start = datetime.fromisoformat(x["day"] + "T00:00:00+00:00")
+            sc = _score_at(sc_p, int(start.timestamp()))
+            if sc is None or sc["net_daily_pct"] is None or (sc["signal"] or "") == "red":
+                continue
+            move_info.setdefault(p["id"], {})[x["day"]] = {"net": float(sc["net_daily_pct"]), "side_cost": _side_cost(sc, s)}
+            if length:
+                flip_days.setdefault(p["id"], {})[x["day"]] = (next_epoch_flip(start, length, offset) - start).total_seconds() / 86400
         fund_rows += hedge_days(conn, fconn, p, s)
         best = [x for x in ds if x["best_r_pct"] is not None and abs(x["r_pct"] - x["best_r_pct"]) < 1e-9]
         if best:
@@ -943,6 +1215,20 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
                    "events": stage1.get(int(s.funds_drop_pct), [])[:50]},
         "stage2_reward": {"threshold_pct": s.reward_drop_pct, "tokens": reward},
         "stage2_dump": {"threshold_1h_pct": s.dump_1h_pct, "threshold_24h_pct": s.dump_24h_pct, "tokens": dumps},
+        # N5 最終判断の準備（材料。決めない）
+        "prep": {
+            "loss": loss_series(base_rows, s.amount_usd),
+            "stage1": stage1_table(stage1),
+            "below_target": {"target_apr_pct": s.target_apr_pct, "times": s.below_target_times, "events": below,
+                             "next_day": _next_day_pnl(below, base_rows)},
+            "moves": {"multiples": list(MOVE_MULTIPLES),
+                      "runs": [move_sim(move_info, {(x["pool_id"], x["day"]): x["now"] for x in base_rows}, flip_days, s, k)
+                               for k in (None, *MOVE_MULTIPLES)],
+                      "pools": len(move_info), "with_flip": len(flip_days)},
+            "grid": {"buffers": list(GRID_BUFFERS), "waits_min": list(GRID_WAITS_MIN), "flip_s": FLIP_S,
+                     "rows": grid_summary(grid_rows)},
+            "gas": gas_series(conn),
+        },
     }
 
 

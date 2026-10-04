@@ -203,6 +203,33 @@ def trial_summary_api() -> dict:
                                 float(config.scoring.total_capital_usd))
 
 
+@app.get("/api/trial/final")
+def trial_final_api() -> dict:
+    """N5 最終判断の準備（2026-10-04 18:20 JST 指示書）: 仮の数字10項目の 今の値・状態・根拠・記録量・変更案の準備状況。
+    決めない・設定を変えない。保存済みの記録を数えるだけ（feeds は読み取りだけで開く）。"""
+    import sqlite3
+
+    from . import backtest, final_prep, trial_records
+    from .registry import coin_chains
+
+    with _open() as (config, conn):
+        try:
+            bt = backtest.cached(config.database_path.parent, config, config.feeds.database_path)
+        except Exception as exc:  # noqa: BLE001  さかのぼりが落ちても、ほかの項目は出す
+            bt = {"present": False, "text": f"さかのぼりの計算ができませんでした（{type(exc).__name__}）。"}
+        keys = coin_chains(config.chains, config.root)
+        trial = trial_records.summary(config.database_path.parent, config.feeds.database_path, keys)
+        fdb = config.feeds.database_path
+        fconn = None
+        if fdb.exists():
+            fconn = sqlite3.connect(f"file:{fdb.as_posix()}?mode=ro", uri=True, timeout=10)
+        try:
+            return final_prep.build(bt, fconn, trial, config, keys, _now())
+        finally:
+            if fconn is not None:
+                fconn.close()
+
+
 @app.get("/api/registry")
 def registry_api() -> dict:
     """登録の一覧（N1）: 系統 ＞ チェーン ＞ 会場。問題があれば problems に出す。"""

@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\merkl_check.py', 'backend\farm_radar\trial_view.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\merkl_check.py', 'backend\farm_radar\trial_view.py', 'backend\farm_radar\final_prep.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -454,6 +454,14 @@ try {
         Say ("[試すの結果] ① Merkl: {0}  ② 置き直し: {1}" -f $ts.sections.bonus.state.why, $ts.sections.rebalance.state.why)
     } catch {
         Write-Host "   注意: 試すの結果のまとめを読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+    }
+
+    # N5 最終判断の準備（10項目の状態。判断できる・記録待ち・材料不足。ここでは決めない）
+    try {
+        $fp = Invoke-RestMethod "$NewApi/api/trial/final" -TimeoutSec 900
+        Say ("[最終判断の準備] 判断できる {0} / 記録待ち {1} / 材料不足 {2}（画面: 試すの結果のいちばん下）" -f $fp.counts.ready, $fp.counts.wait, $fp.counts.lack)
+    } catch {
+        Write-Host "   注意: 最終判断の準備を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
     }
 
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
