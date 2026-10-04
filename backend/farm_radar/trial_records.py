@@ -63,7 +63,7 @@ def _count(conn: sqlite3.Connection, sql: str) -> Any:
         return None
 
 
-def feeds(feeds_db: Path) -> dict[str, Any]:
+def feeds(feeds_db: Path, coins_keys: dict[int, str] | None = None) -> dict[str, Any]:
     if not feeds_db.exists():
         return {}
     conn = sqlite3.connect(f"file:{feeds_db.as_posix()}?mode=ro", uri=True, timeout=10)
@@ -85,9 +85,26 @@ def feeds(feeds_db: Path) -> dict[str, Any]:
                 "SELECT name, first_seen, changed_at FROM aero_address_files ORDER BY first_seen")]
         except sqlite3.OperationalError:
             pass
+        r = _count(conn, "SELECT COUNT(DISTINCT token_id), SUM(error IS NULL), SUM(error IS NOT NULL), MAX(ts) "
+                         "FROM merkl_position_snaps")
+        positions = {"positions": r[0], "ok": r[1] or 0, "errors": r[2] or 0, "last": r[3]} if r else None
         return {"merkl_rewards": rewards, "llama_history": llama, "lighter_history": lighter, "lighter_prices": lighter_prices,
                 "shadow": shadow,
-                "aero_addresses": files, "lighter_rh": lighter_rh(conn)}
+                "aero_addresses": files, "lighter_rh": lighter_rh(conn),
+                "merkl_positions": positions, "merkl_check": _merkl_check(feeds_db, coins_keys or {})}
+    finally:
+        conn.close()
+
+
+def _merkl_check(feeds_db: Path, coins_keys: dict[int, str]) -> dict[str, Any] | None:
+    """N5c: Merkl の実際に配った額と、探すの見込み（全員を分母）の答え合わせ（merkl_check）。"""
+    from . import merkl_check
+    conn = sqlite3.connect(f"file:{feeds_db.as_posix()}?mode=ro", uri=True, timeout=10)
+    conn.row_factory = sqlite3.Row
+    try:
+        return merkl_check.check(conn, coins_keys)
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 
@@ -134,5 +151,5 @@ def lighter_rh(conn: sqlite3.Connection) -> dict[str, Any] | None:
     return {"markets": r[0], "updated_at": r[1], "hedge_markets": len(rows), "rows": rows}
 
 
-def summary(data_dir: Path, feeds_db: Path) -> dict[str, Any]:
-    return {"old_copy": old_copy(data_dir), "feeds": feeds(feeds_db)}
+def summary(data_dir: Path, feeds_db: Path, coins_keys: dict[int, str] | None = None) -> dict[str, Any]:
+    return {"old_copy": old_copy(data_dir), "feeds": feeds(feeds_db, coins_keys)}

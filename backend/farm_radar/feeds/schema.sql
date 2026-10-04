@@ -348,3 +348,18 @@ CREATE TABLE IF NOT EXISTS shadow_predictions (
   PRIMARY KEY (ts, opp_key, amount)
 );
 CREATE INDEX IF NOT EXISTS idx_shadow_key ON shadow_predictions(opp_key, ts);
+
+-- N5c: Merkl の答え合わせ。預け方1つごとの幅と量（Uniswap v4 の公式の PositionManager。feeds/positions.py）。
+-- 幅（tick_lower・tick_upper）は変わらないので最初に読めた値、量（liquidity）は毎回の値
+CREATE TABLE IF NOT EXISTS merkl_position_snaps (
+  chain_id INTEGER NOT NULL,
+  token_id INTEGER NOT NULL,           -- 預け方の番号（Merkl の reason の末尾）
+  ts TEXT NOT NULL,
+  pool_id TEXT,                        -- キャンペーンのプール（小文字）
+  tick_lower INTEGER,
+  tick_upper INTEGER,
+  liquidity TEXT,                      -- 大きな整数なので文字で
+  error TEXT,
+  PRIMARY KEY (chain_id, token_id, ts)
+);
+CREATE INDEX IF NOT EXISTS idx_merkl_reward_reason ON merkl_reward_snaps(campaign_id, reason, ts);

@@ -253,6 +253,23 @@ def write_vault_states(conn: sqlite3.Connection, ts: str, rows: dict[str, Any]) 
     return n
 
 
+def write_merkl_positions(conn: sqlite3.Connection, ts: str, rows: dict[str, Any], keep_days: int = 60) -> int:
+    """預け方の幅と量（feeds/positions.py の結果。N5c）を書く。"""
+    n = 0
+    for r in rows.values():
+        if not isinstance(r, dict) or r.get("token_id") is None:
+            continue
+        liq = r.get("liquidity")
+        conn.execute("INSERT OR REPLACE INTO merkl_position_snaps(chain_id, token_id, ts, pool_id, tick_lower, tick_upper, "
+                     "liquidity, error) VALUES (?,?,?,?,?,?,?,?)",
+                     (int(r["chain_id"]), int(r["token_id"]), ts, r.get("pool_id"), r.get("tick_lower"),
+                      r.get("tick_upper"), None if liq is None else str(liq), r.get("error")))
+        n += 1
+    cutoff = (datetime.fromisoformat(ts) - timedelta(days=keep_days)).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM merkl_position_snaps WHERE ts < ?", (cutoff,))
+    return n
+
+
 def write_pool_states(conn: sqlite3.Connection, ts: str, rows: dict[str, Any], keep_days: int = 60) -> int:
     """幅に配るプールの状態（feeds/pools.py の結果）を書く。読み取り口の失敗（failed）は書かない。"""
     n = 0

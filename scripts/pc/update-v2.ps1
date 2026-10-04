@@ -286,6 +286,25 @@ try {
                 Say ("[Lighter RH版] 探すの保険の見込み: RH版の数字 {0} 件 / 本体の数字 {1} 件" -f $nr, ($hm.Count - $nr))
             }
         } else { Say "[Lighter RH版] まだ読めていません" }
+        # N5c: Merkl の答え合わせ（実際に配った額 ÷ 探すの見込み。1 に近いほど見込みどおり。読むだけ）
+        $mp = $f.merkl_positions
+        if ($mp) { Say "[答え合わせ Merkl] 幅と量を読んだ預け方 $(N0 $mp.positions)（読めた回 $(N0 $mp.ok) / 読めなかった回 $(N0 $mp.errors)・最後 $($mp.last)）" }
+        $mc = $f.merkl_check
+        if ($mc -and @($mc.campaigns).Count -gt 0) {
+            $med = if ($null -eq $mc.ratio_median) { '-' } else { [math]::Round([double]$mc.ratio_median, 2) }
+            $dsh = if ($null -eq $mc.denominator_share_median) { '-' } else { "$([math]::Round([double]$mc.denominator_share_median * 100))%" }
+            Say "[答え合わせ Merkl] 比べた組 $(N0 $mc.pairs_in_range)・実際 ÷ 見込み（まん中）$med（1 より大きい = 見込みは控えめ）"
+            Say "[答え合わせ Merkl] コインの分の分母は、預かり額の $dsh に見える（100% に近い = 全員が分母。小さい = 幅の中の預け方だけに近い）"
+            foreach ($x in @($mc.campaigns | Select-Object -First 8)) {
+                $m = if ($null -eq $x.ratio_median) { '-' } else { [math]::Round([double]$x.ratio_median, 2) }
+                $lo = if ($null -eq $x.ratio_p25) { '-' } else { [math]::Round([double]$x.ratio_p25, 2) }
+                $hi = if ($null -eq $x.ratio_p75) { '-' } else { [math]::Round([double]$x.ratio_p75, 2) }
+                $op = if ($null -eq $x.out_of_range_paid_share) { '-' } else { "$([math]::Round([double]$x.out_of_range_paid_share * 100))%" }
+                $ds = if ($null -eq $x.denominator_share_median) { '-' } else { "$([math]::Round([double]$x.denominator_share_median * 100))%" }
+                Say ("   {0}: 区切り {1} / 幅の中の組 {2} / 実際 ÷ 見込み {3}（{4} 〜 {5}）/ 分母 {6} / 幅の外でももらえた組 {7}" -f `
+                    $x.pair, $x.intervals, $x.pairs_in_range, $m, $lo, $hi, $ds, $op)
+            }
+        } else { Say "[答え合わせ Merkl] まだ比べられる記録がありません（2時間ごとに増えます）" }
     } catch {
         Write-Host "   注意: 試すための記録の数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
     }
