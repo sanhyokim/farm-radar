@@ -374,3 +374,48 @@ def test_lighter_price_history_keeps_points_when_the_oldest_page_is_refused(tmp_
 
     data, _ = trial.read_lighter_prices(conn, text, trial.TrialContext(lighter_markets=((191, "NOW"),)), now)
     assert len(data["191"]["points"]) == 500 and "error" not in data["191"]
+
+
+# --- 2026-10-04 オーナーの質問3・4 ------------------------------------------------------------------------
+
+def test_still_share_counts_unchanged_neighbours():
+    assert bt.still_share([(0, 1.0), (1, 1.0), (2, 1.0), (3, 1.1)]) == pytest.approx(2 / 3)
+    assert bt.still_share([(0, 5.0)]) == 1.0
+
+
+def test_pool_with_a_still_price_is_left_out_of_the_comparison(old_copy, feeds):
+    """値段が動いていない（取引がない）プールは、②③④ と「ずれの大きいプール」から外して、別に並べる。"""
+    pid = "up-robinhood:0xccc"
+    old_copy.execute("""INSERT INTO pools(id, venue_id, address, token0, token1, fee_tier, is_stock_pair, discovered_at,
+                        token0_symbol, token1_symbol, token0_decimals, token1_decimals)
+                        VALUES (?, 'up-robinhood', '0xccc', ?, ?, 3000, 0, '2026-09-27', 'WETH', 'WOOD', 18, 18)""",
+                     (pid, WETH, "0x" + "d" * 40))
+    for i in range(96 * DAYS + 1):
+        ts = datetime.fromtimestamp(START + i * STEP, UTC).isoformat(timespec="seconds")
+        old_copy.execute("""INSERT INTO pool_snapshots(pool_id, ts, block_number, run_id, price, sqrt_price_x96,
+                            liquidity_total, balance0_raw, balance1_raw, block_time, source)
+                            VALUES (?,?,?,1,?,?,?,?,?,?, 'test')""",
+                         (pid, ts, i, 1234.5, _sqrt_x96(1234.5, 18, 18), str(10 ** 15), str(10 ** 18), str(10 ** 21), ts))
+    det = {"split": {"lp": 0.78}, "inputs": {"usd": {"WETH": 2700.0}, "fee": 0.003, "gas_usd_per_tx": 0.15}}
+    for h in range(DAYS * 24 + 1):
+        ts = datetime.fromtimestamp(START + h * 3600, UTC).isoformat(timespec="seconds")
+        old_copy.execute("INSERT INTO scores(pool_id, ts, best_r, sigma_pair, details_json) VALUES (?,?,?,?,?)",
+                         (pid, ts, 2.0, 0.63, json.dumps(det)))
+    old_copy.commit()
+    res = bt.run(old_copy, CFG, feeds)
+    assert [x["pair"] for x in res["still_pools"]] == ["WETH/WOOD"]
+    assert res["still_pools"][0]["still_share"] == 1.0
+    assert "WETH/WOOD" not in {x["pair"] for x in res["per_pool_best"]}
+    assert "WETH/WOOD" not in {x["pair"] for x in res["misses"]}
+    assert res["pool_days"] == 3                                   # WETH/USDG の3日だけ（前と同じ）
+
+
+def test_long_margins_cover_every_hedge_market_of_up():
+    """預け金（90日）は、写しで資金調達料を比べた市場だけでなく、up. の保険に使う市場すべて（perps.map）を見る。"""
+    from farm_radar.tokens import load_tokens
+    book = load_tokens(root=CFG.root)
+    lighter = {r.market_id for refs in book.perp_alts.values() for r in refs if r.venue == "lighter"}
+    got = bt.hedge_markets(book, [{"market_id": 0, "perp": "ETH", "symbol": "WETH"}])
+    assert set(got) == lighter | {0}
+    assert len(got) >= 29 and got[0] == "ETH"
+    assert got[139] == "SNDK" and got[189] == "NBIS"

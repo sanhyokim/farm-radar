@@ -125,6 +125,8 @@ class Opportunity:
     venue_safety: dict[str, Any] | None = None   # 会場の危なさ（N4a。safety.py・riskscore.py）
     limits: dict[str, Any] | None = None         # 推奨金額に使う上限（config.yaml の limits。変えるのはオーナーだけ）
     vault_watch: dict[str, Any] | None = None    # 金庫の運用先の見張り（N4b。feeds/vaults.py）
+    # 保険に使う売り場（コインの記号・Lighter の銘柄と番号）。値動きの大きい銘柄の行を数えるのに使う（2026-10-04 オーナーの質問2）
+    hedge_markets: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def excluded(self) -> bool:
@@ -150,6 +152,7 @@ class Opportunity:
             **self.base.to_dict(), "kind": self.kind, "computable": self.computable, "reason": self.reason,
             "flags": [asdict(f) for f in self.flags], "excluded": self.excluded, "unprotected": self.unprotected,
             "cap_usd": self.cap_usd, "new_pool": self.new_pool, "vault_watch": self.vault_watch,
+            "hedge_markets": self.hedge_markets,
         }
         amounts = [amount] if amount is not None else [float(a) for a in self.calc]
         out["calc"] = {_akey(a): {case: {k: (v.to_dict() if v else None) for k, v in vs.items()}
@@ -791,6 +794,8 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
     stay = max(1 / 24, min(s.stay_days, days_left)) if days_left is not None else s.stay_days
     volatile = [lg for lg in legs if not lg.stable]
     can_hedge = any(lg.perp for lg in volatile)
+    op.hedge_markets = [{"coin": lg.symbol, "symbol": lg.perp.get("symbol"), "market_id": lg.perp.get("market_id")}
+                        for lg in volatile if lg.perp]
     if volatile and not can_hedge:
         op.flags.append(Flag("NO_HEDGE", LEVEL_INFO, "保険の売り場（Lighter）がないので、保険なしだけ"))
     op.cap_usd = tvl * s.max_pool_share if tvl else None
@@ -1042,6 +1047,9 @@ def evaluate_own(base: StandardOpportunity, conn: sqlite3.Connection, config: Co
                             count_funding_income=sc.count_funding_income, reward_sell_hours=sc.reward_sell_hours)
     margin_per_pool = sum(0.5 * margin_need(margin_perp(syms[i]), s.hedge_withstand_rise_pct / 100)
                           for i, t in enumerate((probe.token0, probe.token1)) if not t.stable and t.hedgeable)
+    op.hedge_markets = [{"coin": syms[i], "symbol": hp.get("symbol"), "market_id": hp.get("market_id")}
+                        for i, t in enumerate((probe.token0, probe.token1))
+                        if not t.stable and t.hedgeable and (hp := margin_perp(syms[i]))]
     op.cap_usd = (base.tvl_usd or 0) * s.max_pool_share or None
     for amount in s.amounts_usd:
         row_out: dict[str, dict[str, Variant | None]] = {}

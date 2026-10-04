@@ -274,10 +274,26 @@ try {
             $ml = @($r.margins_long | Sort-Object { -[double]$_.rise_pct })
             if ($ml.Count -gt 0) {
                 Say "[さかのぼり 預け金 90日] 市場 $($ml.Count) / 耐える $($ml[0].withstand_pct)% を超えた市場 $(@($ml | Where-Object { -not $_.enough }).Count)"
-                foreach ($x in @($ml | Select-Object -First 8)) {
+                # 耐える幅を超えた市場は全部、ほかは上げの大きい順に、合わせて8つまで
+                $over = @($ml | Where-Object { -not $_.enough })
+                foreach ($x in @($over + @($ml | Where-Object { $_.enough } | Select-Object -First ([math]::Max(0, 8 - $over.Count))))) {
                     Say ("   {0}: 14日以内のいちばんの上げ {1}%（{2}日の記録）/ 1時間でいちばんの上げ {3}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 0), (BtNum $x.jump_up_pct 1))
                 }
+                # その市場を保険に使う入れる先が、今の一覧に何行あるか（2026-10-04 オーナーの質問2。$1,000・控えめの見込み）
+                foreach ($x in $over) {
+                    $rows = @($o.items | Where-Object { @($_.hedge_markets | Where-Object { [string]$_.market_id -eq [string]$x.market_id }).Count -gt 0 })
+                    $ls = @($rows | Where-Object { -not $_.excluded })
+                    $hd = @($ls | Where-Object { $_.best -and $_.best.hedge })
+                    $rc = @($ls | Where-Object { $_.recommended })
+                    $top = @($ls | Where-Object { $_.best } | Sort-Object { -[double]$_.best.apr_pct } | Select-Object -First 1)
+                    $tx = if ($top.Count -gt 0) { "$($top[0].name) $([math]::Round([double]$top[0].best.apr_pct, 1))%（$(if ($top[0].best.hedge) { '保険あり' } else { '保険なし' })）" } else { '-' }
+                    Say ("   {0} を保険に使う入れる先: 全部 {1} 行 / 一覧に出る {2} / うち保険ありがよい {3} / おすすめ {4} / 年利のいちばん高い行 {5}" -f $x.symbol, $rows.Count, $ls.Count, $hd.Count, $rc.Count, $tx)
+                }
             } else { Say "[さかのぼり 預け金 90日] まだ値段の過去がありません（1日1回の読み取りのあとに出ます）" }
+            # 値段が動いていないプール（取引がほとんどない）は、見込みと実際を比べるのから外した（2026-10-04 オーナーの質問3）
+            $st = @($r.still_pools)
+            Say ("[さかのぼり 値段が動いていないプール] {0} 個（となりの記録と同じ値段が {1}% 以上。比べるのから外しました）" -f $st.Count, (BtPct $r.still_share_line 0))
+            foreach ($x in @($st | Select-Object -First 5)) { Say ("   {0}: 同じ値段の割合 {1}%（記録 {2} 点）" -f $x.pair, (BtPct $x.still_share 1), $x.points) }
             # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ
             $kn = @{ kind_stock = '株'; kind_stable = 'ステーブル'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン' }
             Say "[さかのぼり 種類] 株 $($r.kinds.stock) / ステーブル $($r.kinds.stable) / ふつうのコイン $($r.kinds.coin) / ボーナスのコイン $($r.kinds.bonus)（プールの数）"
