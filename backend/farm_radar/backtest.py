@@ -33,7 +33,7 @@ from .scoring import model as m
 from .scoring.run import own_series
 from .tokens import load_tokens
 
-VERSION = 3                     # 計算を変えたら上げる（とっておいた結果を使わない）
+VERSION = 4                     # 計算を変えたら上げる（とっておいた結果を使わない）
 STEP_MAX_S = 45 * 60            # 15分ごとの記録で、これより間があいたら、その間の時間は数えない（欠損）
 DAY_MIN_COVERAGE = 0.9          # 1日のうち、これ以上の時間の記録がある日だけ比べる
 PASS_REL = 0.30                 # 合格の目安: 差が見込みの30%以内（評価のときと同じ）
@@ -49,6 +49,10 @@ RECOVER_S = 6 * 3600            # 段階1 の中身を分ける: この時間の
 RECOVER_SHARE = 0.9
 BIG_DROP_PCT = -20.0            # 段階1 の中身を分ける: そのあと24時間で、プールのコインがこれ以上下がったら「大きな値下がり」
 KINDS = ("stock", "stable", "bonus", "coin")   # 株 / ステーブルどうし / ボーナスのコイン / ふつうのコイン
+# 値段が動いていないプール: 15分ごとの記録の、となりどうしの値段が同じ割合がこれ以上（取引がほとんどない。仮）。
+# 見込み（外の値動き）と比べると、実際の損が 0 に見えて「ずれ」が大きく出るので、比べるのから外して別に並べる
+# （2026-10-04 オーナーの質問3。WETH/WOOD）
+STILL_SHARE = 0.95
 
 
 # --- v3 の式（token1 建て。幅 [pa, pb]、流動性 L） --------------------------------------------------------
@@ -178,6 +182,14 @@ def _points(conn: sqlite3.Connection, pool_id: str) -> list[tuple[int, float, fl
         if t is not None:
             out.append((t, float(row["price"]), float(row["liquidity_total"]) if row["liquidity_total"] else None, row))
     return out
+
+
+def still_share(points: list[tuple[int, float, Any, Any]] | list[tuple[int, float]]) -> float:
+    """となりどうしの記録で、値段が変わっていない割合（0〜1）。"""
+    pairs = list(zip(points, points[1:]))
+    if not pairs:
+        return 1.0
+    return sum(1 for a, b in pairs if abs(b[1] - a[1]) <= 1e-12 * max(abs(a[1]), 1e-300)) / len(pairs)
 
 
 def _scores(conn: sqlite3.Connection, pool_id: str) -> list[tuple[int, sqlite3.Row]]:
@@ -474,6 +486,17 @@ def max_rise_hl(candles: list[tuple[int, float, float, float]], window_s: float)
             "span_days": (candles[-1][0] - candles[0][0]) / 86400}
 
 
+def hedge_markets(tok_book: Any, fund_rows: list[dict[str, Any]]) -> dict[int, str]:
+    """預け金を見る Lighter の市場: 保険に使う市場すべて（venues/tokens-robinhood.yaml の perps.map）と、今の版の写しで
+    資金調達料を比べた市場。前は後ろだけで、写しの中で保険に使われた16市場しか出なかった（2026-10-04 オーナーの質問4）。"""
+    out = {int(x["market_id"]): x["perp"] or x["symbol"] for x in fund_rows}
+    for refs in (tok_book.perp_alts or {}).values():
+        for r in refs:
+            if r.venue == "lighter":
+                out.setdefault(int(r.market_id), r.symbol)
+    return out
+
+
 def margins_long(fconn: sqlite3.Connection | None, markets: dict[int, str], s: "BacktestSettings") -> list[dict[str, Any]]:
     """保険に使う Lighter の市場ごとに、値段の過去（最大90日。lighter_price_history）で預け金の目安を見る
     （2026-10-04 オーナーの質問4。今の版の写しは7日ほどしかないため）。"""
@@ -621,8 +644,16 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
     fund_rows: list[dict[str, Any]] = []
     per_pool: list[dict[str, Any]] = []
     kinds: dict[str, str] = {}
+    still: list[dict[str, Any]] = []
     for p in pools:
         kinds[p["id"]] = kind = pool_kind(p, tok_book.stablecoins, stocks, rewards)
+        share = still_share(_points(conn, p["id"]))
+        if share >= STILL_SHARE:
+            # 値段が動いていない（取引がない）プールは、②③④ の比べるのから外す。保険の資金調達料は市場のものなので数える
+            still.append({"pool_id": p["id"], "pair": f"{p['token0_symbol']}/{p['token1_symbol']}", "kind": kind,
+                          "points": p["n"], "still_share": share})
+            fund_rows += hedge_days(conn, fconn, p, s)
+            continue
         ds = pool_days(conn, p, s)
         rows += [{**x, "pool_id": p["id"], "stock": kind == "stock", "kind": kind} for x in ds]
         fund_rows += hedge_days(conn, fconn, p, s)
@@ -710,6 +741,8 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
                    **{f"kind_{k}": _summarize_ranges([x for x in rows if x["kind"] == k], s) for k in KINDS}},
         "kinds": {k: sum(1 for v in kinds.values() if v == k) for k in KINDS},
         "per_pool_best": per_pool,
+        "still_pools": still,
+        "still_share_line": STILL_SHARE,
         # 見込みと実際のずれが大きいプール（1日の損 = 値動きの損 + 置き直しの費用 の、見込みと実際の差のドル。大きい順に10）。
         # 前は割合（見込み ÷ 実際）の順で、値動きの小さいプールが上に来ていた（2026-10-04 オーナーの質問5）
         "misses": sorted([miss(x) for x in per_pool if x["gamma_pred"] is not None and x["gamma_real"] is not None],
@@ -717,7 +750,7 @@ def run(conn: sqlite3.Connection, config: Config, fconn: sqlite3.Connection | No
         "spy": [x for x in per_pool if "SPY" in x["pair"].upper()],
         "funding": _summarize_funding(fund_rows, s),
         "margins": margins,
-        "margins_long": margins_long(fconn, {int(x["market_id"]): x["perp"] or x["symbol"] for x in fund_rows}, s),
+        "margins_long": margins_long(fconn, hedge_markets(tok_book, fund_rows), s),
         "stage1": {"threshold_pct": s.funds_drop_pct,
                    "counts": {str(th): len(e) for th, e in stage1.items()},
                    "counts_big_pools": {str(th): sum(1 for x in e if not x["small"]) for th, e in stage1.items()},

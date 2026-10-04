@@ -268,6 +268,7 @@ def test_stay_factor_and_provisional_drop():
 def test_pool_with_a_hedge_has_both_variants_and_the_split(cfg):
     o = _collect(cfg)["o-eth"]
     assert o.computable and o.kind == "pool_range" and not o.excluded
+    assert o.hedge_markets == [{"coin": "WETH", "symbol": "ETH", "market_id": 0}]
     row = o.calc["1000"]
     no, yes = row["cautious"]["no_hedge"], row["cautious"]["hedge"]
     assert no is not None and yes is not None
@@ -356,6 +357,8 @@ def test_own_venue_reuses_the_approved_model_with_the_split(tmp_path):
     assert sum(yes.split.values()) == pytest.approx(1000.0)
     assert yes.direction == 0 and no.direction > 0 and yes.hedge_cost > 0
     assert any(f.code == "VENUE" for f in o.flags)                               # 会場の警告（C4 など）をそのまま
+    # 保険に使う売り場（値動きの大きい銘柄の行を数えるのに使う。2026-10-04 オーナーの質問2）
+    assert [h["symbol"] for h in o.to_dict(1000.0, 30.0)["hedge_markets"]] == ["ETH"]
     conn.close()
 
 
