@@ -429,3 +429,13 @@ CREATE TABLE IF NOT EXISTS chain_block_times (
   ts INTEGER NOT NULL,
   PRIMARY KEY (chain_id, block)
 );
+-- 預け方の歴史の読み取りの1回ごとの記録（パソコンの1行の更新のまとめで「今回」の進み具合を出すため。2026-10-04 指示書）
+CREATE TABLE IF NOT EXISTS pool_liq_runs (
+  ts TEXT PRIMARY KEY,
+  targets INTEGER NOT NULL,            -- 読む対象のプールの数
+  calls INTEGER NOT NULL,              -- この回の読み取りの回数
+  events INTEGER NOT NULL,             -- この回に読めた記録の数
+  pools_read INTEGER NOT NULL,         -- この回に今のブロックまで読み終えたプールの数
+  errors INTEGER NOT NULL,             -- この回に読めなかったプールの数
+  stopped TEXT                         -- 回数の上限・回数制限で、この回を途中でやめた理由（続きは次の回）
+);

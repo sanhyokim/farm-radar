@@ -300,3 +300,118 @@ def test_rewards_read_all_pages_and_record_the_sum(tmp_path):
     assert tuple(s) == (str(100 * 11 + 5), 101, 1)
     trial.write_merkl_rewards(conn, "t2", data)                    # 変わっていなければ書かない
     assert conn.execute("SELECT COUNT(*) FROM merkl_reward_sums").fetchone()[0] == 1
+
+
+# --- パソコンへの反映（2026-10-04 指示書「PR40を今PCへ反映し、Merkl A/B用の記録を開始する」） ---------------
+
+def _rows(n, amount="10"):
+    return [{"recipient": f"0x{i:040x}", "reason": f"R{i}", "amount": amount, "pending": "1"} for i in range(n)]
+
+
+def _src(sid):
+    from farm_radar.feeds.sources import SOURCES
+    return next(s for s in SOURCES if s.id == sid)
+
+
+def _sums(conn):
+    return [tuple(r) for r in conn.execute("SELECT ts, campaign_id, sum_raw, rows, complete FROM merkl_reward_sums "
+                                           "ORDER BY campaign_id, ts")]
+
+
+def test_rate_limit_in_the_middle_of_the_pages_writes_nothing(tmp_path):
+    """429 のときは、その回の配った額を1行も書かない（途中までの合計を complete=1 にしない）。前の記録は残る。"""
+    from datetime import timedelta
+
+    from farm_radar.config import FeedSettings
+    from farm_radar.external.http import ExternalError
+    from farm_radar.feeds.run import every_due, run_source
+    settings = FeedSettings(database_path=tmp_path / "feeds.sqlite3", raw_dir=tmp_path / "feeds")
+    conn = store.connect(settings.database_path)
+    _campaign(conn, "0xa", chain=8453, dist=8453, daily=200.0)        # 先に読む
+    _campaign(conn, "0xb", chain=8453, dist=8453, daily=100.0)
+    conn.commit()
+    src = _src("merkl_rewards")
+
+    def ok(url, p):
+        if url.endswith("/rewards/"):
+            return _rows(100) if p["page"] == "0" else _rows(3)
+        return {"amount": "1"}
+    assert run_source(conn, src, Fake(ok), settings, NOW, trial_ctx=CTX)["status"] == "ok"
+    before = _sums(conn)
+    assert [r[4] for r in before] == [1, 1] and before[0][3] == 100
+    snaps = conn.execute("SELECT COUNT(*) FROM merkl_reward_snaps").fetchone()[0]
+
+    later = NOW + timedelta(hours=2)
+
+    def limited(url, p):
+        if url.endswith("/rewards/") and p["campaignId"] == "0xb" and p["page"] == "1":
+            return ExternalError("merkl: HTTP 429", 429)             # 2つ目のキャンペーンの2ページ目で回数制限
+        if url.endswith("/rewards/"):
+            return _rows(100, "20") if p["page"] == "0" else _rows(3, "20")
+        return {"amount": "2"}
+    out = run_source(conn, src, Fake(limited), settings, later, trial_ctx=CTX)
+    assert out["status"] == "rate_limited"
+    assert _sums(conn) == before                                     # 1つ目のキャンペーン（読めた分）も書かない
+    assert conn.execute("SELECT COUNT(*) FROM merkl_reward_snaps").fetchone()[0] == snaps
+    assert every_due(conn, src, later + timedelta(minutes=15))       # 次の回（15分後）にやり直す
+
+
+def test_a_broken_page_skips_only_that_campaign_and_too_many_pages_is_not_complete(tmp_path, monkeypatch):
+    from farm_radar.external.http import ExternalError
+    conn = store.connect(tmp_path / "f.sqlite3")
+    _campaign(conn, "0xa", chain=8453, dist=8453, daily=200.0)
+    _campaign(conn, "0xb", chain=8453, dist=8453, daily=100.0)
+    _campaign(conn, "0xc", chain=8453, dist=8453, daily=50.0)
+    monkeypatch.setattr(trial, "MAX_REWARD_PAGES", 3)
+
+    def routes(url, p):
+        if url.endswith("/rewards/"):
+            if p["campaignId"] == "0xa":
+                return _rows(100) if p["page"] == "0" else ExternalError("merkl: HTTP 500", 500)
+            if p["campaignId"] == "0xb":
+                return _rows(100)                                    # いつも満ページ → 上限の3ページで打ち切り
+            return _rows(5)
+        return {"amount": "1"}
+    data, calls = trial.read_merkl_rewards(conn, Fake(routes).text, CTX, NOW)
+    assert "error" in data["0xa"] and data["0xb"]["complete"] is False and data["0xc"]["complete"] is True
+    trial.write_merkl_rewards(conn, "t1", data)
+    assert {r[1]: r[4] for r in _sums(conn)} == {"0xb": 0, "0xc": 1}   # 0xa は書かない。0xb は complete=0
+    # 全部読めなかった記録は、区切りに使わない
+    b, _why = merkl_check.boundaries(conn, "0xb")
+    assert b == []
+
+
+def test_new_full_page_record_starts_right_after_the_update(tmp_path):
+    """前の版が少し前に配った額を読んでいても、合計の表が空なら、約2時間を待たずにすぐ読む。"""
+    from datetime import timedelta
+
+    from farm_radar.feeds.run import every_due
+    conn = store.connect(tmp_path / "f.sqlite3")
+    src = _src("merkl_rewards")
+    rid = store.start_run(conn, "merkl_rewards", NOW - timedelta(minutes=10))
+    store.finish_run(conn, rid, NOW - timedelta(minutes=9), "ok")
+    assert every_due(conn, src, NOW)                                 # 合計の表が空 → すぐ
+    conn.execute("INSERT INTO merkl_reward_sums(ts, campaign_id, sum_raw, rows, complete) VALUES ('t', 'c', '1', 1, 1)")
+    assert not every_due(conn, src, NOW)                             # 記録が始まったら、いつもの約2時間ごと
+    assert every_due(conn, src, NOW + timedelta(minutes=110))
+
+
+def test_pool_history_records_each_round_and_reports_progress(tmp_path, monkeypatch):
+    from farm_radar import trial_records
+    monkeypatch.setattr(ph, "KEEP_MARGIN_S", 0)
+    conn = _world(tmp_path, first_ts="1970-01-12T16:33:20+00:00")
+    fake = FakeChain([_log(100, 0, PM, -60, 60, 500, 7), _log(1500, 0, PM, -60, 60, 50, 7)], head=2000, max_span=700)
+    ph.read(conn, CHAINS, NOW, rpc_factory=lambda c: fake, sleep=lambda s: None, budget=16)
+    st = ph.status(conn)
+    assert st["targets"] == 1 and st["partial"] == 1 and st["resumable"] == 1 and st["done"] == 0
+    assert st["last_run"]["calls"] == 16 and st["last_run"]["stopped"] == "この回に読む回数を使い切った"
+    later = NOW.replace(minute=30)
+    ph.read(conn, CHAINS, later, rpc_factory=lambda c: fake, sleep=lambda s: None, budget=50)
+    st = ph.status(conn)
+    assert st["done"] == 1 and st["partial"] == 0 and st["runs"] == 2 and st["last_run"]["stopped"] is None
+    assert st["last_run"]["pools_read"] == 1 and st["last_run"]["events"] >= 1 and st["errors"] == []
+    # パソコンの1行の更新のまとめが読む形（/api/trial/records の feeds）
+    conn.close()
+    f = trial_records.feeds(tmp_path / "f.sqlite3")
+    assert f["pool_history"]["done"] == 1 and all(f["tables"].values())
+    assert f["merkl_sums"]["records"] == 0

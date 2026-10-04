@@ -316,7 +316,9 @@ def read(conn: sqlite3.Connection, chains: dict[int, dict[str, Any]], now: datet
     readers: dict[int, Reader] = {}
     left = budget
     stopped: str | None = None
-    for p in candidates(conn, chains):
+    targets = candidates(conn, chains)
+    events0 = _events_total(conn)
+    for p in targets:
         cid, key = p["chain_id"], f"{p['chain_id']}:{p['pool_id']}"
         addrs = official(chains[cid])
         if not addrs.get("v4_pool_manager") or p["manager"] != addrs["v4_pool_manager"]:
@@ -348,21 +350,50 @@ def read(conn: sqlite3.Connection, chains: dict[int, dict[str, Any]], now: datet
         close = getattr(rpc, "close", None)
         if close:
             close()
+    # この回の量を1行残す（パソコンの1行の更新のまとめで「今回」を出すため）。途中でやめたプールの分も数える
+    conn.execute("INSERT OR REPLACE INTO pool_liq_runs(ts, targets, calls, events, pools_read, errors, stopped) "
+                 "VALUES (?,?,?,?,?,?,?)",
+                 (now.isoformat(timespec="seconds"), len(targets), sum(r.calls for r in readers.values()),
+                  _events_total(conn) - events0, sum(1 for r in out.values() if "caught_up" in r and not r.get("error")),
+                  sum(1 for r in out.values() if r.get("error")), stopped))
+    conn.commit()
     return out
 
 
+def _events_total(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COALESCE(SUM(events), 0) FROM pool_liq_progress").fetchone()[0])
+
+
 def status(conn: sqlite3.Connection, now: datetime | None = None) -> dict[str, Any]:
-    """読み取りの進み具合（画面の「読んだ量」に使う）。"""
+    """読み取りの進み具合（画面の「読んだ量」と、パソコンの1行の更新のまとめに使う）。
+
+    - done: 今のブロックまで一度は読み終えたプール。partial: 途中のプール（読めたところ next_block を覚えていて、次の回に続きから）。
+    - not_started: 対象なのに、まだ1回も読んでいないプール（最後の回の対象の数から数える）。
+    - last_run: 最後の回の量（回数・読めた記録・読んだプール・読めなかったプール・途中でやめた理由）。"""
+    empty = {"pools": 0, "caught_up": 0, "events": 0, "calls": 0, "stored_events": 0, "base_positions": 0, "errors": [],
+             "done": 0, "partial": 0, "resumable": 0, "not_started": 0, "targets": None, "last_run": None, "runs": 0}
     if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pool_liq_progress'").fetchone():
-        return {"pools": 0, "caught_up": 0, "events": 0, "calls": 0, "stored_events": 0, "base_positions": 0, "errors": []}
+        return empty
     rows = conn.execute("SELECT * FROM pool_liq_progress").fetchall()
     t = (now or datetime.now(UTC)).timestamp()
-    return {"pools": len(rows),
+    last, runs = None, 0
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pool_liq_runs'").fetchone():
+        r = conn.execute("SELECT * FROM pool_liq_runs ORDER BY ts DESC LIMIT 1").fetchone()
+        last = None if r is None else {k: r[k] for k in ("ts", "targets", "calls", "events", "pools_read", "errors",
+                                                          "stopped")}
+        runs = conn.execute("SELECT COUNT(*) FROM pool_liq_runs").fetchone()[0]
+    partial = [r for r in rows if r["done_ts"] is None]
+    targets = last["targets"] if last else None
+    return {**empty, "pools": len(rows),
             "caught_up": sum(1 for r in rows if r["done_ts"] is not None and t - int(r["done_ts"]) < 6 * 3600),
             "events": sum(int(r["events"]) for r in rows), "calls": sum(int(r["calls"]) for r in rows),
             "stored_events": conn.execute("SELECT COUNT(*) FROM pool_liq_events").fetchone()[0],
             "base_positions": conn.execute("SELECT COUNT(*) FROM pool_liq_base").fetchone()[0],
-            "errors": [{"pool_id": r["pool_id"], "error": r["error"]} for r in rows if r["error"]]}
+            "errors": [{"pool_id": r["pool_id"], "error": r["error"]} for r in rows if r["error"]],
+            "done": len(rows) - len(partial), "partial": len(partial),
+            "resumable": sum(1 for r in partial if int(r["next_block"]) > 0 or r["keep_from_block"] is not None),
+            "not_started": max(0, targets - len(rows)) if targets is not None else 0,
+            "targets": targets, "last_run": last, "runs": runs}
 
 
 __all__ = ["read", "status", "parse_log", "position_key", "candidates", "MODIFY_LIQUIDITY"]
