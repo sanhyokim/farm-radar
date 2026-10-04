@@ -3,6 +3,7 @@ import { useApi } from "../api";
 import { jst, pct, plainPct, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Folds, Line, Loading, PageHead, Pill, Segmented } from "../ui";
+import FinalPrep from "./FinalPrep";
 
 // N5d「試す」の結果（2026-10-04 オーナーの指示書）。6つの項目と比べる相手を、見込み・実際・差・判定で1か所に並べる。
 // 判定は「確認できた」「要注意」「記録中」の3つだけ。記録が足りないうちは「合格」「不合格」を出さない。
@@ -122,6 +123,7 @@ export default function Trial() {
           <PracticeCard rows={data.practice.rows} />
         </div>
       </div>
+      <FinalPrep />
     </>
   );
 }
