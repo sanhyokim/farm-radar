@@ -1,4 +1,5 @@
 import { Link, useParams, useSearchParams } from "react-router-dom";
+import { N6OwnerEntry } from "./N6";
 import { useApi, type OppCampaign, type OppDetailResp, type Safety } from "../api";
 import { bigUsd, jst, usd } from "../format";
 import { Icon } from "../icons";
@@ -75,6 +76,7 @@ export default function ExploreDetail() {
       </section>
 
       <TryCard data={data} />
+      <N6OwnerEntry oppKey={key} />
 
       <Card title={<span className="flex items-center gap-2"><Icon name="shield" size={16} />危なさ（仮）</span>}>
         <RecommendLine s={o.safety} />

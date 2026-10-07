@@ -359,6 +359,14 @@ def shadow_predictions(data: Any) -> list[Item]:
     return [Item(k, None, None, {"rank": rank}) for k, rank in keys.items()]
 
 
+def n6_practice(data: Any) -> list[Item]:
+    """N6 の練習の1回（練習のまとまりごと）。"""
+    pfs = (data or {}).get("portfolios") if isinstance(data, dict) else None
+    return [Item(k, None, None, {"positions": v.get("positions"), "placed": v.get("placed"), "equity": v.get("equity"),
+                                 "status": v.get("status"), "waiting": v.get("waiting")})
+            for k, v in (pfs or {}).items() if isinstance(v, dict)]
+
+
 # --- Aero の公式のお知らせ ------------------------------------------------------------------------
 
 _AERO_ENTRY = re.compile(r"^#{2,3} \[(?P<title>[^\]]+)\]\((?P<path>/articles/[^)\s]+)\)\s*$", re.M)
@@ -462,6 +470,9 @@ SOURCES: tuple[Source, ...] = (
            "daily", lighter_history, raw_every_minutes=10080),
     Source("lighter_rh_price_history", "Lighter（Robinhood Chain 版）の値段の過去", f"{LIGHTER_RH}/candles",
            "daily", lighter_history, raw_every_minutes=10080),
+    # N6「仮想のお金で渡る」（2026-10-07 指示書）。15分ごとの回のいちばん最後（Merkl の機会とプールの値段を読んだあと）。
+    # 100% 仮想。外のサイトには行かず、保存した一覧を読んで練習の表（新しい版のデータベース）に書くだけ
+    Source("n6_practice", "N6 仮想のお金の練習（15分ごと）", "local", "15min", n6_practice, raw_every_minutes=1440),
 )
 
 BY_ID = {s.id: s for s in SOURCES}

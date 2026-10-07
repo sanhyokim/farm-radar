@@ -10,6 +10,7 @@ import PoolDetail from "./pages/PoolDetail";
 import Practice from "./pages/Practice";
 import PracticeDetail from "./pages/PracticeDetail";
 import { TimelinePage } from "./pages/PaperExtras";
+import { N6PositionPage } from "./pages/N6";
 import Learn from "./pages/Learn";
 import Trial from "./pages/Trial";
 import Explore from "./pages/Explore";
@@ -50,6 +51,7 @@ export default function App() {
             <Route path="/pools/:id" element={<PoolDetail />} />
             <Route path="/practice" element={<Practice />} />
             <Route path="/practice/timeline" element={<TimelinePage />} />
+            <Route path="/practice/n6/:id" element={<N6PositionPage />} />
             <Route path="/practice/:id" element={<PracticeDetail />} />
             <Route path="/learn" element={<Learn />} />
             <Route path="/learn/trial" element={<Trial />} />

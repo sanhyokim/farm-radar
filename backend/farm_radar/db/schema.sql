@@ -378,3 +378,132 @@ CREATE TABLE IF NOT EXISTS hedge_topup_log (
   detail_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_hedge_topup_log_pos ON hedge_topup_log(position_id, ts);
+
+-- N6「仮想のお金で渡る」（2026-10-07 指示書）。100% 仮想。本物のお金・署名・秘密鍵は使わない。
+-- 練習のまとまり（$1,000 / $10,000 × アプリ任せ / 自分で選ぶ）
+CREATE TABLE IF NOT EXISTS n6_portfolios (
+  id TEXT PRIMARY KEY,            -- app_1000 / app_10000 / own_1000 / own_10000
+  picker TEXT NOT NULL,           -- app（アプリ任せ）/ owner（自分で選ぶ）
+  total_usd REAL NOT NULL,        -- 仮想の総額
+  started_at TEXT NOT NULL,
+  status TEXT NOT NULL,           -- running / stopped（損の線「すべて止める」）
+  stopped_at TEXT,
+  stopped_reason TEXT,
+  cash_usd REAL NOT NULL,         -- 置いていない仮想のお金（閉じた建玉の戻りを含む）
+  state_json TEXT                 -- 損の線の状態など
+);
+
+-- 仮想の建玉（指示書 22 の項目）。保険あり／なしの対は twin_of で本体と結ぶ（対の方は総額・上限・損の線に数えない）
+CREATE TABLE IF NOT EXISTS n6_positions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  portfolio_id TEXT NOT NULL,
+  twin_of INTEGER,                -- 対（保険あり／なしの反対側）なら本体の id。本体は NULL
+  opp_key TEXT NOT NULL,          -- 探すの入れる先
+  name TEXT, pair TEXT, chain TEXT, venue TEXT, kind TEXT,
+  hedge INTEGER NOT NULL,         -- 1 = 保険あり
+  amount_usd REAL NOT NULL,       -- この建玉の仮想の額（プール + 保険の預け金 + ガスの予備）
+  opened_at TEXT NOT NULL,
+  closed_at TEXT,
+  status TEXT NOT NULL,           -- open / closed
+  est_apr_pct REAL,               -- 始めたときの見込みの年利（新しい設定・控えめ）
+  est_old_apr_pct REAL,           -- 同じ（前の設定。比べるため）
+  pick_reason TEXT,               -- 選んだ理由
+  exit_reason TEXT,               -- 出た理由（日本語）
+  exit_rule TEXT,                 -- 出た決まり（own_value_drop / dump / manual など）
+  exit_stage INTEGER,             -- 早く出る段階（1〜4。手動は NULL）
+  move_from INTEGER,              -- 移ってきた元の建玉
+  move_to INTEGER,                -- 移った先の建玉
+  move_reason TEXT,               -- 移った理由
+  entry_json TEXT,                -- 始めたときの見込み（新旧）・分け方・幅
+  state_json TEXT NOT NULL,       -- 計算の途中の状態
+  last_ts TEXT NOT NULL,
+  value_usd REAL, pnl_usd REAL, bonus_usd REAL, fees_usd REAL, price_move_usd REAL, rebalance_cost_usd REAL,
+  hedge_usd REAL, hedge_cost_usd REAL, funding_usd REAL, gas_usd REAL, entry_exit_cost_usd REAL,
+  max_drawdown_usd REAL, rebalances INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_n6_positions_pf ON n6_positions(portfolio_id, status);
+
+-- 15分ごとの建玉の値打ち（新旧の影の計算も detail_json に入れる。2週間の見直しのため最初の日から残す）
+CREATE TABLE IF NOT EXISTS n6_marks (
+  position_id INTEGER NOT NULL,
+  ts TEXT NOT NULL,
+  value_usd REAL, pnl_usd REAL, in_range REAL, price REAL,
+  detail_json TEXT,
+  PRIMARY KEY (position_id, ts)
+);
+
+-- 15分ごとの練習のまとまりの値打ち（損の線に使う）
+CREATE TABLE IF NOT EXISTS n6_portfolio_marks (
+  portfolio_id TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  equity_usd REAL, placed_usd REAL, cash_usd REAL,
+  detail_json TEXT,
+  PRIMARY KEY (portfolio_id, ts)
+);
+
+-- どの決まりが働いたか（注意・新しく入らない・置き直した・保険を直した・移った・出た・入った）。shadow = 1 は前の設定なら、の記録
+CREATE TABLE IF NOT EXISTS n6_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  portfolio_id TEXT,
+  position_id INTEGER,
+  opp_key TEXT,                   -- 入れる先（新しく入るのを止める合図を探すため）
+  action TEXT NOT NULL,           -- caution / no_new / rebalance / hedge / move / exit / enter / stop / wait / info
+  rule TEXT,                      -- 決まりの名前（pool_funds_drop / dump / edge など）
+  stage INTEGER,                  -- 早く出る段階（1〜4）
+  shadow INTEGER NOT NULL DEFAULT 0,
+  message_ja TEXT,
+  data_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_n6_events_pf ON n6_events(portfolio_id, ts);
+
+-- 手動の「出る」（指示書 19）
+CREATE TABLE IF NOT EXISTS n6_exits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  position_id INTEGER NOT NULL,
+  reason TEXT NOT NULL,           -- profit / worry / move / test / other
+  note TEXT,                      -- 自由記入
+  position_json TEXT,             -- そのときの仮想の建玉
+  estimate_json TEXT,             -- そのときの見込み
+  pnl_usd REAL                    -- 実際の損益（出る費用のあと）
+);
+
+-- ボーナスを「1日1回売ったとしたら」（指示書 20。実際には売らない）
+CREATE TABLE IF NOT EXISTS n6_bonus_sales (
+  position_id INTEGER NOT NULL,
+  day TEXT NOT NULL,              -- 日本時間の日付
+  symbol TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  units REAL, price REAL, usd REAL, cost_usd REAL,
+  PRIMARY KEY (position_id, day, symbol)
+);
+
+-- 決まりに使う値段の記録（ボーナスのコインの値段・預かり額。24時間の変化を見るため）
+CREATE TABLE IF NOT EXISTS n6_prices (
+  key TEXT NOT NULL,              -- reward:<チェーン>:<住所> / tvl:<入れる先> / usd:<チェーン>:<住所>
+  ts TEXT NOT NULL,
+  value REAL,
+  PRIMARY KEY (key, ts)
+);
+
+-- 15分ごとの回の記録
+CREATE TABLE IF NOT EXISTS n6_ticks (
+  ts TEXT PRIMARY KEY,
+  ok INTEGER NOT NULL,
+  detail_json TEXT
+);
+
+-- 自分で選ぶ練習の申し込み（「探す」のボタン）。次の15分ごとの見回りで入る（値段と見込みをそろえるため）
+CREATE TABLE IF NOT EXISTS n6_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  portfolio_id TEXT NOT NULL,     -- own_1000 / own_10000
+  opp_key TEXT NOT NULL,
+  amount_usd REAL,                -- 入れる額（NULL = 上限に収まる一番大きい段）
+  hedge TEXT NOT NULL,            -- auto / yes / no
+  status TEXT NOT NULL,           -- waiting / done / refused
+  done_at TEXT,
+  position_id INTEGER,
+  message_ja TEXT
+);

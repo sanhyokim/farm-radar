@@ -76,6 +76,7 @@ class TrialContext:
     llama_chains: tuple[str, ...] = ()                    # DefiLlama のチェーン名（Base・Robinhood Chain）
     perp_alias: dict[str, str] = field(default_factory=dict)
     shadow: Callable[[sqlite3.Connection, datetime], dict[str, Any]] | None = None   # 影の記録（feeds/shadow.py）
+    n6: Callable[[sqlite3.Connection, datetime], dict[str, Any]] | None = None       # N6 の練習（n6/engine.py）
     # up. のコインの保険に使う Lighter の市場（venues/tokens-robinhood.yaml の perps.map。N5b のさかのぼりで、
     # 今の版の見込みの資金調達料と比べるため。株の銘柄は Merkl の一覧や取引の多い10銘柄に入らないことがある）
     lighter_markets: tuple[tuple[int, str], ...] = ()

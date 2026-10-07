@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\merkl_check.py', 'backend\farm_radar\trial_view.py', 'backend\farm_radar\final_prep.py', 'backend\farm_radar\merkl_ab.py', 'backend\farm_radar\feeds\pool_history.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\n6\engine.py', 'backend\farm_radar\merkl_check.py', 'backend\farm_radar\trial_view.py', 'backend\farm_radar\final_prep.py', 'backend\farm_radar\merkl_ab.py', 'backend\farm_radar\feeds\pool_history.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -194,7 +194,8 @@ try {
     $fs = $null
     # 起動のあとに1回読み終わるまで待つもの（前の回の数がまとめに出ないように）:
     # 会場の見分け・Merkl の配った額（全部のページ）・預け方の歴史（2026-10-04 指示書: Merkl A/B の記録の始まりを確かめる）
-    $mustRun = @('venue_checks', 'merkl_rewards', 'pool_history')
+    # N6（2026-10-07 指示書）: 仮想のお金の練習の1回目（15分ごとの回のいちばん最後）
+    $mustRun = @('venue_checks', 'merkl_rewards', 'pool_history', 'n6_practice')
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 30
         try { $fs = Invoke-RestMethod "$NewApi/api/feeds/status" -TimeoutSec 30 } catch { $fs = $null; Say '   まだ画面が起動していません……'; continue }
@@ -506,6 +507,38 @@ try {
         Write-Host "   注意: 最終判断の準備を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
     }
 
+    # N6「仮想のお金で渡る」（2026-10-07 指示書）: 1回目の見回りで、アプリ任せの $1,000 / $10,000 が始まったか。
+    # 新しい版の更新は終わっているので、うまくいかなくても戻さずに注意だけ出す（次の15分ごとの回でやり直す）
+    $n6Ready = 'いいえ'
+    $n6Lines = @{}
+    try {
+        $n6 = Invoke-RestMethod "$NewApi/api/n6" -TimeoutSec 120
+        if (-not $n6.last_tick) {
+            $notes += 'N6 の見回りがまだ1回も記録されていません（15分ごとの回でやり直します）'
+        } elseif (-not $n6.last_tick.ok) {
+            $notes += "N6 の見回りが失敗しました: $($n6.last_tick.error)"
+        } else {
+            $n6Ready = 'はい'
+        }
+        foreach ($size in @(1000, 10000)) {
+            $pf = @($n6.portfolios | Where-Object { $_.id -eq "app_$size" })[0]
+            $label = '$' + ('{0:N0}' -f $size)
+            if (-not $pf) {
+                $n6Lines[$size] = "$label アプリ任せの練習: 始まっていません"
+                if ($n6Ready -eq 'はい') { $notes += "N6 の $label アプリ任せの練習がありません" }
+            } elseif (@($pf.open).Count -gt 0) {
+                $n6Lines[$size] = ('{0} アプリ任せの練習: 始まりました（建玉 {1} つ・置いた ${2:N0}・置いていない ${3:N0}）' -f $label, @($pf.open).Count, [double]$pf.placed_usd, [double]$pf.cash_usd)
+            } else {
+                $n6Lines[$size] = ('{0} アプリ任せの練習: 始まりました（今は入れる先を待っています: {1}）' -f $label, $pf.waiting)
+            }
+        }
+        Say "[N6] 最後の見回り: $($n6.last_tick.ts) / ok: $($n6.last_tick.ok) / 練習のまとまり: $(@($n6.portfolios | ForEach-Object { $_.id }) -join ', ')"
+    } catch {
+        $notes += "N6 の練習の状態を読めませんでした（$($_.Exception.Message)）"
+        $n6Lines[1000] = '$1,000 アプリ任せの練習: 確かめられませんでした'
+        $n6Lines[10000] = '$10,000 アプリ任せの練習: 確かめられませんでした'
+    }
+
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
     Say "[今の版] 前: eval: $($before.eval) / open: $($before.open) / last_ok_at: $($before.last)"
     $v1 = 'そのまま動いています（前と同じ）'
@@ -531,6 +564,10 @@ try {
     Write-Host '==================== 結果 ====================' -ForegroundColor $tone
     Write-Host ("[結果] 更新: {0}" -f $(if ($notes.Count -eq 0) { '成功' } else { '成功（注意あり。下の「注意」を見てください）' })) -ForegroundColor $tone
     Say "[結果] 今の版（18000）: $v1。フォルダーとデータには触っていません"
+    Say "[結果] N6準備完了: $n6Ready"
+    Say "[結果] $($n6Lines[1000])"
+    Say "[結果] $($n6Lines[10000])"
+    Say '[結果] 本物のお金: 動いていません（N6 は 100% 仮想。送金・両替・署名・秘密鍵を使うコードはありません）'
     $over = if ([int](N0 $ms.over_page) -gt 0) { "100 行をこえるキャンペーン $($ms.over_page) 個も最後のページまで読めました（いちばん多い $($ms.max_rows) 行）" } else { "今は 100 行をこえるキャンペーンはありません（いちばん多い $(N0 $ms.max_rows) 行）" }
     if ($mStarted) {
         Say "[結果] Merkl の全部のページの記録: 始まりました。complete=1 の記録 $(N0 $ms.complete) 件（キャンペーン $(N0 $ms.complete_campaigns)）。$over"

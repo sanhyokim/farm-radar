@@ -5,6 +5,7 @@ import { hoursJa, jst, jstDay, pct, signedUsd, untilText, usd } from "../format"
 import { Icon } from "../icons";
 import { Fold, Folds, Line, Loading, Note, PageHead, Pill, Spark, Term, usePulse, useWide } from "../ui";
 import { CalendarBody, CsvBody, EvaluationCard, HedgeVenuesBody, OutlookBody, TimelineList } from "./PaperExtras";
+import { N6Section } from "./N6";
 
 export { hoursJa };
 
@@ -14,14 +15,16 @@ export default function Practice() {
   const wide = useWide();
   const { data, error, reload } = useApi<Paper>("/api/paper");
   const head = <PageHead title="練習" right={<Pill icon="info">{wide ? "練習モード · お金は動きません" : "お金は動きません"}</Pill>} />;
-  if (!data) return <>{head}<Loading error={error} /></>;
+  if (!data) return <>{head}<N6Section /><Loading error={error} /></>;
   const cards = data.open.map((c) => <PositionCard key={c.id} c={c} onChanged={reload} />);
-  const compare = data.enabled ? <CompareCard data={data} /> : null;
+  const compare = null;   // 自分で選ぶ／アプリ任せの比べは、上の N6 の欄にある
   const rest = <RestFolds data={data} />;
   const controls = data.enabled ? <Controls data={data} reload={reload} /> : null;
   return (
     <>
       {head}
+      <N6Section />
+      <p className="label">前の練習（自分で読む会場のプール）</p>
       <Conclusion data={data} />
       {data.open.length === 0 && (
         <section className="card p-6"><p className="sec">練習中の建玉はありません。{data.evaluation_block ? "" : "探す → 入れる先 →「$1,000 を試す」で始められます（今は自分で読む会場のプールだけ）。"}</p></section>
@@ -147,34 +150,6 @@ function ExitButton({ id, onDone }: { id: number; onDone: () => void }) {
       <span className="cap">{err ?? "押すと確認が出ます。閉じた理由は「手動」と残ります。"}</span>
       <button type="button" onClick={exit} disabled={busy} className="ghost shrink-0"><Icon name="xc" size={16} />{busy ? "出ています…" : "出る"}</button>
     </div>
-  );
-}
-
-/** 自分で選ぶ練習 と アプリ任せの練習 の比べ（形だけ。アプリ任せの練習は N6 で始まる） */
-function CompareCard({ data }: { data: Paper }) {
-  const all = [...data.open, ...data.closed];
-  const pnl = all.reduce((a, c) => a + (c.change_usd ?? 0), 0);
-  const capital = data.open.reduce((a, c) => a + (c.capital ?? 0), 0);
-  return (
-    <section className="card flex flex-col gap-4 p-6">
-      <div className="label flex items-center gap-2"><Icon name="swap" size={16} /><span>自分で選ぶ練習 と アプリ任せの練習</span></div>
-      <div className="grid grid-cols-2 gap-2">
-        <div className="inset flex flex-col gap-1 p-4">
-          <span className="cap">自分で選ぶ</span>
-          <span className="bold num">{signedUsd(pnl)}</span>
-          <span className="cap">建玉 {data.open.length}つ · 置いている {usd(capital, 0)}</span>
-        </div>
-        <div className="inset flex flex-col gap-1 p-4">
-          <span className="cap">アプリ任せ</span>
-          <span className="bold num text-cap">—</span>
-          <span className="cap">N6 で始まります</span>
-        </div>
-      </div>
-      <Note>
-        アプリ任せの練習は、狙い利回りと早く出る決まりで、同じ期間・同じ金額で自動で出入りします（N6）。
-        そのときに、ここで儲けを並べて比べます。左の数字は、今の練習の損益の合計（閉じた分も入れる）です。
-      </Note>
-    </section>
   );
 }
 

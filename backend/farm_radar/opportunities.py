@@ -88,6 +88,7 @@ class Variant:
     liquidity_share: float | None = None   # 幅に配るプールで、チェーンの記録の流動性から出した取り分（N3）
     sigma_pct: float | None = None         # 計算に使った1日の値動き（%。幅に配るプールは飛びを除いたもの。N4b）
     jumps_per_day: float | None = None     # 幅を飛び越える飛び（市場が閉まっていたあとなど）の1日あたりの回数（N4b）
+    rebalances_per_day: float | None = None   # 置き直しの見込みの回数（1日。補正 rebalance_factor のあと。N6 の比べに使う）
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -127,6 +128,8 @@ class Opportunity:
     vault_watch: dict[str, Any] | None = None    # 金庫の運用先の見張り（N4b。feeds/vaults.py）
     # 保険に使う売り場（コインの記号・Lighter の銘柄と番号）。値動きの大きい銘柄の行を数えるのに使う（2026-10-04 オーナーの質問2）
     hedge_markets: list[dict[str, Any]] = field(default_factory=list)
+    # Merkl の分母（2026-10-07 指示書 2）: キャンペーンごとに A（全員）か B（幅の中だけ）か、と理由。split の設定のときだけ
+    denominators: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def excluded(self) -> bool:
@@ -152,7 +155,7 @@ class Opportunity:
             **self.base.to_dict(), "kind": self.kind, "computable": self.computable, "reason": self.reason,
             "flags": [asdict(f) for f in self.flags], "excluded": self.excluded, "unprotected": self.unprotected,
             "cap_usd": self.cap_usd, "new_pool": self.new_pool, "vault_watch": self.vault_watch,
-            "hedge_markets": self.hedge_markets,
+            "hedge_markets": self.hedge_markets, "denominators": self.denominators,
         }
         amounts = [amount] if amount is not None else [float(a) for a in self.calc]
         out["calc"] = {_akey(a): {case: {k: (v.to_dict() if v else None) for k, v in vs.items()}
@@ -252,6 +255,9 @@ def funding_long(conn: sqlite3.Connection, now: datetime, days: float,
         by.setdefault(int(mid), []).append((-1 if direction == "long" else 1) * float(rate) / 100)
     # 半分より少ない日数の記録しかない市場は使わない（読み始めたばかりの市場で、数時間の平均にしない）
     return {mid: sum(v) / len(v) * 24 for mid, v in by.items() if len(v) >= days * 24 / 2}
+
+
+_B_CACHE: dict[tuple[int, str, str, int], tuple[float | None, str | None]] = {}
 
 
 class FeedData:
@@ -474,6 +480,43 @@ class FeedData:
                 return rh
         return usable(self.perps.get(sym))
 
+    def b_ratio(self, chain_id: int, pool_id: str) -> tuple[float | None, str | None]:
+        """分母 B に使う「幅の中の預け方の額 ÷ 全部の預け方の額」（最新のプールの状態のとき）と、使えない理由。
+
+        預け方の歴史（feeds/pool_history.py）を読み終えたプールだけ。組み立て直した幅の中の流動性が、チェーンで読んだ
+        今の値段のところの流動性と 1% 以内で合うときだけ使う（merkl_ab と同じ確かめ方）。同じ状態の答えはとっておく。"""
+        if self.conn is None:
+            return None, "記録がない"
+        try:
+            s = self.conn.execute("SELECT checked_at, tick, liquidity, sqrt_price_x96 FROM pool_state_snaps WHERE chain_id=? "
+                                  "AND pool_id=? AND liquidity IS NOT NULL AND sqrt_price_x96 IS NOT NULL AND tick IS NOT NULL "
+                                  "ORDER BY checked_at DESC LIMIT 1", (int(chain_id), pool_id)).fetchone()
+            prog = self.conn.execute("SELECT done_ts FROM pool_liq_progress WHERE chain_id=? AND pool_id=?",
+                                     (int(chain_id), pool_id)).fetchone()
+        except sqlite3.OperationalError:
+            return None, "預け方の歴史の記録がない"
+        if s is None:
+            return None, "プールの状態の記録がない"
+        if prog is None or prog["done_ts"] is None:
+            return None, "預け方の歴史をまだ読み終えていない"
+        key = (int(chain_id), pool_id, s["checked_at"], int(prog["done_ts"]))
+        if key not in _B_CACHE:
+            from .merkl_ab import Book, _denoms
+            book = Book(self.conn, int(chain_id), pool_id)
+            if not book.ok:
+                _B_CACHE[key] = (None, "預け方の歴史をまだ読み終えていない")
+            else:
+                d = _denoms(book, s)
+                if not d["l_ok"]:
+                    _B_CACHE[key] = (None, "組み立て直した幅の中の流動性がチェーンの値と合わない")
+                elif not d["ratio_v"]:
+                    _B_CACHE[key] = (None, "幅の中の預け方の額が分からない")
+                else:
+                    _B_CACHE[key] = (float(d["ratio_v"]), None)
+            if len(_B_CACHE) > 500:
+                _B_CACHE.pop(next(iter(_B_CACHE)))
+        return _B_CACHE[key]
+
     def stable_receipt(self, chain_id: int | None, address: str | None) -> dict[str, Any] | None:
         """中身がステーブルの預かり証なら、その確かめの記録（SPEC 13.1 の5）。
 
@@ -676,7 +719,9 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
             w_tok = float(st.get("weightToken0") or 0) / 10000 + float(st.get("weightToken1") or 0) / 10000
             if w_fee + w_tok <= 0:
                 w_fee = 1.0
-            dshare = c_pos / (max(tvl, 0.0) + c_pos) if c_pos > 0 else 0.0
+            # 分母 B（2026-10-07 指示書 2）: 条件がそろったキャンペーンだけ、幅の中の預け方の額（預かり額 × 幅の中の割合）で分ける
+            denom = max(tvl, 0.0) * float(c["_b_ratio"]) if c.get("_b_ratio") is not None else max(tvl, 0.0)
+            dshare = c_pos / (denom + c_pos) if c_pos > 0 else 0.0
             inc = (d or 0.0) * (w_fee * lshare + w_tok * dshare) / (w_fee + w_tok)
         else:
             inc, _ = campaign_income(c, c_pos, tvl)
@@ -696,7 +741,8 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
     forced = None
     if kind == "pool_range" and move is not None:
         forced = sum(1 for j in jumps if abs(j) > r) / jdays
-        n_reb = m.rebalances_per_day(sig_smooth, r) + forced
+        # 置き直しの見込みの補正（2026-10-07 指示書 3。探すは 1、N6 の練習は仮 0.25）。飛びの回数には掛けない
+        n_reb = m.rebalances_per_day(sig_smooth, r) * s.rebalance_factor + forced
         irr = max(0.0, 1.0 - n_reb * config.scoring.rebalance_wait_minutes / m.MINUTES_PER_DAY)
         income *= irr
         gamma_day = m.gamma(c_pos, sig_smooth, r) + sum(m.jump_loss(c_pos, j, r) for j in jumps) / jdays
@@ -738,7 +784,7 @@ def _variant(*, hedge: bool, amount: float, split: dict[str, float], kind: str, 
                    apr_pct=after / amount * 365 * 100, payback_days=(move / net) if net > 0 else None,
                    in_range_ratio=irr, range_pct=r * 100 if kind == "pool_range" else None, liquidity_share=lshare,
                    sigma_pct=(sig_smooth if kind == "pool_range" else sig_total) * 100 if move is not None else None,
-                   jumps_per_day=forced)
+                   jumps_per_day=forced, rebalances_per_day=n_reb if kind == "pool_range" and move is not None else None)
 
 
 def _kind(info: dict[str, Any]) -> str:
@@ -909,6 +955,8 @@ def evaluate_merkl(base: StandardOpportunity, info: dict[str, Any], campaigns: l
         op.flags.append(Flag("NO_HEDGE", LEVEL_INFO, "保険の売り場（Lighter）がないので、保険なしだけ"))
     op.cap_usd = tvl * s.max_pool_share if tvl else None
     cl = _cl_pool(op, base, live, legs, data) if op.kind == "pool_range" else None
+    if s.merkl_denominator == "split" and op.kind == "pool_range":
+        _mark_denominators(op, base, live, cl, data)
     ranges = RANGES if cl is not None else (s.merkl_range_pct / 100,)
     if cl is not None and cl.lp_fee is not None and 0 < cl.lp_fee < 1_000_000:
         fee = cl.lp_fee / 1_000_000            # このプールの手数料の段（チェーンの記録。両替・置き直しの費用に使う）
@@ -963,6 +1011,44 @@ def _vault_flags(op: Opportunity, base: StandardOpportunity, info: dict[str, Any
     else:
         op.flags.append(Flag("VAULT_WATCH", LEVEL_INFO, f"金庫の運用先を1時間に1回見張っている（運用先 {st.get('adapters_count', '?')}つ・"
                              f"最近30日の変化 {v.get('changes') or 0}回。チェーンの記録）"))
+
+
+def _mark_denominators(op: Opportunity, base: StandardOpportunity, live: list[dict[str, Any]], cl: ClPool | None,
+                       data: FeedData) -> None:
+    """Merkl の分母の使い分け（2026-10-07 指示書 2）。B（幅の中だけ）は次の全部がそろったキャンペーンだけ:
+    幅の外には配らない設定（isOutOfRangeIncentivized: false）・除外する人／対象の人の決まりがない・プールのチェーンの記録
+    （今の状態と、預け方の歴史を読み終えて組み立て直した幅の中の流動性がチェーンの値と合う）を読めている。ほかは A。
+    コインの重みが中心のキャンペーンは、N5 で比べた組が0件（B の根拠がまだない）なので、印にそう書く。"""
+    from .merkl_ab import main_weight, out_class, restricted, weights
+
+    for c in live:
+        if not c.get("_cl"):
+            continue
+        st = _settings(c)
+        why = None
+        oc = out_class(st)
+        if oc != "in":
+            why = "幅の外にも配る設定" if oc == "out" else "幅の外の扱いが設定にない"
+        elif restricted(st):
+            why = restricted(st)
+        elif cl is None:
+            why = "プールのチェーンの記録を使えない"
+        ratio = None
+        if why is None:
+            ratio, why = data.b_ratio(cl.chain_id, cl.pool_id)
+        mw = main_weight(weights(st))
+        if ratio is not None:
+            c["_b_ratio"] = ratio
+        op.denominators.append({"campaign_id": c.get("campaign_id"), "use": "B" if ratio is not None else "A",
+                                "why": why, "in_range_share": ratio, "main_weight": mw,
+                                "unverified": mw == "コインが中心"})
+    used = [d for d in op.denominators if d["use"] == "B"]
+    if used:
+        coin = any(d["unverified"] for d in used)
+        op.flags.append(Flag("DENOM_B", LEVEL_INFO,
+                             f"Merkl の分母は B（幅の中の預け方だけ）で計算: 幅の中の割合 {used[0]['in_range_share'] * 100:.0f}%"
+                             "（チェーンの記録）" + ("。コインの重みが中心のキャンペーンは、N5 で比べた組が0件（B はまだ確かめていない）"
+                                                 if coin else "")))
 
 
 RANGES = m.ModelParams().ranges          # 幅の候補（今の版で承認済み: ±0.5%〜±15%）
