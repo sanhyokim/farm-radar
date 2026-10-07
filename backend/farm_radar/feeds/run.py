@@ -199,6 +199,15 @@ def _read_trial(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, ctx:
         data, pages = trial.read_lighter_prices(conn, fetcher.text, ctx, now, trial.RH_BOOK)
     elif source.id == "aero_addresses":
         data, pages = trial.read_aero_addresses(fetcher.text)
+    elif source.id == "n6_practice":
+        if ctx.n6 is None:
+            return {}, b"{}", 0
+        try:
+            data, pages = ctx.n6(conn, now), 0
+        except (ExternalError, ValueError, TypeError) as exc:
+            raise ValueError(f"N6 の練習の計算に失敗: {type(exc).__name__}: {exc}") from exc
+        except Exception as exc:            # 計算の途中の失敗も「失敗」として記録し、ほかの一覧は続けて読む
+            raise ValueError(f"N6 の練習の計算に失敗: {type(exc).__name__}: {exc}") from exc
     else:                                   # shadow_predictions
         if ctx.shadow is None:
             return {}, b"{}", 0
@@ -212,7 +221,8 @@ def _read_trial(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, ctx:
 
 
 TRIAL_SOURCES = ("merkl_rewards", "llama_yield_history", "lighter_funding_history", "lighter_price_history",
-                 "aero_addresses", "shadow_predictions", "lighter_rh_funding_history", "lighter_rh_price_history")
+                 "aero_addresses", "shadow_predictions", "lighter_rh_funding_history", "lighter_rh_price_history",
+                 "n6_practice")
 
 
 def run_source(conn: sqlite3.Connection, source: Source, fetcher: Fetcher, settings: FeedSettings,

@@ -230,6 +230,84 @@ def trial_final_api() -> dict:
                 fconn.close()
 
 
+# --- N6「仮想のお金で渡る」（2026-10-07 指示書。100% 仮想。お金は動かさない） ------------------------------------
+
+class N6ExitBody(BaseModel):
+    reason: str                     # profit（利益確定）/ worry（不安）/ move（別の場所へ移る）/ test（テスト）/ other（その他）
+    note: str | None = None         # 自由記入
+
+
+class N6OwnerBody(BaseModel):
+    opp_key: str
+    size: float                     # 練習の総額（1000 / 10000）
+    amount: float | None = None     # 入れる額（None = 上限に収まるいちばん大きい段）
+    hedge: str = "auto"             # auto（良い方）/ yes / no
+
+
+class N6ConfirmBody(BaseModel):
+    confirm: bool = False
+
+
+@app.get("/api/n6")
+def n6_api() -> dict:
+    from .n6 import views as n6_views
+
+    with _open() as (config, conn):
+        return n6_views.overview(conn, config)
+
+
+@app.get("/api/n6/positions/{position_id}")
+def n6_position_api(position_id: int) -> dict:
+    from .n6 import views as n6_views
+
+    with _open() as (_config, conn):
+        out = n6_views.position_detail(conn, position_id)
+    if out is None:
+        raise HTTPException(404, "この練習の建玉は見つかりません")
+    return out
+
+
+@app.post("/api/n6/positions/{position_id}/exit")
+def n6_exit_api(position_id: int, body: N6ExitBody) -> dict:
+    """手動の「出る」（仮想）。直近の15分ごとの計算の値で閉じ、理由とそのときの見込みを残す。"""
+    from .n6 import engine as n6_engine
+
+    with _open() as (_config, conn):
+        try:
+            return n6_engine.manual_exit(conn, position_id, body.reason, body.note, _now())
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+
+@app.post("/api/n6/owner")
+def n6_owner_api(body: N6OwnerBody) -> dict:
+    """自分で選ぶ練習の申し込み（仮想）。次の15分ごとの見回りで入る。"""
+    from .n6 import engine as n6_engine
+
+    with _open() as (config, conn):
+        try:
+            return n6_engine.request_entry(conn, config, body.opp_key, float(body.size), body.amount, body.hedge, _now())
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+
+@app.post("/api/n6/portfolios/{portfolio_id}/resume")
+def n6_resume_api(portfolio_id: str, req: N6ConfirmBody) -> dict:
+    from .n6 import engine as n6_engine
+
+    if not req.confirm:
+        raise HTTPException(400, "確認のため {\"confirm\": true} を送ってください")
+    with _open() as (_config, conn):
+        try:
+            return n6_engine.resume(conn, portfolio_id, _now())
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+
 @app.get("/api/registry")
 def registry_api() -> dict:
     """登録の一覧（N1）: 系統 ＞ チェーン ＞ 会場。問題があれば problems に出す。"""
@@ -365,7 +443,7 @@ def opportunity_detail(key: str, amount: float = 1000.0) -> dict:
             "campaigns": op.campaigns,
             "practice": {"available": op.base.source == "chain", "pool_id": op.base.key if op.base.source == "chain" else None,
                          "note": None if op.base.source == "chain" else
-                         "Merkl の入れる先の練習は N6 で作ります（今は自分で読む会場のプールだけ練習できます）。"}}
+                         "この入れる先は、下の「自分で選ぶ練習に入れる」で仮想のお金の練習（N6）に入れられます。"}}
 
 
 @app.get("/api/guard")

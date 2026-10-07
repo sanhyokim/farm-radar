@@ -74,6 +74,32 @@ opportunities:
   sudden_change_hours: 24
   sudden_change_pct: 30
 
+# N6「仮想のお金で渡る」（2026-10-07 指示書）。100% 仮想の練習です。本物の送金・両替・LP の作成や解除・受け取り・
+# Lighter の本物の建玉・署名・秘密鍵は使いません。ここの上限は練習だけのもので、本番の上限（いちばん下の limits）とは別です。
+# 数字はすべて仮（N6 の記録で決め直します）。
+n6:
+  enabled: true
+  app_portfolios: [1000, 10000]     # アプリ任せの練習（オーナーが選ぶ前から始めます）
+  owner_portfolios: [1000, 10000]   # 自分で選ぶ練習（「探す」から最初の1つを入れたときに始まります）
+  per_venue_share: 0.5              # 練習だけの上限: 1つの会場（と保険の Lighter）に置く割合。$2,000 未満の練習は1か所に全部でもよい
+  max_danger: high                  # アプリが選ぶ危なさの上限（「高い」も練習なので入れる。「とても高い」は入れない）
+  amounts_usd: [100, 250, 500, 750, 1000, 1500, 2500]   # 1つの建玉に入れる額の段（上限に収まる一番大きい額を使う）
+  reenter_block_hours: 24           # 出たプールに、アプリがまた入るまでの時間
+  bonus_sale_hour_jst: 9            # ボーナスを「1日1回売ったとしたら」の時刻（日本時間）
+  # N5 の仮決定（新）。比べるための前の設定（旧）も消さずに、両方を影で計算します（指示書 23）
+  new:
+    rebalance_factor: 0.25          # 置き直しの見込み =（1日の値動き ÷ 幅）² × この数（指示書 3。最終値ではない）
+    edge_buffer_frac: 0.15          # 置き直し: 幅の境目から、幅のこの割合だけ外に（指示書 4）
+    edge_wait_minutes: 30           #   この分数いたら置き直す
+    loss_day: {caution: -3, no_new: -8.5, stop: -18}    # 1日の損の線（%。指示書 8）
+    merkl_denominator: split        # 条件がそろえば B（幅の中だけ）、それ以外は A（指示書 2）
+  old:
+    rebalance_factor: 1.0
+    edge_buffer_frac: 0.0
+    edge_wait_minutes: 15
+    loss_day: {caution: -3, no_new: -4, stop: -5}
+    merkl_denominator: A
+
 # 有効にする会場（venues/<id>.yaml）。上から順に集めます。練習と評価に使う会場（up.）を先に書きます。
 # alandale-robinhood は「観察だけ」の会場です（練習と評価には入れません。2026-09-30 オーナー決定。M6）。
 venues:

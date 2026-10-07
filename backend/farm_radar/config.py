@@ -504,6 +504,12 @@ class OpportunitySettings:
     # 直近この時間の高い値・低い値からこの%以上動いたら注意の印。おすすめからは外さない
     sudden_change_hours: float = 24.0
     sudden_change_pct: float = 30.0
+    # 置き直しの見込みの補正（2026-10-07 指示書 3）: 見込みの回数 =（1日の値動き ÷ 幅）² × この数。探すは 1（前のまま）。
+    # N6 の練習だけ n6.new.rebalance_factor（仮 0.25）を使う。飛び（市場が閉まっていたあと）の回数には掛けない
+    rebalance_factor: float = 1.0
+    # Merkl の分母（2026-10-07 指示書 2）: A = 全員が分母（前のまま）/ split = 条件がそろえば B（幅の中だけ）、ほかは A。
+    # 探すは A のまま。N6 の練習だけ n6.new.merkl_denominator を使う
+    merkl_denominator: str = "A"
 
 
 def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
@@ -539,6 +545,8 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             pool_state_max_age_hours=float(o.get("pool_state_max_age_hours", d.pool_state_max_age_hours)),
             sudden_change_hours=float(o.get("sudden_change_hours", d.sudden_change_hours)),
             sudden_change_pct=float(o.get("sudden_change_pct", d.sudden_change_pct)),
+            rebalance_factor=float(o.get("rebalance_factor", d.rebalance_factor)),
+            merkl_denominator=str(o.get("merkl_denominator", d.merkl_denominator)),
         )
     except (TypeError, ValueError, AttributeError) as exc:
         raise ConfigError(f"config.yaml の opportunities の書き方を確かめてください（{exc}）。") from None
@@ -549,9 +557,87 @@ def _opportunities(raw: dict[str, Any]) -> OpportunitySettings:
             or out.receipt_price_alert_pct <= 0 or out.pool_state_max_age_hours <= 0 \
             or out.sudden_change_hours <= 0 or out.sudden_change_pct <= 0 \
             or out.hedge_withstand_mode not in ("per_market", "fixed") or out.funding_cautious_days < 0 \
-            or out.vol_jump_ratio <= 1:
+            or out.vol_jump_ratio <= 1 or not 0 < out.rebalance_factor <= 1 \
+            or out.merkl_denominator not in ("A", "split"):
         raise ConfigError("config.yaml の opportunities の数字を確かめてください（金額は正、割合は0〜1、倍率は1以上。"
                           "hedge_withstand_mode は per_market か fixed）。")
+    return out
+
+
+@dataclass(frozen=True)
+class N6Rules:
+    """N6 の練習の決まりのうち、N5 で仮に決め直したもの（新）と、比べるための前のもの（旧）。2026-10-07 指示書 2〜8・23。"""
+    rebalance_factor: float          # 置き直しの見込み =（1日の値動き ÷ 幅）² × この数
+    edge_buffer_frac: float          # 置き直し: 幅の境目から、幅のこの割合だけ外に
+    edge_wait_minutes: float         #   この分数いたら置き直す
+    loss_day: dict[str, float]       # 1日の損の線（%。注意・新しく入らない・すべて止める）
+    merkl_denominator: str           # A / split
+
+
+N6_NEW = N6Rules(0.25, 0.15, 30.0, {"caution": -3.0, "no_new": -8.5, "stop": -18.0}, "split")
+N6_OLD = N6Rules(1.0, 0.0, 15.0, {"caution": -3.0, "no_new": -4.0, "stop": -5.0}, "A")
+
+
+@dataclass(frozen=True)
+class N6Settings:
+    """N6「仮想のお金で渡る」（2026-10-07 指示書）。config.yaml の n6 から読む。100% 仮想（お金は動かさない）。
+
+    ここの上限は練習だけのもの。本番の上限（limits）とは別で、limits は変えない（絶対ルール5）。数字はすべて仮。
+    """
+    enabled: bool = True
+    app_portfolios: tuple[float, ...] = (1000.0, 10000.0)     # アプリ任せの練習の総額（オーナーが選ぶ前から始める）
+    owner_portfolios: tuple[float, ...] = (1000.0, 10000.0)   # 自分で選ぶ練習の総額（オーナーが最初の1つを入れたときに始まる）
+    per_venue_share: float = 0.5        # 1つの会場（と保険の Lighter）に置く割合の上限。小資金（$2,000 未満）は1か所でもよい
+    max_danger: str = "high"            # アプリが選ぶ危なさの上限（high も練習なので入れる）
+    amounts_usd: tuple[float, ...] = (100.0, 250.0, 500.0, 750.0, 1000.0, 1500.0, 2500.0)   # 1つの建玉に入れる額の段
+    reenter_block_hours: float = 24.0   # 出たプールに、アプリがまた入るまでの時間（行ったり来たりを防ぐ）
+    bonus_sale_hour_jst: int = 9        # ボーナスを「1日1回売ったとしたら」の時刻（日本時間）
+    new: N6Rules = N6_NEW
+    old: N6Rules = N6_OLD
+
+
+def _n6_rules(raw: dict[str, Any] | None, d: N6Rules, name: str) -> N6Rules:
+    r = dict(raw or {})
+    loss = dict(d.loss_day)
+    for k, v in (r.get("loss_day") or {}).items():
+        if k not in LOSS_LEVELS:
+            raise ConfigError(f"n6.{name}.loss_day の段階は {', '.join(LOSS_LEVELS)} のどれかにしてください。")
+        loss[k] = float(v)
+    vals = [loss[k] for k in LOSS_LEVELS]
+    if any(v >= 0 for v in vals) or not vals[0] >= vals[1] >= vals[2]:
+        raise ConfigError(f"n6.{name}.loss_day は、マイナスの%で 注意 ≥ 新しく入らない ≥ すべて止める の順にしてください。")
+    out = N6Rules(rebalance_factor=float(r.get("rebalance_factor", d.rebalance_factor)),
+                  edge_buffer_frac=float(r.get("edge_buffer_frac", d.edge_buffer_frac)),
+                  edge_wait_minutes=float(r.get("edge_wait_minutes", d.edge_wait_minutes)),
+                  loss_day=loss, merkl_denominator=str(r.get("merkl_denominator", d.merkl_denominator)))
+    if not 0 < out.rebalance_factor <= 1 or not 0 <= out.edge_buffer_frac < 1 or out.edge_wait_minutes < 0 \
+            or out.merkl_denominator not in ("A", "split"):
+        raise ConfigError(f"n6.{name} の数字を確かめてください（rebalance_factor は 0〜1、edge_buffer_frac は 0〜1、"
+                          "merkl_denominator は A か split）。")
+    return out
+
+
+def _n6(raw: dict[str, Any]) -> N6Settings:
+    n = raw.get("n6") or {}
+    d = N6Settings()
+    try:
+        out = N6Settings(
+            enabled=bool(n.get("enabled", d.enabled)),
+            app_portfolios=tuple(float(x) for x in n.get("app_portfolios", d.app_portfolios)),
+            owner_portfolios=tuple(float(x) for x in n.get("owner_portfolios", d.owner_portfolios)),
+            per_venue_share=float(n.get("per_venue_share", d.per_venue_share)),
+            max_danger=str(n.get("max_danger", d.max_danger)),
+            amounts_usd=tuple(sorted(float(x) for x in n.get("amounts_usd", d.amounts_usd))),
+            reenter_block_hours=float(n.get("reenter_block_hours", d.reenter_block_hours)),
+            bonus_sale_hour_jst=int(n.get("bonus_sale_hour_jst", d.bonus_sale_hour_jst)),
+            new=_n6_rules(n.get("new"), d.new, "new"), old=_n6_rules(n.get("old"), d.old, "old"))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ConfigError(f"config.yaml の n6 の書き方を確かめてください（{exc}）。") from None
+    if not 0 < out.per_venue_share <= 1 or out.max_danger not in ("low", "mid", "high", "very_high") \
+            or not out.amounts_usd or any(a <= 0 for a in out.amounts_usd) or out.reenter_block_hours < 0 \
+            or not 0 <= out.bonus_sale_hour_jst <= 23 or any(a <= 0 for a in out.app_portfolios + out.owner_portfolios):
+        raise ConfigError("config.yaml の n6 の数字を確かめてください（割合は 0〜1、max_danger は low/mid/high/very_high、"
+                          "金額は正、bonus_sale_hour_jst は 0〜23）。")
     return out
 
 
@@ -579,6 +665,7 @@ class Config:
     # 詳しく計算するチェーン（chains/<id>.yaml。N1）。チェーンを足すときは、ファイルを置いてここに1行足すだけ
     chains: tuple[str, ...] = ("robinhood",)
     opportunities: OpportunitySettings = field(default_factory=OpportunitySettings)
+    n6: N6Settings = field(default_factory=N6Settings)     # N6「仮想のお金で渡る」（練習だけの決まりと上限）
     root: Path = REPO_ROOT
 
 
@@ -634,6 +721,7 @@ def load_config(path: Path | None = None, env: dict[str, str] | None = None) -> 
         observe_venues=_observe_venues(raw),
         feeds=_feeds(raw, root),
         opportunities=_opportunities(raw),
+        n6=_n6(raw),
         chains=_chains(raw),
         root=root,
     )
