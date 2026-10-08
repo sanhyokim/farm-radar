@@ -415,3 +415,9 @@ def test_pool_history_records_each_round_and_reports_progress(tmp_path, monkeypa
     f = trial_records.feeds(tmp_path / "f.sqlite3")
     assert f["pool_history"]["done"] == 1 and all(f["tables"].values())
     assert f["merkl_sums"]["records"] == 0
+    # 更新の1行の軽い確かめ（2026-10-08 指示書: light=1。時間のかかる答え合わせは計算しない）
+    lt = trial_records.feeds(tmp_path / "f.sqlite3", light=True)
+    assert set(lt) == {"light", "merkl_sums", "pool_history", "tables"}
+    assert lt["pool_history"] == f["pool_history"] and lt["tables"] == f["tables"] and lt["merkl_sums"] == f["merkl_sums"]
+    monkeypatch.setattr(trial_records, "_merkl_check", lambda *a, **k: (_ for _ in ()).throw(AssertionError("重い計算をした")))
+    assert trial_records.summary(tmp_path, tmp_path / "f.sqlite3", light=True)["feeds"]["pool_history"]["done"] == 1

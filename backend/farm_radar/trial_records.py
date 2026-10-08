@@ -63,11 +63,15 @@ def _count(conn: sqlite3.Connection, sql: str) -> Any:
         return None
 
 
-def feeds(feeds_db: Path, coins_keys: dict[int, str] | None = None) -> dict[str, Any]:
+def feeds(feeds_db: Path, coins_keys: dict[int, str] | None = None, light: bool = False) -> dict[str, Any]:
+    """light: 更新の1行の確かめ用（2026-10-08 指示書）。表がそろったか・Merkl の全部のページの記録・預け方の歴史の進み具合だけ。
+    時間のかかる Merkl の答え合わせ（merkl_check）は計算しない。"""
     if not feeds_db.exists():
         return {}
     conn = sqlite3.connect(f"file:{feeds_db.as_posix()}?mode=ro", uri=True, timeout=10)
     try:
+        if light:
+            return {"light": True, "merkl_sums": merkl_sums(conn), "pool_history": _pool_history(feeds_db), "tables": tables(conn)}
         r = _count(conn, "SELECT COUNT(DISTINCT campaign_id), COUNT(*), MIN(ts), MAX(ts) FROM merkl_reward_snaps")
         rewards = {"campaigns": r[0], "rows": r[1], "from": r[2], "to": r[3]} if r else None
         r = _count(conn, "SELECT COUNT(DISTINCT pool), COUNT(*), MIN(day), MAX(day) FROM llama_yield_history")
@@ -191,5 +195,7 @@ def lighter_rh(conn: sqlite3.Connection) -> dict[str, Any] | None:
     return {"markets": r[0], "updated_at": r[1], "hedge_markets": len(rows), "rows": rows}
 
 
-def summary(data_dir: Path, feeds_db: Path, coins_keys: dict[int, str] | None = None) -> dict[str, Any]:
+def summary(data_dir: Path, feeds_db: Path, coins_keys: dict[int, str] | None = None, light: bool = False) -> dict[str, Any]:
+    if light:
+        return {"feeds": feeds(feeds_db, coins_keys, light=True)}
     return {"old_copy": old_copy(data_dir), "feeds": feeds(feeds_db, coins_keys)}

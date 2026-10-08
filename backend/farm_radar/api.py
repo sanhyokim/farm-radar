@@ -163,14 +163,15 @@ def feeds_status_api() -> dict:
 
 
 @app.get("/api/trial/records")
-def trial_records_api() -> dict:
-    """N5「試す」に使える記録（N5a）: 今の版のデータの写し（あれば）と、新しい版が集めている記録の数と期間。"""
+def trial_records_api(light: bool = False) -> dict:
+    """N5「試す」に使える記録（N5a）: 今の版のデータの写し（あれば）と、新しい版が集めている記録の数と期間。
+    light=1: 更新の1行の確かめ用。表・Merkl の全部のページの記録・預け方の歴史だけ（答え合わせは計算しない）。"""
     from . import trial_records
     from .registry import coin_chains
 
     config = load_config()
     return trial_records.summary(config.database_path.parent, config.feeds.database_path,
-                                 coin_chains(config.chains, config.root))
+                                 coin_chains(config.chains, config.root), light=light)
 
 
 @app.get("/api/trial/backtest")
@@ -254,6 +255,24 @@ def n6_api() -> dict:
 
     with _open() as (config, conn):
         return n6_views.overview(conn, config)
+
+
+@app.get("/api/n6/daily")
+def n6_daily_api(days: int = 14) -> dict:
+    """N6 の1日ごとのまとめ（日本時間。新しい日が先）。建玉がない日も待った理由を出す。"""
+    from .n6 import report as n6_report
+
+    with _open() as (config, conn):
+        return {"days": n6_report.daily(conn, config, days=max(1, min(days, 60)))}
+
+
+@app.get("/api/n6/health")
+def n6_health_api() -> dict:
+    """N6 の異常のチェック（problems が空なら異常なし）。"""
+    from .n6 import report as n6_report
+
+    with _open() as (config, conn):
+        return n6_report.health(conn, config)
 
 
 @app.get("/api/n6/positions/{position_id}")
