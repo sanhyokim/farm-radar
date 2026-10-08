@@ -140,27 +140,36 @@ def _open_mains(conn: sqlite3.Connection, pid: str) -> list[sqlite3.Row]:
 def room(config: Config, pf: sqlite3.Row, mains: list[sqlite3.Row], o: Any, danger: dict[str, Any],
          cash_extra: float = 0.0, skip_id: int | None = None) -> tuple[float, str]:
     """この入れる先に入れてよい額（建玉の額）と、いちばん効いた上限の名前。"""
+    usd, why, _code = _room(config, pf, mains, o, danger, cash_extra, skip_id)
+    return usd, why
+
+
+def _room(config: Config, pf: sqlite3.Row, mains: list[sqlite3.Row], o: Any, danger: dict[str, Any],
+          cash_extra: float = 0.0, skip_id: int | None = None) -> tuple[float, str, str]:
+    """room と同じ。いちばん効いた上限の記号（DROP_JA のキー）も返す（見回りの内訳の記録のため）。"""
     n6 = config.n6
     total = float(pf["total_usd"])
     small = total < riskscore.SMALL_CAPITAL_USD
     level = danger.get("level") or "very_high"
     rows = [r for r in mains if r["id"] != skip_id]
-    caps = [(float(pf["cash_usd"]) + cash_extra, "置いていないお金")]
+    caps = [(float(pf["cash_usd"]) + cash_extra, "置いていないお金", "cash")]
     rec = riskscore.recommend(level, {"total_usd": total, "per_venue_share": None if small else n6.per_venue_share},
                               None)
-    caps.append((rec["usd"] or 0.0, f"危なさ {riskscore.LABEL.get(level, level)} の上限（資金の {rec['pct']:g}%）"))
+    caps.append((rec["usd"] or 0.0, f"危なさ {riskscore.LABEL.get(level, level)} の上限（資金の {rec['pct']:g}%）", "danger_cap"))
     venue_cap = total if small else n6.per_venue_share * total
     used = sum(float(r["amount_usd"]) for r in rows if r["venue"] == o.base.venue)
-    caps.append((venue_cap - used, f"1つの会場の上限（{'小資金なので全部' if small else f'{n6.per_venue_share * 100:g}%'}）"))
+    caps.append((venue_cap - used, f"1つの会場の上限（{'小資金なので全部' if small else f'{n6.per_venue_share * 100:g}%'}）",
+                 "venue_cap"))
     if level in ("high", "very_high") and not small:
         hi = 0.0
         for r in rows:
             e = json.loads(r["entry_json"] or "{}")
             if e.get("danger") in ("high", "very_high"):
                 hi += float(r["amount_usd"])
-        caps.append((total * riskscore.HIGH_TOTAL_PCT / 100 - hi, f"危なさが高い場所の合計（{riskscore.HIGH_TOTAL_PCT:g}%）"))
-    usd, why = min(caps, key=lambda c: c[0])
-    return max(0.0, usd), why
+        caps.append((total * riskscore.HIGH_TOTAL_PCT / 100 - hi, f"危なさが高い場所の合計（{riskscore.HIGH_TOTAL_PCT:g}%）",
+                     "high_total"))
+    usd, why, code = min(caps, key=lambda c: c[0])
+    return max(0.0, usd), why, code
 
 
 def lighter_room(config: Config, pf: sqlite3.Row, mains: list[sqlite3.Row], skip_id: int | None = None) -> float:
@@ -182,15 +191,25 @@ def fit(config: Config, pf: sqlite3.Row, mains: list[sqlite3.Row], o: Any, dange
     """上限に収まるいちばん大きい額の段と、その見込み（控えめ）。収まらなければ (None, None, 理由)。
 
     プールに置く分は、プールの預かり額の 5%（max_pool_share）まで（指示書 13）。保険の預け金は Lighter の上限まで。"""
-    cap, why = room(config, pf, mains, o, danger, cash_extra, skip_id)
+    a, v, why, _code = _fit(config, pf, mains, o, danger, hedge, amount, cash_extra, skip_id)
+    return a, v, why
+
+
+def _fit(config: Config, pf: sqlite3.Row, mains: list[sqlite3.Row], o: Any, danger: dict[str, Any], hedge: bool | None,
+         amount: float | None = None, cash_extra: float = 0.0, skip_id: int | None = None
+         ) -> tuple[float | None, Any, str, str]:
+    """fit と同じ。収まらなかったときに効いた上限の記号（DROP_JA のキー）も返す。"""
+    cap, why, code = _room(config, pf, mains, o, danger, cash_extra, skip_id)
     lroom = lighter_room(config, pf, mains, skip_id)
     ladder = sorted(config.n6.amounts_usd, reverse=True)
     if amount is not None:
         ladder = [amount]
     reason = f"入れられる額 ${cap:,.0f}（{why}）"
+    tried = hit = False
     for a in ladder:
         if a > cap + 1e-9:
             continue
+        tried = True
         cands = []
         for h in ((True, False) if hedge is None else (hedge,)):
             v = variant(o, a, h)
@@ -199,14 +218,18 @@ def fit(config: Config, pf: sqlite3.Row, mains: list[sqlite3.Row], o: Any, dange
             if o.cap_usd is not None and v.split.get("pool", 0.0) > o.cap_usd + 1e-9:
                 reason = f"プールに置く分 ${v.split.get('pool', 0):,.0f} がプールの {config.opportunities.max_pool_share * 100:g}% " \
                          f"（${o.cap_usd:,.0f}）をこえる"
+                code, hit = "pool_5pct", True
                 continue
             if v.split.get("hedge_margin", 0.0) > lroom + 1e-9:
                 reason = f"保険の預け金 ${v.split.get('hedge_margin', 0):,.0f} が Lighter の上限の残り ${lroom:,.0f} をこえる"
+                code, hit = "lighter", True
                 continue
             cands.append(v)
         if cands:
-            return a, max(cands, key=lambda v: v.net_after_move), why
-    return None, None, reason
+            return a, max(cands, key=lambda v: v.net_after_move), why, code
+    if tried and not hit:
+        code = "no_variant"
+    return None, None, reason, code
 
 
 def _blocked(conn: sqlite3.Connection, pid: str, key: str, now: datetime, hours: float) -> str | None:
@@ -249,6 +272,118 @@ def candidates(conn: sqlite3.Connection, mk: Market, config: Config, pf: sqlite3
     return out
 
 
+# --- 見回りの内訳（記録だけ。入る・出るの判断には使わない） ------------------------------------------------
+
+# 入れなかった理由の記号と日本語。candidates と同じ順に調べる
+DROP_JA = {
+    "not_computable": "計算できない", "excluded": "外す印がある", "venue_uncertain": "会場の見分けが不確か",
+    "kind": "種類が対象外（貸し出しなど）", "held": "もう入っている", "below_target": "狙い利回りに届かない",
+    "danger": "危なさが上限をこえる", "blocked": "出たばかり・新しく入るのを止めている",
+    "cash": "置いていないお金が足りない", "danger_cap": "危なさごとの1か所の上限", "venue_cap": "1つの会場の上限",
+    "high_total": "危なさ「高い」の合計の上限", "pool_5pct": "プールの5%上限", "lighter": "保険の預け金（Lighter の上限）",
+    "no_variant": "この額で計算できる形がない", "below_target_at_amount": "入れられる額では狙い利回りに届かない",
+    "ok": "入れられる",
+}
+CAP_CODES = ("cash", "danger_cap", "venue_cap", "high_total", "pool_5pct", "lighter", "no_variant", "below_target_at_amount")
+
+
+def _reach_apr(o: Any, amounts: list[float]) -> float | None:
+    """額の段のどれかで出せるいちばん高い控えめの年利（上限を考えない）。狙いに届く入れる先かを数えるため。"""
+    aprs = [b.apr_pct for a in amounts if (b := o.best(a)) is not None]
+    return max(aprs) if aprs else None
+
+
+def funnel(conn: sqlite3.Connection, mk: Market, config: Config, pf: sqlite3.Row, mains: list[sqlite3.Row],
+           danger: Danger, target: float, now: datetime) -> dict[str, Any]:
+    """15分ごとの回の「なぜ入らなかったか」の内訳（指示書 2026-10-08 の 4・5・7）。
+
+    candidates と同じ順・同じ判断で、入れる先ごとに最初に引っかかった理由を1つ数える（読むだけ。何も書かない）。
+    final は candidates の数と同じになる。狙いに届く（reach）= 計算できる入れる先で、額の段のどれかで控えめの年利が
+    狙い以上（上限・印・会場の見分けを考えない）。reach_dropped はそのうち入れなかった理由の数。
+    best_miss（いちばん惜しかった）は、印・会場の見分け・種類で外れていないものの中で、年利がいちばん高い入れなかった先。"""
+    held = {r["opp_key"] for r in mains}
+    max_rank = LEVEL_RANK[config.n6.max_danger]
+    amounts = list(config.n6.amounts_usd)
+    counts: dict[str, int] = {}
+    reach_codes: dict[str, str] = {}      # 狙いに届く入れる先ごとの理由（$1,000 と $10,000 の差を比べるため）
+    reach_rows: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    for o in mk.ops.values():
+        k = o.base.key
+        if not o.computable:
+            code = "not_computable"
+        elif o.excluded:
+            code = "excluded"
+        elif o.uncertain_venue:
+            code = "venue_uncertain"
+        elif o.kind not in KINDS:
+            code = "kind"
+        elif k in held:
+            code = "held"
+        else:
+            code = None
+        reach = _reach_apr(o, amounts) if o.computable else None
+        why = ""
+        fit_apr: float | None = None
+        d: dict[str, Any] = {}
+        if code is None:
+            if o.best(amounts[0]) is None:
+                code = "not_computable"
+            else:
+                d = danger.of(o)
+                blocked = None
+                if LEVEL_RANK.get(d.get("level") or "very_high", 99) > max_rank:
+                    code = "danger"
+                elif (blocked := _blocked(conn, pf["id"], k, now, config.n6.reenter_block_hours)):
+                    code, why = "blocked", blocked
+                else:
+                    a, v, why, cap_code = _fit(config, pf, mains, o, d, None)
+                    if a is None or v is None:
+                        code = cap_code
+                    else:
+                        fit_apr = v.apr_pct
+                        if v.apr_pct < target:
+                            code = "below_target" if reach is None or reach < target else "below_target_at_amount"
+                            why = f"${a:,.0f} では {v.apr_pct:.1f}%"
+                        else:
+                            code = "ok"
+                if code in ("danger", "blocked") or code in CAP_CODES:
+                    # 狙いに届かない入れる先は、ほかの理由より「狙いに届かない」を先に数える（指示書の数え方）
+                    if reach is None or reach < target:
+                        code = "below_target"
+        counts[code] = counts.get(code, 0) + 1
+        if reach is not None and reach >= target:
+            reach_codes[k] = code
+            reach_rows.append({"key": k, "name": o.base.name, "venue": o.base.venue_name or o.base.venue, "code": code,
+                               "apr_pct": round(reach, 2), "why": why or None})
+        if code not in ("not_computable", "excluded", "venue_uncertain", "kind", "held") and reach is not None:
+            apr = fit_apr if fit_apr is not None else reach
+            rows.append({"key": k, "name": o.base.name, "venue": o.base.venue_name or o.base.venue,
+                         "chain": o.base.chain, "chain_name": o.base.chain_name, "apr_pct": round(apr, 2),
+                         "reach_apr_pct": round(reach, 2), "danger": d.get("level"), "danger_label": d.get("label"),
+                         "code": code, "reason": DROP_JA.get(code, code) + (f"（{why}）" if why and code != "ok" else ""),
+                         "gap_pt": round(target - apr, 2)})
+    reach_n = len(reach_codes)
+    misses = sorted((r for r in rows if r["code"] != "ok"), key=lambda r: (-r["apr_pct"], r["key"]))
+    return {
+        "total": len(mk.ops), "target": target, "counts": counts,
+        "usable": sum(n for c, n in counts.items() if c not in ("not_computable", "excluded", "venue_uncertain", "kind")),
+        "reach": reach_n,
+        "reach_dropped": {c: n for c, n in _count(reach_codes.values()).items() if c != "ok"},
+        "final": counts.get("ok", 0),
+        "reach_rows": reach_rows,
+        "best_miss": misses[0] if misses else None,
+        "near": misses[:5],
+    }
+
+
+def _count(xs: Any) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for x in xs:
+        out[x] = out.get(x, 0) + 1
+    return out
+
+
 def pick_reason(c: dict[str, Any], target: float) -> str:
     v, o, d = c["variant"], c["op"], c["danger"]
     parts = [f"控えめの見込みの年利 {v.apr_pct:.1f}%（狙い {target:g}% 以上・入る出る費用のあと）",
@@ -271,7 +406,7 @@ def open_position(conn: sqlite3.Connection, mk: Market, config: Config, pid: str
         if o.kind == "pool_range" else None
     est = {"new": est_of(v), "old": est_of(old), "target": target, "danger": danger.get("level"),
            "danger_label": danger.get("label"), "bonus_usd_per_day": o.base.bonus_usd_per_day, "tvl_usd": o.base.tvl_usd,
-           "days_left": o.base.days_left, "denominators": o.denominators, "split": v.split}
+           "days_left": o.base.days_left, "denominators": o.denominators, "split": v.split, "cap_usd": o.cap_usd}
     st = sim.open_state(mk=mk, op=o, variant=v, r=r, hedge_markets=_hedge_markets(mk, o) if v.hedge else {},
                         now=now, est=est)
     st["denoms"] = {str(d["campaign_id"]): d["in_range_share"] for d in o.denominators if d.get("use") == "B"}
@@ -718,6 +853,14 @@ def run_portfolio(conn: sqlite3.Connection, mk: Market, config: Config, pid: str
     pf = conn.execute("SELECT * FROM n6_portfolios WHERE id=?", (pid,)).fetchone()
     # アプリ任せ: 空いたお金で入れる（オーナーを待たない）
     waiting = None
+    fun: dict[str, Any] | None = None
+    if pf["picker"] == "app" and not blind:
+        # 入る前の内訳（記録だけ。失敗しても見回りは止めない）
+        try:
+            fun = funnel(conn, mk, config, pf, _open_mains(conn, pid), danger, target, now)
+            fun["state"] = "stopped" if pf["status"] != "running" else ("no_new" if _pf_state(pf).get("no_new") else "running")
+        except Exception as exc:  # noqa: BLE001
+            fun = {"error": f"{type(exc).__name__}: {exc}"}
     if blind:
         waiting = "入れる先の一覧が読めない回（見送り）"
     elif pf["picker"] == "app" and pf["status"] == "running" and not _pf_state(pf).get("no_new"):
@@ -741,6 +884,9 @@ def run_portfolio(conn: sqlite3.Connection, mk: Market, config: Config, pid: str
             out["entered"] += 1
     eq, placed, cash = _equity(conn, pid)
     detail = {"loss": ls, "waiting": waiting, "status": pf["status"]}
+    if fun is not None:
+        fun["entered"] = out["entered"]
+        detail["funnel"] = fun
     conn.execute("INSERT OR REPLACE INTO n6_portfolio_marks(portfolio_id, ts, equity_usd, placed_usd, cash_usd, detail_json) "
                  "VALUES (?,?,?,?,?,?)", (pid, _iso(now), eq, placed, cash, json.dumps(detail, ensure_ascii=False, default=str)))
     out.update(equity=eq, placed=placed, cash=cash, status=pf["status"], waiting=waiting,

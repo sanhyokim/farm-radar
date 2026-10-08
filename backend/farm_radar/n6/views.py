@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ..config import Config
-from . import sim
+from . import report, sim
 from .engine import LEVEL_JA, PICKER_JA, REASONS_JA
 
 RULE_JA = {
@@ -82,9 +82,11 @@ def _twin_compare(conn: sqlite3.Connection, main: dict[str, Any]) -> dict[str, A
     if tw is None:
         return None
     t = position_row(tw)
-    keys = ("pnl_usd", "price_move_usd", "hedge_usd", "funding_usd", "bonus_usd", "max_drawdown_usd", "rebalances")
+    keys = ("pnl_usd", "pnl_pct", "price_move_usd", "hedge_usd", "hedge_cost_usd", "funding_usd", "bonus_usd",
+            "max_drawdown_usd", "rebalances", "status", "closed_at", "exit_reason", "exit_rule_ja")
     with_h, without = (main, t) if main["hedge"] else (t, main)
     return {"main_id": main["id"], "name": main["name"], "amount_usd": main["amount_usd"], "status": main["status"],
+            "opened_at": main["opened_at"], "closed_at": main["closed_at"], "exit_reason": main["exit_reason"],
             "hedged": {k: with_h.get(k) for k in keys} | {"margin": with_h.get("margin"), "id": with_h["id"]},
             "unhedged": {k: without.get(k) for k in keys} | {"id": without["id"]}}
 
@@ -158,6 +160,7 @@ def overview(conn: sqlite3.Connection, config: Config) -> dict[str, Any]:
                              "rule": r["rule"], "rule_ja": RULE_JA.get(r["rule"] or "", r["rule"]), "count": r["n"]}
                             for r in rules],
             "twins": [c for c in (_twin_compare(conn, x) for x in rows) if c],
+            "funnel": report.funnel_view(md), "last_mark_at": mark["ts"] if mark else None,
         })
     by = {p["id"]: p for p in pfs}
     app_vs_own = []
@@ -195,6 +198,10 @@ def overview(conn: sqlite3.Connection, config: Config) -> dict[str, Any]:
         "portfolios": pfs, "app_vs_own": app_vs_own, "shadow": _shadow(conn), "events": events, "requests": reqs,
         "bonus_sales": {"count": sales[0], "usd": sales[1], "cost_usd": sales[2]},
         "owner_sizes": list(n6.owner_portfolios),
+        "ticks": conn.execute("SELECT COUNT(*) FROM n6_ticks").fetchone()[0],
+        "first_entries": report.first_entries(conn, config),
+        "cap_diff": report.cap_diff(conn, limit_ticks=96 * 7),
+        "health": report.health(conn, config),
     }
 
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { postApi, useApi } from "../api";
-import { jst, pct, signedUsd, usd } from "../format";
+import { jst, pct, plainPct, signedUsd, usd } from "../format";
 import { Icon } from "../icons";
 import { Card, Fold, Folds, Line, Loading, Note, PageHead, Pill, Segmented, Spark } from "../ui";
 
@@ -23,8 +23,32 @@ export interface N6Pos {
   valued_at: string | null; days: number; margin: Margin | null; bonus_hold?: HoldDiff;
 }
 interface TwinSide { pnl_usd: number | null; price_move_usd: number | null; hedge_usd: number | null; funding_usd: number | null;
-  bonus_usd: number | null; max_drawdown_usd: number | null; rebalances: number | null; id: number; margin?: Margin | null }
-interface Twin { main_id: number; name: string | null; amount_usd: number; status: string; hedged: TwinSide; unhedged: TwinSide }
+  hedge_cost_usd?: number | null; bonus_usd: number | null; max_drawdown_usd: number | null; rebalances: number | null; id: number;
+  margin?: Margin | null; closed_at?: string | null; exit_reason?: string | null }
+interface Twin { main_id: number; name: string | null; amount_usd: number; status: string; opened_at?: string;
+  closed_at?: string | null; exit_reason?: string | null; hedged: TwinSide; unhedged: TwinSide }
+interface Miss { key: string; name: string | null; venue: string | null; chain: string | null; chain_name: string | null;
+  apr_pct: number; danger: string | null; danger_label: string | null; code: string; reason: string; gap_pt: number;
+  portfolio_id?: string; ts?: string }
+interface CodeN { code: string; ja: string; n: number }
+interface Funnel { error?: string; total: number; usable: number; reach: number; final: number; target: number; entered: number;
+  state: string; reach_cap_dropped: number; reach_danger_dropped: number; reach_dropped: CodeN[]; counts: CodeN[];
+  best_miss: Miss | null; near: Miss[]; reason: string | null }
+interface FirstEntry { portfolio_id: string; size_ja: string; picker_ja: string; started_at: string; entered: boolean;
+  position_id?: number; opened_at?: string; waited_hours?: number; name?: string | null; pair?: string | null; venue?: string | null;
+  chain_name?: string | null; amount_usd?: number; est_apr_pct?: number | null; danger_label?: string | null; hedge?: boolean;
+  pick_reason?: string | null }
+interface CapDiff { small: string; big: string; ticks: number; latest_ts: string | null;
+  latest: { key: string; name: string | null; venue: string | null; apr_pct: number; small_ja: string; big_ja: string }[];
+  tally: { small_ja: string; big_ja: string; n: number }[] }
+interface Health { ok: boolean; checked_at: string; problems: string[]; notes: string[]; last_tick: string | null; ticks: number }
+interface DailyPf { id: string; size_ja: string; picker_ja: string; waiting_ticks: number; entered: number; exited: number; moved: number;
+  max_positions: number; pnl_usd: number; pnl_pct: number | null; max_drawdown_usd: number;
+  wait_reasons: { text: string; n: number }[]; exit_reasons: { text: string; n: number }[] }
+interface DailyRow { date: string; ticks: number; ticks_ok: number; ticks_failed: number; portfolios: DailyPf[]; max_positions: number;
+  wait_reasons: { text: string; n: number }[]; exit_reasons: { text: string; n: number }[]; best_miss: Miss | null;
+  hedge_vs: { pairs: number; hedged_pnl_usd: number; unhedged_pnl_usd: number };
+  new_vs_old: { rebalances_new: number; rebalances_old: number; loss_day_new: number; loss_day_old: number } }
 interface LossRow { pct: number; usd: number; base: number; level: string | null; line: Record<string, number> }
 interface Portfolio {
   id: string; picker: "app" | "owner"; picker_ja: string; total_usd: number; status: string; stopped_reason: string | null;
@@ -32,7 +56,7 @@ interface Portfolio {
   max_drawdown_usd: number; loss: { periods: Record<string, LossRow>; old_day_level: string | null } | null;
   waiting: string | null; open: N6Pos[]; closed: N6Pos[];
   rules_fired: { action: string; action_ja: string; rule: string | null; rule_ja: string | null; count: number }[];
-  twins: Twin[];
+  twins: Twin[]; funnel: Funnel | null;
 }
 interface N6Event { id: number; ts: string; portfolio_id: string | null; position_id: number | null; action: string;
   action_ja: string; rule: string | null; rule_ja: string | null; stage: number | null; shadow: number; message_ja: string }
@@ -48,6 +72,7 @@ interface N6Overview {
     bonus: { split: number; a: number }; loss_day_events: { new: number; old: number } };
   events: N6Event[]; requests: { id: number; ts: string; portfolio_id: string; opp_key: string; status: string; message_ja: string | null }[];
   bonus_sales: { count: number; usd: number; cost_usd: number }; owner_sizes: number[];
+  ticks?: number; first_entries?: FirstEntry[]; cap_diff?: CapDiff | null; health?: Health;
 }
 interface N6Detail extends N6Pos {
   entry: Record<string, unknown> | null; marks: { ts: string; value_usd: number; pnl_usd: number }[];
@@ -81,6 +106,14 @@ export function N6Section() {
       </div>
       <p className="cap">{data.virtual_ja}{data.last_tick ? ` 最後の見回り ${jst(data.last_tick.ts)}${data.last_tick.ok ? "" : "（失敗）"}。15分ごと。` : " まだ見回っていません（パソコンの更新のあと15分以内に始まります）。"}</p>
       {data.last_tick && !data.last_tick.ok && <Note>見回りに失敗しました: {data.last_tick.error}</Note>}
+      {data.health && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Pill tone={data.health.ok ? "g" : "r"} icon={data.health.ok ? "check" : undefined}>
+            {data.health.ok ? "異常なし" : `異常 ${data.health.problems.length} 件`}
+          </Pill>
+          <span className="cap">見回り {data.health.ticks} 回</span>
+        </div>
+      )}
       <Segmented options={sizes.map((s) => ({ key: s, label: sizeLabel(Number(s)) }))} value={size} onChange={setSize} />
       <Segmented options={[{ key: "app" as const, label: "アプリ任せ" }, { key: "owner" as const, label: "自分で選ぶ" }]} value={picker} onChange={setPicker} />
       {pf ? <PortfolioBody pf={pf} data={data} onChanged={reload} /> : (
@@ -89,11 +122,14 @@ export function N6Section() {
           : "まだ始まっていません。"}</Note>
       )}
       <Folds>
+        <Fold title="毎日のまとめ"><DailyBody /></Fold>
+        <Fold title="$1,000 と $10,000 の上限の差"><CapDiffBody d={data.cap_diff ?? null} /></Fold>
         <Fold title="保険あり／なしの比べ（同じ額・同じ時刻・同じ幅）"><TwinsBody pf={pf} /></Fold>
         <Fold title="アプリ任せ／自分で選ぶの比べ"><AppVsOwn data={data} /></Fold>
         <Fold title="前の決まりと新しい決まりの比べ（影の計算）"><ShadowBody data={data} /></Fold>
         <Fold title="最近の出来事"><EventList events={data.events.filter((e) => !pf || e.portfolio_id === pf.id)} /></Fold>
         <Fold title="決まり（仮）"><RulesBody data={data} /></Fold>
+        <Fold title="異常のチェック"><HealthBody h={data.health} /></Fold>
       </Folds>
     </section>
   );
@@ -120,7 +156,8 @@ function PortfolioBody({ pf, data, onChanged }: { pf: Portfolio; data: N6Overvie
           }}>再開する</button>
         </div>
       )}
-      {pf.waiting && <p className="cap">待っている理由: {pf.waiting}</p>}
+      <FirstEntryCard fe={data.first_entries?.find((f) => f.portfolio_id === pf.id)} />
+      {pf.funnel ? <FunnelCard f={pf.funnel} /> : pf.waiting && <p className="cap">待っている理由: {pf.waiting}</p>}
       {reqs.length > 0 && <p className="cap">申し込み中 {reqs.length} 件（次の15分ごとの見回りで入ります）</p>}
       {loss && (
         <div className="flex flex-wrap gap-2">
@@ -187,10 +224,138 @@ function TwinsBody({ pf }: { pf?: Portfolio }) {
             <span>預け金</span><span className="num">{usd(t.hedged.margin?.equity)}</span><span className="num">—</span>
             <span>足したとしたら</span><span className="num">{t.hedged.margin ? `${t.hedged.margin.topups} 回・${usd(t.hedged.margin.topup_usd)}` : "—"}</span><span className="num">—</span>
             <span>大きく下がった幅</span><span className="num">{usd(t.hedged.max_drawdown_usd)}</span><span className="num">{usd(t.unhedged.max_drawdown_usd)}</span>
+            <span>保険の費用</span><span className="num">{usd(t.hedged.hedge_cost_usd)}</span><span className="num">—</span>
           </div>
+          {t.closed_at && <span className="cap">出た時刻 {jst(t.closed_at)}・出た理由 {t.exit_reason ?? "—"}（対も同じ時刻に閉じます）</span>}
         </div>
       ))}
       <Note>対（反対側）は比べるためだけの仮想の建玉で、練習の総額・上限・損の線には数えません。</Note>
+    </div>
+  );
+}
+
+function FirstEntryCard({ fe }: { fe?: FirstEntry }) {
+  if (!fe) return null;
+  if (!fe.entered) return <p className="cap">まだ1度も入っていません（{jst(fe.started_at)} から見回っています）。</p>;
+  return (
+    <div className="inset flex flex-col gap-2 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <span className="label">初めて入った</span>
+        <Pill tone="g">{fe.size_ja}・{fe.picker_ja}</Pill>
+      </div>
+      <Link to={`/practice/n6/${fe.position_id}`} className="bold" style={{ overflowWrap: "anywhere" }}>{fe.name ?? fe.pair}</Link>
+      <Line k="入った日時" v={jst(fe.opened_at ?? "")} />
+      <span className="cap">練習を始めてから {(fe.waited_hours ?? 0).toFixed(1)} 時間後</span>
+      <Line k="会場・チェーン" v={`${fe.venue ?? "—"}・${fe.chain_name ?? "—"}`} />
+      <Line k="仮想で入れた額" v={usd(fe.amount_usd ?? null, 0)} />
+      <Line k="始めたときの年利（控えめ）" v={plainPct(fe.est_apr_pct ?? null, 1)} />
+      <Line k="危なさ・保険" v={`${fe.danger_label ?? "—"}・${fe.hedge ? "保険あり" : "保険なし"}`} />
+      <span className="cap">選んだ理由: {fe.pick_reason ?? "—"}</span>
+    </div>
+  );
+}
+
+function MissLine({ m, target }: { m: Miss; target?: number }) {
+  return (
+    <span className="cap" style={{ overflowWrap: "anywhere" }}>
+      {m.name}（{m.venue ?? "—"}・{m.chain_name ?? m.chain ?? "—"}）／ 控えめの年利 {plainPct(m.apr_pct, 1)} ／ 危なさ {m.danger_label ?? "—"}
+      {m.gap_pt > 0 ? ` ／ 狙い${target != null ? ` ${target}%` : ""}まであと ${m.gap_pt.toFixed(1)}pt` : ""} ／ {m.reason}
+    </span>
+  );
+}
+
+function FunnelCard({ f }: { f: Funnel }) {
+  if (f.error) return <Note>この回の内訳を記録できませんでした: {f.error}（入る・出るの判断は続いています）</Note>;
+  const find = (c: string) => f.reach_dropped.find((x) => x.code === c)?.n ?? 0;
+  return (
+    <div className="inset flex flex-col gap-2 p-4">
+      <span className="label">この回の候補（{f.entered > 0 ? `${f.entered} つ入った` : "入らなかった"}）</span>
+      {f.reason && <span className="cap">入らなかった理由: {f.reason}</span>}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 cap">
+        <span>候補の数</span><span className="num">{f.total}</span>
+        <span>計算できて使える</span><span className="num">{f.usable}</span>
+        <span>年{f.target}%以上</span><span className="num">{f.reach}</span>
+        <span>　うち上限で落ちた</span><span className="num">{f.reach_cap_dropped}</span>
+        <span>　うち危なさで落ちた</span><span className="num">{f.reach_danger_dropped}</span>
+        <span>　うち5%上限</span><span className="num">{find("pool_5pct")}</span>
+        <span>　うち会場の上限</span><span className="num">{find("venue_cap")}</span>
+        <span>　うち保険の預け金</span><span className="num">{find("lighter")}</span>
+        <span>最後に入れる候補</span><span className="num">{f.final}</span>
+      </div>
+      {f.best_miss && (
+        <div className="flex flex-col gap-1">
+          <span className="bold">いちばん惜しかった候補</span>
+          <MissLine m={f.best_miss} target={f.target} />
+          {f.best_miss.gap_pt > 0 && <span className="cap">狙いの年{f.target}% 未満の候補には入りません（待つのも練習のうち）。</span>}
+        </div>
+      )}
+      {f.counts.length > 0 && (
+        <Folds>
+          <Fold title="すべての候補の内訳">
+            <div className="flex flex-col gap-1">{f.counts.map((c) => <Line key={c.code} k={c.ja} v={`${c.n}`} />)}</div>
+          </Fold>
+        </Folds>
+      )}
+    </div>
+  );
+}
+
+function CapDiffBody({ d }: { d: CapDiff | null }) {
+  if (!d) return <p className="cap">$1,000 と $10,000 のアプリ任せの練習がそろうと比べます。</p>;
+  if (d.ticks === 0) return <p className="cap">内訳の記録がまだありません（パソコンの更新のあとの見回りから記録します）。</p>;
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="cap">最近 {d.ticks} 回の見回りで、年30%以上の同じ候補の扱いが $1,000 と $10,000 で分かれた数（左が $1,000、右が $10,000）。</span>
+      {d.tally.length === 0 ? <p className="cap">分かれたことはありません。</p> :
+        d.tally.map((t, i) => <Line key={i} k={`${t.small_ja} ／ ${t.big_ja}`} v={`${t.n} 回`} />)}
+      {d.latest.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="bold">最後の回（{jst(d.latest_ts ?? "")}）</span>
+          {d.latest.map((x) => <span key={x.key} className="cap">{x.name}（{plainPct(x.apr_pct, 1)}）: $1,000 は {x.small_ja}、$10,000 は {x.big_ja}</span>)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DailyBody() {
+  const { data, error } = useApi<{ days: DailyRow[] }>("/api/n6/daily");
+  if (!data) return <Loading error={error} rows={2} />;
+  if (data.days.length === 0) return <p className="cap">まだ記録がありません。</p>;
+  return (
+    <div className="flex flex-col gap-4">
+      {data.days.map((d) => (
+        <div key={d.date} className="inset flex flex-col gap-2 p-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="bold shrink-0" style={{ whiteSpace: "nowrap" }}>{d.date}</span>
+            <span className="cap text-right">見回り {d.ticks} 回{d.ticks_failed ? `（失敗 ${d.ticks_failed}）` : ""}・最大の建玉 {d.max_positions}</span>
+          </div>
+          {d.ticks === 0 && <span className="cap">この日は N6 の見回りがありません（パソコンが止まっていたなど）。</span>}
+          {d.ticks > 0 && d.portfolios.map((p) => (
+            <span key={p.id} className="cap">
+              {p.size_ja} {p.picker_ja}: 損益 {signedUsd(p.pnl_usd)}（{pct(p.pnl_pct, 2)}）・大きく下がった幅 {usd(p.max_drawdown_usd)}・
+              待った {p.waiting_ticks} 回・入った {p.entered}・出た {p.exited}・移った {p.moved}
+            </span>
+          ))}
+          {d.wait_reasons.length > 0 && <span className="cap">入れなかった主な理由: {d.wait_reasons.map((w) => `${w.text}（${w.n} 回）`).join("、")}</span>}
+          {d.best_miss && <span className="cap">その日いちばん惜しかった候補: {d.best_miss.name}（{plainPct(d.best_miss.apr_pct, 1)}・あと {d.best_miss.gap_pt.toFixed(1)}pt）</span>}
+          {d.exit_reasons.length > 0 && <span className="cap">出た主な理由: {d.exit_reasons.map((w) => `${w.text}（${w.n}）`).join("、")}</span>}
+          {d.hedge_vs.pairs > 0 && <span className="cap">保険あり {signedUsd(d.hedge_vs.hedged_pnl_usd)} ／ なし {signedUsd(d.hedge_vs.unhedged_pnl_usd)}（{d.hedge_vs.pairs} 組）</span>}
+          <span className="cap">置き直し 新 {d.new_vs_old.rebalances_new} 回 ／ 旧 {d.new_vs_old.rebalances_old} 回・1日の損の線の合図 新 {d.new_vs_old.loss_day_new} ／ 旧 {d.new_vs_old.loss_day_old}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HealthBody({ h }: { h?: Health }) {
+  if (!h) return <p className="cap">パソコンの更新のあとに出ます。</p>;
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="cap">確かめた時刻 {jst(h.checked_at)}・最後の見回り {h.last_tick ? jst(h.last_tick) : "—"}</span>
+      {h.ok ? <p className="cap">異常はありません（見回りの失敗・30分以上の空き・総額や5%上限の超え・重複・対の欠け・閉じ忘れ・$1,000 と $10,000 の混ざり・本物のお金のコード を確かめています）。</p>
+        : h.problems.map((p, i) => <Note key={i}>{p}</Note>)}
+      {h.notes.map((n, i) => <span key={i} className="cap">{n}</span>)}
     </div>
   );
 }

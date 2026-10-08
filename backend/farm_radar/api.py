@@ -256,6 +256,24 @@ def n6_api() -> dict:
         return n6_views.overview(conn, config)
 
 
+@app.get("/api/n6/daily")
+def n6_daily_api(days: int = 14) -> dict:
+    """N6 の1日ごとのまとめ（日本時間。新しい日が先）。建玉がない日も待った理由を出す。"""
+    from .n6 import report as n6_report
+
+    with _open() as (config, conn):
+        return {"days": n6_report.daily(conn, config, days=max(1, min(days, 60)))}
+
+
+@app.get("/api/n6/health")
+def n6_health_api() -> dict:
+    """N6 の異常のチェック（problems が空なら異常なし）。"""
+    from .n6 import report as n6_report
+
+    with _open() as (config, conn):
+        return n6_report.health(conn, config)
+
+
 @app.get("/api/n6/positions/{position_id}")
 def n6_position_api(position_id: int) -> dict:
     from .n6 import views as n6_views

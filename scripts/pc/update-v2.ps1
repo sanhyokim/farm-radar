@@ -32,7 +32,7 @@ $Live = Join-Path $Desk $Inner
 $Zip = Join-Path $Downloads 'farm-radar-v2-update.zip'
 $Log = Join-Path $Downloads "farm-radar-v2-update-$Stamp.txt"
 # 新しい版に入っているはずのファイル（無ければ古い ZIP なので止める）
-$MustHave = @('backend\farm_radar\n6\engine.py', 'backend\farm_radar\merkl_check.py', 'backend\farm_radar\trial_view.py', 'backend\farm_radar\final_prep.py', 'backend\farm_radar\merkl_ab.py', 'backend\farm_radar\feeds\pool_history.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
+$MustHave = @('backend\farm_radar\n6\report.py', 'backend\farm_radar\n6\engine.py', 'backend\farm_radar\merkl_check.py', 'backend\farm_radar\trial_view.py', 'backend\farm_radar\final_prep.py', 'backend\farm_radar\merkl_ab.py', 'backend\farm_radar\feeds\pool_history.py', 'backend\farm_radar\feeds\positions.py', 'backend\farm_radar\backtest.py', 'backend\farm_radar\feeds\trial.py', 'backend\farm_radar\feeds\shadow.py', 'scripts\pc\copy-18000.ps1', 'backend\farm_radar\feeds\vaults.py', 'backend\farm_radar\execution\loss_lines.py', 'backend\farm_radar\execution\hedge_guard.py', 'backend\farm_radar\riskscore.py', 'docker-compose.yml', 'scripts\pc\update-v2.ps1')
 
 $state = @{ stopped = $false; renamed = $false; moved = $false; started = $false }
 
@@ -533,10 +533,39 @@ try {
             }
         }
         Say "[N6] 最後の見回り: $($n6.last_tick.ts) / ok: $($n6.last_tick.ok) / 練習のまとまり: $(@($n6.portfolios | ForEach-Object { $_.id }) -join ', ')"
+        # 2026-10-08 指示書: 15分ごとの回の内訳（なぜ入らなかったか）といちばん惜しかった候補
+        foreach ($pf in @($n6.portfolios | Where-Object { $_.picker -eq 'app' })) {
+            $f = $pf.funnel
+            $label = '$' + ('{0:N0}' -f [double]$pf.total_usd)
+            if (-not $f) {
+                Say "[N6] $label アプリ任せ: 内訳はまだありません（次の15分ごとの回から記録します）"
+            } elseif ($f.error) {
+                $notes += "N6 の $label の内訳を記録できませんでした: $($f.error)"
+            } else {
+                Say ('[N6] {0} アプリ任せ: 候補 {1}・使える {2}・年{3}%以上 {4}・入れる {5}／理由: {6}' -f $label, $f.total, $f.usable, $f.target, $f.reach, $f.final, $f.reason)
+                if ($f.best_miss) {
+                    Say ('[N6] {0} いちばん惜しかった候補: {1}（{2}・{3}）/ {4:N1}% / 危なさ {5} / 狙いまであと {6:N1}pt' -f $label, $f.best_miss.name, $f.best_miss.venue, $f.best_miss.chain_name, [double]$f.best_miss.apr_pct, $f.best_miss.danger_label, [double]$f.best_miss.gap_pt)
+                }
+            }
+        }
     } catch {
         $notes += "N6 の練習の状態を読めませんでした（$($_.Exception.Message)）"
         $n6Lines[1000] = '$1,000 アプリ任せの練習: 確かめられませんでした'
         $n6Lines[10000] = '$10,000 アプリ任せの練習: 確かめられませんでした'
+    }
+
+    # N6 の異常のチェック（2026-10-08 指示書 13）。異常があっても戻さずに知らせるだけ
+    $n6Health = '確かめられませんでした'
+    try {
+        $h = Invoke-RestMethod "$NewApi/api/n6/health" -TimeoutSec 120
+        if ($h.ok) {
+            $n6Health = "なし（見回り $($h.ticks) 回）"
+        } else {
+            $n6Health = "あり $(@($h.problems).Count) 件: $(@($h.problems) -join ' / ')"
+            $notes += "N6 の異常: $(@($h.problems) -join ' / ')"
+        }
+    } catch {
+        $notes += "N6 の異常のチェックを読めませんでした（$($_.Exception.Message)）"
     }
 
     # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
@@ -565,6 +594,7 @@ try {
     Write-Host ("[結果] 更新: {0}" -f $(if ($notes.Count -eq 0) { '成功' } else { '成功（注意あり。下の「注意」を見てください）' })) -ForegroundColor $tone
     Say "[結果] 今の版（18000）: $v1。フォルダーとデータには触っていません"
     Say "[結果] N6準備完了: $n6Ready"
+    Say "[結果] N6の異常: $n6Health"
     Say "[結果] $($n6Lines[1000])"
     Say "[結果] $($n6Lines[10000])"
     Say '[結果] 本物のお金: 動いていません（N6 は 100% 仮想。送金・両替・署名・秘密鍵を使うコードはありません）'
