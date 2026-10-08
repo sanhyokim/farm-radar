@@ -333,6 +333,7 @@ def health(conn: sqlite3.Connection, config: Config, now: datetime | None = None
         age = (now - _t(tick["ts"])).total_seconds() / 60
         if age > STALE_MINUTES:
             problems.append(f"N6 の見回りが {age:.0f} 分ありません（{STALE_MINUTES} 分より長い）")
+    n_tick = len(problems)                  # ここまでは見回りの回の問題。ここから下は記録の食い違い（重大）
     pfs = {r["id"]: r for r in conn.execute("SELECT * FROM n6_portfolios")}
     rows = conn.execute("SELECT * FROM n6_positions").fetchall()
     by_id = {r["id"]: r for r in rows}
@@ -395,5 +396,8 @@ def health(conn: sqlite3.Connection, config: Config, now: datetime | None = None
     found = realmoney_scan.scan()
     if found:
         problems.append("本物のお金につながる言葉が N6 のコードにある: " + "、".join(found))
+    # serious: 記録の食い違いと本物のお金の言葉（更新の1行はこれがあれば止める。2026-10-08 指示書）。
+    # 見回りの回の問題（まだない・失敗・30分の空き）は、更新の1行が last_tick で別に確かめる
     return {"ok": not problems, "checked_at": now.isoformat(timespec="seconds"), "problems": problems, "notes": notes,
+            "serious": problems[n_tick:], "realmoney": found,
             "last_tick": tick["ts"] if tick else None, "ticks": conn.execute("SELECT COUNT(*) FROM n6_ticks").fetchone()[0]}

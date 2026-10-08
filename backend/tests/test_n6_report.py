@@ -126,8 +126,10 @@ def test_health_finds_problems(cfg):  # noqa: F811  （fixture）
     engine.tick(cfg, NOW, conn=conn)
     h = report.health(conn, cfg, NOW + timedelta(minutes=5))
     assert h["ok"], h["problems"]
-    # 30分より長く回がない
-    assert not report.health(conn, cfg, NOW + timedelta(minutes=45))["ok"]
+    assert h["serious"] == [] and h["realmoney"] == []
+    # 30分より長く回がない（見回りの回の問題。更新の1行は止めない = serious に入れない）
+    late = report.health(conn, cfg, NOW + timedelta(minutes=45))
+    assert not late["ok"] and late["serious"] == []
     # 失敗した回
     conn.execute("INSERT INTO n6_ticks(ts, ok, detail_json) VALUES (?, 0, ?)",
                  (engine._iso(NOW + timedelta(minutes=15)), json.dumps({"error": "試験"})))
@@ -141,6 +143,17 @@ def test_health_finds_problems(cfg):  # noqa: F811  （fixture）
     probs = " / ".join(report.health(conn, cfg, NOW + timedelta(minutes=16))["problems"])
     assert "失敗" in probs and "対が欠けている" in probs and "対が開いたまま" in probs
     assert "総額" in probs and "同じ入れる先" in probs
+    h2 = report.health(conn, cfg, NOW + timedelta(minutes=16))
+    ser = " / ".join(h2["serious"])                          # 記録の食い違いは重大（更新の1行が止める）
+    assert "失敗" not in ser and "対が欠けている" in ser and "総額" in ser and "同じ入れる先" in ser
+
+
+def test_health_real_money_hit_is_serious(cfg, monkeypatch):  # noqa: F811  （fixture）
+    conn = _conn(cfg)
+    engine.tick(cfg, NOW, conn=conn)
+    monkeypatch.setattr(realmoney_scan, "scan", lambda *a, **k: ["engine.py: private_key"])
+    h = report.health(conn, cfg, NOW + timedelta(minutes=5))
+    assert not h["ok"] and h["realmoney"] == ["engine.py: private_key"] and len(h["serious"]) == 1
 
 
 def test_no_real_money_code_scan():

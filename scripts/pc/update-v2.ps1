@@ -17,7 +17,8 @@ param(
     [string]$OldApi = 'http://localhost:18000',
     [string]$NewApi = 'http://localhost:18001',
     [string]$Docker = 'docker',
-    [int]$WaitMinutes = 30     # N5a で1日1回の読み取りが増えた。2026-10-04 から Merkl の全ページ（約160回）と預け方の歴史（150回）も起動のあとすぐ読む
+    [int]$WaitMinutes = 30,    # N6 の1回目の見回りを待つ時間。見回りは15分ごとの回のいちばん最後（起動のすぐあとは Merkl の全ページなどのあと）
+    [switch]$Full              # つけたときだけ、試すの記録・さかのぼり・試すの結果・最終判断の準備も読む（1つ最大15分。2026-10-08 指示書で外した）
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,6 +92,26 @@ function Fresh($src) {
     return ($src.status -ne 'running' -and $src.last_run_at -and ([datetime]$src.last_run_at).ToUniversalTime() -ge $since)
 }
 
+function IsTimeout($err) {
+    # 時間切れか（Windows PowerShell 5.1 は「処理がタイムアウトになりました。」、PowerShell 7 は別の形で出る）
+    $e = $err.Exception
+    while ($e) {
+        if ($e -is [System.TimeoutException] -or $e -is [System.Threading.Tasks.TaskCanceledException]) { return $true }
+        if ($e -is [System.Net.WebException] -and $e.Status -eq [System.Net.WebExceptionStatus]::Timeout) { return $true }
+        $e = $e.InnerException
+    }
+    return ("$($err.Exception.Message)" -match 'timed out|timeout|タイムアウト|時間切れ')
+}
+
+function ReadApi([string]$url) {
+    # N6 の確かめ用。返事が遅いときは、15秒あけてもう1回だけ試す（2回とも読めなければ、呼んだところで止める）
+    try { return Invoke-RestMethod $url -TimeoutSec 120 } catch {
+        Say "   返事が遅いので、15秒後にもう一度読みます（$url）……"
+        Start-Sleep -Seconds 15
+        return Invoke-RestMethod $url -TimeoutSec 120
+    }
+}
+
 function Running([object[]]$list, [string]$name) {
     foreach ($p in $list) { if ($p.Name -eq $name -and $p.Status -like 'running*') { return $true } }
     return $false
@@ -115,7 +136,7 @@ function OldState {
 try { Start-Transcript -Path $Log -Force | Out-Null } catch { }
 try {
     Say '新しい版（18001）を更新します。今の版（18000）には触りません。'
-    Say '終わるまで 15〜30 分ほどかかります。途中でこの画面を閉じないでください。'
+    Say '終わるまで 15〜30 分ほどかかります（いちばん長いのは N6 の1回目の見回りを待つところ）。途中でこの画面を閉じないでください。'
 
     # --- 1. 確かめる（まだ何も変えない） -------------------------------------------------------
     Step '1/9 今あるフォルダーと、動いているアプリを確かめる（何も変えません）'
@@ -188,111 +209,232 @@ try {
     $state.started = $true
     Ok '起動しました。'
 
-    # --- 8. 一覧を読み終わるまで待つ ------------------------------------------------------------
-    Step "8/9 一覧を読み終わるまで待つ（最大 $WaitMinutes 分。30秒ごとに確かめます）"
+    # --- 8. N6 の1回目の見回りまで待つ ---------------------------------------------------------
+    # 2026-10-08 指示書: 更新の成功の条件は N6 が中心。Merkl の全部のページ・預け方の歴史などの重い読み取りは、
+    # 終わるのを待たずに裏で続ける（前は全部の読み取りと Merkl の確かめを待っていて、確かめの API の時間切れで止まった）。
+    # N6 の見回りは15分ごとの回のいちばん最後に動くので、起動のすぐあとはほかの読み取りのあとになる
+    Step "8/9 N6 の1回目の見回りを待つ（最大 $WaitMinutes 分。30秒ごとに確かめます）"
+    Say '   N6 の見回りは、15分ごとの回のいちばん最後に動きます。起動のすぐあとは、ほかの読み取りが先なので 10〜25 分かかることがあります。'
+    $notes = @()                                    # 止めるほどではないが、送ってほしいこと
     $deadline = (Get-Date).AddMinutes($WaitMinutes)
     $fs = $null
-    # 起動のあとに1回読み終わるまで待つもの（前の回の数がまとめに出ないように）:
-    # 会場の見分け・Merkl の配った額（全部のページ）・預け方の歴史（2026-10-04 指示書: Merkl A/B の記録の始まりを確かめる）
-    # N6（2026-10-07 指示書）: 仮想のお金の練習の1回目（15分ごとの回のいちばん最後）
-    $mustRun = @('venue_checks', 'merkl_rewards', 'pool_history', 'n6_practice')
+    $n6s = $null
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 30
-        try { $fs = Invoke-RestMethod "$NewApi/api/feeds/status" -TimeoutSec 30 } catch { $fs = $null; Say '   まだ画面が起動していません……'; continue }
-        $busy = @($fs.sources | Where-Object { $_.status -eq 'running' -or $_.status -eq 'none' })
-        $stale = @($fs.sources | Where-Object { $mustRun -contains $_.id -and -not (Fresh $_) })
-        if ($busy.Count -eq 0 -and $stale.Count -eq 0) { break }
-        Say "   読んでいる途中: $((@($busy) + @($stale) | ForEach-Object { $_.id } | Select-Object -Unique) -join ', ')"
+        try { $got = Invoke-RestMethod "$NewApi/api/feeds/status" -TimeoutSec 30 } catch { Say '   まだ画面が起動していないか、返事が遅れています……'; continue }
+        $fs = $got
+        $n6s = @($fs.sources | Where-Object { $_.id -eq 'n6_practice' })[0]
+        if ($n6s -and (Fresh $n6s)) { break }
+        $busy = @($fs.sources | Where-Object { $_.status -eq 'running' } | ForEach-Object { $_.id })
+        Say "   N6 の見回りを待っています（いま読んでいる一覧: $(if ($busy.Count -gt 0) { $busy -join ', ' } else { '-' })）"
     }
     if ($null -eq $fs) { throw "$NewApi が答えません（新しい版が起動していません）。" }
+    if (-not $n6s) { throw '一覧に n6_practice（N6 の見回り）がありません（古い版のままかもしれません）。' }
+    if (-not (Fresh $n6s)) { throw "N6 の見回りが、起動のあと $WaitMinutes 分たっても一度も終わっていません（状態 $($n6s.status)・最後 $($n6s.last_run_at)）。" }
+    if ($n6s.status -ne 'ok') { throw "N6 の見回りが失敗しました（状態 $($n6s.status): $($n6s.error)）。" }
+    Ok "N6 の見回りが起動のあとに動きました（$($n6s.last_run_at)）。"
 
-    # --- 8 の続き. Merkl A/B の記録が始まったか（2026-10-04 指示書。始まっていなければ止める） -----------------
-    Step '8/9 の続き: Merkl A/B の記録が始まったかを確かめる'
-    $tr = Invoke-RestMethod "$NewApi/api/trial/records" -TimeoutSec 120
-    $ff = $tr.feeds
-    if (-not $ff -or -not $ff.tables) { throw '記録の数を読めません（/api/trial/records に新しい表の確かめがありません。古い版のままかもしれません）。' }
-    $noTable = @($ff.tables.PSObject.Properties | Where-Object { -not $_.Value } | ForEach-Object { $_.Name })
-    if ($noTable.Count -gt 0) { throw "データベースに新しい表が作られていません: $($noTable -join ', ')" }
-    Ok "新しい表はそろっています（$(@($ff.tables.PSObject.Properties).Count) 個）。"
+    # --- 8 の続き. N6 を確かめる（ここが更新の成功の条件。おかしければ止める） --------------------------------
+    Step '8/9 の続き: N6 を確かめる（仮想のお金・最後の見回り・$1,000 と $10,000・異常のチェック）'
+    try { $n6 = ReadApi "$NewApi/api/n6" } catch { throw "N6 の状態（/api/n6）を読めません: $($_.Exception.Message)" }
+    if ($n6.enabled -ne $true) { throw "N6 が動く設定になっていません（enabled: $($n6.enabled)）。" }
+    if ($n6.virtual -ne $true) { throw "N6 が仮想のお金になっていません（virtual: $($n6.virtual)）。すぐにこの画面の文字を送ってください。" }
+    if (-not $n6.last_tick) { throw 'N6 の見回りの記録がありません（データベースに書けていないかもしれません）。' }
+    if ($n6.last_tick.ok -ne $true) { throw "N6 の最後の見回りが失敗しました（ok: False）: $($n6.last_tick.error)" }
+    $n6Ready = 'はい'
+    $n6Lines = @{}
+    $n6Show = @()                                   # 9/9 のまとめに出す行（ここから下をコピーしてもらうので）
+    foreach ($size in @(1000, 10000)) {
+        $pf = @($n6.portfolios | Where-Object { $_.id -eq "app_$size" })[0]
+        $label = '$' + ('{0:N0}' -f $size)
+        if (-not $pf) { throw "N6 の $label アプリ任せの練習（app_$size）がありません。" }
+        if (@($pf.open).Count -gt 0) {
+            $n6Lines[$size] = ('{0} アプリ任せの練習: 動いています（建玉 {1} つ・置いた ${2:N0}・置いていない ${3:N0}）' -f $label, @($pf.open).Count, [double]$pf.placed_usd, [double]$pf.cash_usd)
+        } else {
+            $n6Lines[$size] = ('{0} アプリ任せの練習: 動いています（今は入れる先を待っています: {1}）' -f $label, $pf.waiting)
+        }
+    }
+    $n6Show += "[N6] 最後の見回り: $($n6.last_tick.ts) / ok: $($n6.last_tick.ok) / enabled: $($n6.enabled) / virtual: $($n6.virtual) / 練習のまとまり: $(@($n6.portfolios | ForEach-Object { $_.id }) -join ', ')"
+    # 2026-10-08 指示書: 15分ごとの回の内訳（なぜ入らなかったか）といちばん惜しかった候補（見せるだけ。読めなくても止めない）
+    try {
+        foreach ($pf in @($n6.portfolios | Where-Object { $_.picker -eq 'app' })) {
+            $f = $pf.funnel
+            $label = '$' + ('{0:N0}' -f [double]$pf.total_usd)
+            if (-not $f) {
+                $n6Show += "[N6] $label アプリ任せ: 内訳はまだありません（次の15分ごとの回から記録します）"
+            } elseif ($f.error) {
+                $notes += "N6 の $label の内訳を記録できませんでした: $($f.error)"
+            } else {
+                $n6Show += ('[N6] {0} アプリ任せ: 候補 {1}・使える {2}・年{3}%以上 {4}・入れる {5}／理由: {6}' -f $label, $f.total, $f.usable, $f.target, $f.reach, $f.final, $f.reason)
+                if ($f.best_miss) {
+                    $n6Show += ('[N6] {0} いちばん惜しかった候補: {1}（{2}・{3}）/ {4:N1}% / 危なさ {5} / 狙いまであと {6:N1}pt' -f $label, $f.best_miss.name, $f.best_miss.venue, $f.best_miss.chain_name, [double]$f.best_miss.apr_pct, $f.best_miss.danger_label, [double]$f.best_miss.gap_pt)
+                }
+            }
+        }
+    } catch {
+        $notes += "N6 の内訳を表示できませんでした（$($_.Exception.Message)）"
+    }
+    # N6 の異常のチェック（2026-10-08 指示書 13）。読めない・本物のお金の言葉・記録の重大な食い違いは止める
+    try { $h = ReadApi "$NewApi/api/n6/health" } catch { throw "N6 の異常のチェック（/api/n6/health）を読めません: $($_.Exception.Message)" }
+    if ($null -eq $h.ok -or $null -eq $h.PSObject.Properties['serious']) { throw 'N6 の異常のチェックの答えが思っていた形ではありません（古い版のままかもしれません）。' }
+    $realHits = @($h.realmoney | Where-Object { $_ })
+    if ($realHits.Count -gt 0) { throw "本物のお金につながる言葉が N6 のコードにあります: $($realHits -join ' / ')。すぐにこの画面の文字を送ってください。" }
+    $serious = @($h.serious | Where-Object { $_ })
+    if ($serious.Count -gt 0) { throw "N6 の記録に重大な食い違いがあります（$($serious.Count) 件）: $($serious -join ' / ')" }
+    if ($h.ok) {
+        $n6Health = "なし（見回り $($h.ticks) 回）"
+    } else {
+        # ここに来るのは見回りの回の問題だけ（記録の食い違いは上で止めた）
+        $n6Health = "見回りの注意 $(@($h.problems).Count) 件（見回り $($h.ticks) 回）: $(@($h.problems) -join ' / ')"
+        $notes += "N6 の見回りの注意: $(@($h.problems) -join ' / ')"
+    }
+    Ok "N6 は仮想のお金で動いています。異常のチェック: $n6Health"
+
+    # --- 8 の続き. 今の版（18000）がそのまま動いているか（止まった・古くなったなら止める） ---------------------
+    Step '8/9 の続き: 今の版（18000）がそのまま動いているかを確かめる（読むだけ）'
+    $projects = Projects
+    if (-not (Running $projects $Inner)) { throw '今の版（18000）が止まっています。すぐにこの画面の文字を送ってください。' }
+    $after = OldState
+    $v1Show = @("[今の版] 前: eval: $($before.eval) / open: $($before.open) / stale: $($before.stale) / last_ok_at: $($before.last)",
+        "[今の版] 後: eval: $($after.eval) / open: $($after.open) / stale: $($after.stale) / last_ok_at: $($after.last)")
+    foreach ($x in $v1Show) { Say "   $x" }
+    if ($after.stale -eq 'True') { throw '今の版（18000）のデータが古くなっています（stale: True）。すぐにこの画面の文字を送ってください。' }
+    $v1 = 'そのまま動いています（前と同じ）'
+    if ($after.eval -ne $before.eval -or $after.open -ne $before.open) {
+        $v1 = '動いています（注意: 状態が前と違います）'
+        $notes += '今の版（18000）の状態（eval か open）が前と違います'
+    } else {
+        Ok '今の版はそのまま動いています。'
+    }
+
+    # --- 8 の続き. Merkl と預け方の歴史（軽い確かめ。重い読み取りは裏で続く。ここでは止めない） -----------------
+    Step '8/9 の続き: Merkl と預け方の歴史が動いているか（軽い確かめ。読み取りそのものは裏で続きます）'
+    try { $fs = Invoke-RestMethod "$NewApi/api/feeds/status" -TimeoutSec 30 } catch { }
     $mrs = @($fs.sources | Where-Object { $_.id -eq 'merkl_rewards' })[0]
     $phs = @($fs.sources | Where-Object { $_.id -eq 'pool_history' })[0]
-    if (-not $mrs -or -not $phs) { throw '一覧に merkl_rewards か pool_history がありません（古い版のままかもしれません）。' }
-    $notes = @()                                    # 止めるほどではないが、送ってほしいこと
-    $ms = $ff.merkl_sums
-    if (-not (Fresh $mrs)) { throw "Merkl の配った額が、起動のあとに一度も読まれていません（状態 $($mrs.status)・最後 $($mrs.last_run_at)）。" }
-    if ($mrs.status -eq 'rate_limited') {
-        $notes += 'Merkl が回数制限（429）を返しました。この回は何も書かずに、15分後にやり直します（記録は壊れません）。'
-    } elseif ($mrs.status -ne 'ok') {
-        throw "Merkl の配った額を読めませんでした（状態 $($mrs.status): $($mrs.error)）。"
-    } elseif (-not $ms -or [int]$ms.complete -lt 1) {
-        throw 'Merkl の配った額は読めましたが、全部のページを読めた記録（complete=1）が1件もありません。'
+    $broken = @()                                   # 記録が壊れているかもしれないもの（止めずに知らせる）
+    foreach ($s in @(@{ src = $mrs; name = 'Merkl の配った額（merkl_rewards）' }, @{ src = $phs; name = '預け方の歴史（pool_history）' })) {
+        if (-not $s.src) { $broken += "一覧に $($s.name) がありません"; continue }
+        if ($s.src.status -eq 'error') { $broken += "$($s.name) を読めませんでした（状態 error: $($s.src.error)）" }
+        elseif ($s.src.status -eq 'none') { $broken += "$($s.name) が一度も動いていません" }
+        elseif ($s.src.status -eq 'running') { Say "   $($s.name): 読んでいる途中です（裏で続きます）" }
+        elseif ($s.src.status -eq 'rate_limited') { Say "   $($s.name): 回数制限（429）。この回は何も書かずに、15分後にやり直します（記録は壊れません）" }
+        else { Say "   $($s.name): $($s.src.status)（最後 $($s.src.last_run_at)）" }
     }
-    $mStarted = $ms -and [int](N0 $ms.complete) -gt 0
-    if ($mStarted) { Ok "Merkl の全部のページの記録: complete=1 が $(N0 $ms.complete) 件（キャンペーン $(N0 $ms.complete_campaigns)）" }
-    if (-not (Fresh $phs)) { throw "預け方の歴史が、起動のあとに一度も読まれていません（状態 $($phs.status)・最後 $($phs.last_run_at)）。" }
-    if ($phs.status -ne 'ok') { throw "預け方の歴史を読めませんでした（状態 $($phs.status): $($phs.error)）。" }
-    $ph = $ff.pool_history
-    $lr = $ph.last_run
-    if (-not $lr) { throw '預け方の歴史の「この回の記録」がありません。' }
-    # 読まないと決めているプール（公式の住所と確かめられない・始まりから読むと多すぎる）は失敗ではない
-    $skipPools = @($ph.errors | Where-Object { $_.error -like '読む量が多すぎる*' -or $_.error -like 'PoolManager が公式*' })
-    $badPools = @($ph.errors | Where-Object { -not ($_.error -like '読む量が多すぎる*' -or $_.error -like 'PoolManager が公式*') })
-    if ($badPools.Count -gt 0) { $notes += "預け方の歴史を読めなかったプール $($badPools.Count) 個（次の回に続きから読みます）: $($badPools[0].error)" }
-    if ($ff.merkl_check -and @($ff.merkl_check.errors).Count -gt 0) { $notes += "Merkl の答え合わせを計算できなかったキャンペーン $(@($ff.merkl_check.errors).Count) 件" }
-    Ok '記録は始まっています。'
+    $allSrc = @($fs.sources)
+    $errSrc = @($allSrc | Where-Object { $_.status -eq 'error' })
+    if ($allSrc.Count -gt 0 -and $errSrc.Count -eq $allSrc.Count) { $broken += "すべての一覧（$($allSrc.Count) 個）が失敗しています" }
+    # 表がそろったか・Merkl の全部のページの記録・預け方の歴史の進み具合（light=1: 時間のかかる答え合わせは計算しない）
+    $ms = $null; $ph = $null; $lr = $null; $skipPools = @(); $mStarted = $false; $trOk = $false
+    try {
+        $tr = Invoke-RestMethod "$NewApi/api/trial/records?light=1" -TimeoutSec 60
+        $trOk = $true
+    } catch {
+        if (IsTimeout $_) {
+            Write-Host '   注意: Merkl/N5の確認APIは時間切れでした。記録処理そのものは継続中です。N6の確認を続けます。' -ForegroundColor Yellow
+            $notes += 'Merkl/N5の確認APIは時間切れでした。記録処理そのものは継続中です（更新とN6には関係ありません）'
+        } else {
+            Write-Host "   注意: Merkl/N5の確認APIを読めませんでした（$($_.Exception.Message)）。記録処理そのものは継続中です。N6の確認を続けます。" -ForegroundColor Yellow
+            $notes += "Merkl/N5の確認APIを読めませんでした（$($_.Exception.Message)）。記録処理そのものは継続中です"
+        }
+    }
+    if ($trOk) {
+        $ff = $tr.feeds
+        if (-not $ff -or -not $ff.tables) {
+            $broken += '記録の表の確かめがありません（古い版のままかもしれません）'
+        } else {
+            $noTable = @($ff.tables.PSObject.Properties | Where-Object { -not $_.Value } | ForEach-Object { $_.Name })
+            if ($noTable.Count -gt 0) { $broken += "データベースに表がありません: $($noTable -join ', ')" } else { Ok "記録の表はそろっています（$(@($ff.tables.PSObject.Properties).Count) 個）。" }
+            $ms = $ff.merkl_sums
+            $mStarted = $ms -and [int](N0 $ms.complete) -gt 0
+            if ($mStarted) {
+                Ok "Merkl の全部のページの記録: complete=1 が $(N0 $ms.complete) 件（キャンペーン $(N0 $ms.complete_campaigns)）"
+            } elseif ($mrs -and @('running', 'rate_limited') -notcontains $mrs.status) {
+                $broken += 'Merkl の全部のページを読めた記録（complete=1）が1件もありません'
+            }
+            $ph = $ff.pool_history
+            if (-not $ph) {
+                $broken += '預け方の歴史の進み具合を読めません'
+            } else {
+                $lr = $ph.last_run
+                # 読まないと決めているプール（公式の住所と確かめられない・始まりから読むと多すぎる）は失敗ではない
+                $skipPools = @($ph.errors | Where-Object { $_.error -like '読む量が多すぎる*' -or $_.error -like 'PoolManager が公式*' })
+                $badPools = @($ph.errors | Where-Object { $_ -and -not ($_.error -like '読む量が多すぎる*' -or $_.error -like 'PoolManager が公式*') })
+                if ($badPools.Count -gt 0) { $notes += "預け方の歴史を読めなかったプール $($badPools.Count) 個（次の回に続きから読みます）: $($badPools[0].error)" }
+                if (-not $lr -and $phs -and @('running', 'rate_limited') -notcontains $phs.status) { $broken += '預け方の歴史の「この回の記録」がありません' }
+            }
+        }
+    }
+    foreach ($b in $broken) {
+        Write-Host "   要確認: $b" -ForegroundColor Yellow
+        $notes += "要確認（記録が壊れているかもしれません。N6 の更新は戻していません）: $b"
+    }
+    if ($broken.Count -eq 0) { Ok 'Merkl と預け方の歴史は動いています。' }
 
     # --- 9. 結果のまとめ --------------------------------------------------------------------------
     Step '9/9 結果のまとめ（ここから下を全部コピーして送ってください）'
     Say "[一覧の保存] enabled: $($fs.enabled) / chain_reads: $($fs.chain_reads) / problem: $($fs.problem) / 一覧の数: $(@($fs.sources).Count)（前は $beforeSources）"
     foreach ($s in $fs.sources) { Say ("   {0,-22} {1,-12} {2}" -f $s.id, $s.status, $s.items) }
 
-    $o = Invoke-RestMethod "$NewApi/api/opportunities?amount=1000&show_excluded=true&limit=300" -TimeoutSec 120
-    Say "[入れる先] total: $($o.counts.total) / computed: $($o.counts.computed) / listed: $($o.counts.listed) / above_target: $($o.counts.above_target) / recommended: $($o.counts.recommended) / target: $($o.target_apr_pct)"
-    $dg = $o.counts.danger
-    if ($dg) { Say "[危なさ] low: $(N0 $dg.low) / mid: $(N0 $dg.mid) / high: $(N0 $dg.high) / very_high: $(N0 $dg.very_high) / venue_verified: $(N0 $o.counts.venue_verified)" }
-    foreach ($x in @($o.items | Where-Object { $_.recommended })) {
-        $mk = if ($x.flags.code -contains 'SUDDEN_CHANGE') { '  [年利が急に変わった]' } else { '' }
-        Say ("   おすすめ: {0}  年利 {1}%  危なさ {2}{3}" -f $x.name, [math]::Round($x.best.apr_pct, 1), $x.safety.level, $mk)
+    # 探す・守るの数（見せるだけ。読めなくても止めない。2026-10-08 指示書）
+    $o = $null
+    try {
+        $o = Invoke-RestMethod "$NewApi/api/opportunities?amount=1000&show_excluded=true&limit=300" -TimeoutSec 120
+        Say "[入れる先] total: $($o.counts.total) / computed: $($o.counts.computed) / listed: $($o.counts.listed) / above_target: $($o.counts.above_target) / recommended: $($o.counts.recommended) / target: $($o.target_apr_pct)"
+        $dg = $o.counts.danger
+        if ($dg) { Say "[危なさ] low: $(N0 $dg.low) / mid: $(N0 $dg.mid) / high: $(N0 $dg.high) / very_high: $(N0 $dg.very_high) / venue_verified: $(N0 $o.counts.venue_verified)" }
+        foreach ($x in @($o.items | Where-Object { $_.recommended })) {
+            $mk = if ($x.flags.code -contains 'SUDDEN_CHANGE') { '  [年利が急に変わった]' } else { '' }
+            Say ("   おすすめ: {0}  年利 {1}%  危なさ {2}{3}" -f $x.name, [math]::Round($x.best.apr_pct, 1), $x.safety.level, $mk)
+        }
+        $sd = @($o.items | Where-Object { $_.flags.code -contains 'SUDDEN_CHANGE' })
+        Say "[年利が急に変わった] $($sd.Count) 件"
+        foreach ($x in ($sd | Select-Object -First 5)) {
+            Say ("   {0}: {1}" -f $x.name, (@($x.flags | Where-Object { $_.code -eq 'SUDDEN_CHANGE' })[0].text))
+        }
+        # 値動きが急に大きくなった（2026-10-04 オーナー決定 ①A。直近24時間が7日の1.5倍をこえた）
+        $vj = @($o.items | Where-Object { $_.flags.code -contains 'VOL_JUMP' })
+        Say "[値動きが急に大きくなった] $($vj.Count) 件"
+        foreach ($x in ($vj | Select-Object -First 5)) {
+            Say ("   {0}: {1}" -f $x.name, (@($x.flags | Where-Object { $_.code -eq 'VOL_JUMP' })[0].text))
+        }
+        $c = @($o.items | Where-Object { $_.flags.code -contains 'RANGE_CHAIN' })
+        $u = @($o.items | Where-Object { $_.safety.uncertain_match })
+        Say "[チェーンの記録で計算] chain: $($c.Count) / 会場の見分けが不確か: $($u.Count)"
+        foreach ($x in ($c | Select-Object -First 5)) { Say ("   {0}  幅 ±{1}%  年利 {2}%" -f $x.name, $x.best.range_pct, [math]::Round($x.best.apr_pct, 1)) }
+        if ($c.Count -gt 0) {
+            $d = Invoke-RestMethod ("$NewApi/api/opportunities/" + $c[0].key + "?amount=1000") -TimeoutSec 120
+            $v = $d.item.calc.'1000'.cautious.no_hedge
+            Say "[1つの入れる先] $($d.item.name) / range: $($v.range_pct) / share: $($v.liquidity_share)"
+        }
+    } catch {
+        Write-Host "   注意: 探すの一覧を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+        $notes += "探すの一覧を読めませんでした（$($_.Exception.Message)）。記録は続いています"
     }
-    $sd = @($o.items | Where-Object { $_.flags.code -contains 'SUDDEN_CHANGE' })
-    Say "[年利が急に変わった] $($sd.Count) 件"
-    foreach ($x in ($sd | Select-Object -First 5)) {
-        Say ("   {0}: {1}" -f $x.name, (@($x.flags | Where-Object { $_.code -eq 'SUDDEN_CHANGE' })[0].text))
-    }
-    # 値動きが急に大きくなった（2026-10-04 オーナー決定 ①A。直近24時間が7日の1.5倍をこえた）
-    $vj = @($o.items | Where-Object { $_.flags.code -contains 'VOL_JUMP' })
-    Say "[値動きが急に大きくなった] $($vj.Count) 件"
-    foreach ($x in ($vj | Select-Object -First 5)) {
-        Say ("   {0}: {1}" -f $x.name, (@($x.flags | Where-Object { $_.code -eq 'VOL_JUMP' })[0].text))
-    }
-    $c = @($o.items | Where-Object { $_.flags.code -contains 'RANGE_CHAIN' })
-    $u = @($o.items | Where-Object { $_.safety.uncertain_match })
-    Say "[チェーンの記録で計算] chain: $($c.Count) / 会場の見分けが不確か: $($u.Count)"
-    foreach ($x in ($c | Select-Object -First 5)) { Say ("   {0}  幅 ±{1}%  年利 {2}%" -f $x.name, $x.best.range_pct, [math]::Round($x.best.apr_pct, 1)) }
-    if ($c.Count -gt 0) {
-        $d = Invoke-RestMethod ("$NewApi/api/opportunities/" + $c[0].key + "?amount=1000") -TimeoutSec 120
-        $v = $d.item.calc.'1000'.cautious.no_hedge
-        Say "[1つの入れる先] $($d.item.name) / range: $($v.range_pct) / share: $($v.liquidity_share)"
-    }
-    $g = Invoke-RestMethod "$NewApi/api/guard" -TimeoutSec 60
-    Say "[守る] placed: $($g.placed_usd) / left: $($g.total_left_usd) / loss_line: $($g.loss_line.state) / venues: $(@($g.venues).Count) / chains: $(@($g.chains).Count)"
-    $lv = if ($g.loss_lines.level) { $g.loss_lines.level } else { 'なし' }     # 線を越えていなければ「なし」
-    Say "[守る] loss_lines: $(@($g.loss_lines.periods).Count) / level: $lv / stages: $(@($g.stages).Count) / lighter: $(@($g.venues | Where-Object { $_.venue_id -eq 'lighter' }).Count)"
-    # 保険（Lighter）の預け金の減り方（2026-10-04 オーナーのお願い1。練習の建玉ごと、1時間に1回の記録）
-    Say "[守る] 預け金の減り方: 建玉 $(@($g.margin_log).Count)"
-    foreach ($m in @($g.margin_log | Select-Object -First 5)) {
-        Say ("   {0}: 預けたお金 `${1} → 今 `${2}（{3}%）/ いちばん低いとき `${4} / 置き直し {5} 回" -f $m.pair, [math]::Round([double]$m.margin_usd, 2), `
-            $(if ($null -eq $m.equity_usd) { '-' } else { [math]::Round([double]$m.equity_usd, 2) }), $(if ($null -eq $m.change_pct) { '-' } else { [math]::Round([double]$m.change_pct, 1) }), `
-            $(if ($null -eq $m.low_equity_usd) { '-' } else { [math]::Round([double]$m.low_equity_usd, 2) }), $m.rebalances)
-    }
-    # 預け金を「足したとしたら」（2026-10-04 オーナー決定 ③A。記録だけ。本物のお金は動かさない）
-    Say "[守る] 足したとしたら: 建玉 $(@($g.topups).Count)（線は余裕がはじめの $([math]::Round([double]$g.topup_line_frac * 100, 0))% を切ったとき）"
-    foreach ($t in @($g.topups | Select-Object -First 5)) {
-        Say ("   {0}: {1} 回・合計 `${2}・見込みの費用 `${3}・最後の回 プール `${4} から足す / 売り `${5} → `${6}" -f $t.pair, $t.count, `
-            [math]::Round([double]$t.total_usd, 2), $(if ($null -eq $t.cost_usd) { '-' } else { [math]::Round([double]$t.cost_usd, 2) }), `
-            $(if ($null -eq $t.last.pool_usd) { '-' } else { [math]::Round([double]$t.last.pool_usd, 0) }), `
-            $(if ($null -eq $t.last.short_before_usd) { '-' } else { [math]::Round([double]$t.last.short_before_usd, 0) }), `
-            $(if ($null -eq $t.last.short_after_usd) { '-' } else { [math]::Round([double]$t.last.short_after_usd, 0) }))
+    try {
+        $g = Invoke-RestMethod "$NewApi/api/guard" -TimeoutSec 60
+        Say "[守る] placed: $($g.placed_usd) / left: $($g.total_left_usd) / loss_line: $($g.loss_line.state) / venues: $(@($g.venues).Count) / chains: $(@($g.chains).Count)"
+        $lv = if ($g.loss_lines.level) { $g.loss_lines.level } else { 'なし' }     # 線を越えていなければ「なし」
+        Say "[守る] loss_lines: $(@($g.loss_lines.periods).Count) / level: $lv / stages: $(@($g.stages).Count) / lighter: $(@($g.venues | Where-Object { $_.venue_id -eq 'lighter' }).Count)"
+        # 保険（Lighter）の預け金の減り方（2026-10-04 オーナーのお願い1。練習の建玉ごと、1時間に1回の記録）
+        Say "[守る] 預け金の減り方: 建玉 $(@($g.margin_log).Count)"
+        foreach ($m in @($g.margin_log | Select-Object -First 5)) {
+            Say ("   {0}: 預けたお金 `${1} → 今 `${2}（{3}%）/ いちばん低いとき `${4} / 置き直し {5} 回" -f $m.pair, [math]::Round([double]$m.margin_usd, 2), `
+                $(if ($null -eq $m.equity_usd) { '-' } else { [math]::Round([double]$m.equity_usd, 2) }), $(if ($null -eq $m.change_pct) { '-' } else { [math]::Round([double]$m.change_pct, 1) }), `
+                $(if ($null -eq $m.low_equity_usd) { '-' } else { [math]::Round([double]$m.low_equity_usd, 2) }), $m.rebalances)
+        }
+        # 預け金を「足したとしたら」（2026-10-04 オーナー決定 ③A。記録だけ。本物のお金は動かさない）
+        Say "[守る] 足したとしたら: 建玉 $(@($g.topups).Count)（線は余裕がはじめの $([math]::Round([double]$g.topup_line_frac * 100, 0))% を切ったとき）"
+        foreach ($t in @($g.topups | Select-Object -First 5)) {
+            Say ("   {0}: {1} 回・合計 `${2}・見込みの費用 `${3}・最後の回 プール `${4} から足す / 売り `${5} → `${6}" -f $t.pair, $t.count, `
+                [math]::Round([double]$t.total_usd, 2), $(if ($null -eq $t.cost_usd) { '-' } else { [math]::Round([double]$t.cost_usd, 2) }), `
+                $(if ($null -eq $t.last.pool_usd) { '-' } else { [math]::Round([double]$t.last.pool_usd, 0) }), `
+                $(if ($null -eq $t.last.short_before_usd) { '-' } else { [math]::Round([double]$t.last.short_before_usd, 0) }), `
+                $(if ($null -eq $t.last.short_after_usd) { '-' } else { [math]::Round([double]$t.last.short_after_usd, 0) }))
+        }
+    } catch {
+        Write-Host "   注意: 守るの数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+        $notes += "守るの数を読めませんでした（$($_.Exception.Message)）。記録は続いています"
     }
     $vs = @($fs.sources | Where-Object { $_.id -eq 'vault_states' })[0]
     $vc = @($fs.sources | Where-Object { $_.id -eq 'venue_checks' })[0]
@@ -300,314 +442,249 @@ try {
     Say "[見張り] venue_checks: $($vc.status) 今回 $(N0 $vc.items) / 確かめ済み $(N0 $vc.stored.checked)（公式の工場が作った $(N0 $vc.stored.verified)）"
     Say "[見張り] vault_states: $($vs.status) 今回 $(N0 $vs.items) / 見張っている金庫 $(N0 $vs.stored.vaults)"
 
-    # N5a: 試すための記録（Merkl の配った額・DefiLlama と Lighter の過去・影の記録・Aero の住所）
-    try {
-        $t = Invoke-RestMethod "$NewApi/api/trial/records" -TimeoutSec 60
-        $f = $t.feeds
-        Say "[試す] Merkl の配った額: キャンペーン $(N0 $f.merkl_rewards.campaigns) / 行 $(N0 $f.merkl_rewards.rows)"
-        Say "[試す] DefiLlama の毎日の記録: プール $(N0 $f.llama_history.pools) / 行 $(N0 $f.llama_history.rows)（$($f.llama_history.from) 〜 $($f.llama_history.to)）"
-        Say "[試す] Lighter の資金調達率の過去: 銘柄 $(N0 $f.lighter_history.markets) / 行 $(N0 $f.lighter_history.rows)"
-        Say "[試す] Lighter の値段の過去: 銘柄 $(N0 $f.lighter_prices.markets) / 行 $(N0 $f.lighter_prices.rows)（1日1回。最初は90日分）"
-        Say "[試す] 影の記録: $(N0 $f.shadow.hours) 回 / 入れる先 $(N0 $f.shadow.opportunities) / 行 $(N0 $f.shadow.rows)"
-        Say "[試す] Aero の住所のファイル: $((@($f.aero_addresses) | ForEach-Object { $_.name }) -join ', ')"
-        # Lighter の Robinhood Chain 版（2026-10-04 オーナー決定 ②A。読むだけ。本物のお金は動かさない）
-        $rh = $f.lighter_rh
-        if ($rh) {
-            Say "[Lighter RH版] 市場 $(N0 $rh.markets) / 保険に使う市場のうち、この版にあるもの $(N0 $rh.hedge_markets)（読んだ時刻 $($rh.updated_at)）"
-            foreach ($x in @($rh.rows)) {
-                $fr = if ($null -eq $x.funding_daily_rh) { '-' } else { [math]::Round([double]$x.funding_daily_rh * 365 * 100, 1) }
-                $fm = if ($null -eq $x.funding_daily_main) { '-' } else { [math]::Round([double]$x.funding_daily_main * 365 * 100, 1) }
-                Say ("   {0}: 値段 RH {1} / 本体 {2}・維持の割合 RH {3}% / 本体 {4}%・売りの資金調達料（年、7日。プラス = 払う）RH {5}% / 本体 {6}%・過去 値段 {7} 点 / 資金調達率 {8} 点" -f `
-                    $x.symbol, $x.price_rh, $x.price_main, $x.mmf_rh_pct, $x.mmf_main_pct, $fr, $fm, $x.price_points, $x.funding_points)
-            }
-            # 探すの見込みで、どちらの Lighter の数字を使ったか（Robinhood Chain のプールで RH版にある市場は RH版）
-            if ($o) {
-                $hm = @($o.items | ForEach-Object { @($_.hedge_markets) } | Where-Object { $_ })
-                $nr = @($hm | Where-Object { $_.book -eq 'rh' }).Count
-                Say ("[Lighter RH版] 探すの保険の見込み: RH版の数字 {0} 件 / 本体の数字 {1} 件" -f $nr, ($hm.Count - $nr))
-            }
-        } else { Say "[Lighter RH版] まだ読めていません" }
-        # N5c: Merkl の答え合わせ（実際に配った額 ÷ 探すの見込み。1 に近いほど見込みどおり。読むだけ）
-        $mp = $f.merkl_positions
-        if ($mp) { Say "[答え合わせ Merkl] 幅と量を読んだ預け方 $(N0 $mp.positions)（読めた回 $(N0 $mp.ok) / 読めなかった回 $(N0 $mp.errors)・最後 $($mp.last)）" }
-        $mc = $f.merkl_check
-        if ($mc -and @($mc.campaigns).Count -gt 0) {
-            $med = if ($null -eq $mc.ratio_median) { '-' } else { [math]::Round([double]$mc.ratio_median, 2) }
-            $dsh = if ($null -eq $mc.denominator_share_median) { '-' } else { "$([math]::Round([double]$mc.denominator_share_median * 100))%" }
-            Say "[答え合わせ Merkl] 比べた組 $(N0 $mc.pairs_in_range)・実際 ÷ 見込み（まん中）$med（1 より大きい = 見込みは控えめ）"
-            Say "[答え合わせ Merkl] コインの分の分母は、預かり額の $dsh に見える（100% に近い = 全員が分母。小さい = 幅の中の預け方だけに近い）"
-            foreach ($x in @($mc.campaigns | Select-Object -First 8)) {
-                $m = if ($null -eq $x.ratio_median) { '-' } else { [math]::Round([double]$x.ratio_median, 2) }
-                $lo = if ($null -eq $x.ratio_p25) { '-' } else { [math]::Round([double]$x.ratio_p25, 2) }
-                $hi = if ($null -eq $x.ratio_p75) { '-' } else { [math]::Round([double]$x.ratio_p75, 2) }
-                $op = if ($null -eq $x.out_of_range_paid_share) { '-' } else { "$([math]::Round([double]$x.out_of_range_paid_share * 100))%" }
-                $ds = if ($null -eq $x.denominator_share_median) { '-' } else { "$([math]::Round([double]$x.denominator_share_median * 100))%" }
-                Say ("   {0}: 区切り {1} / 幅の中の組 {2} / 実際 ÷ 見込み {3}（{4} 〜 {5}）/ 分母 {6} / 幅の外でももらえた組 {7}" -f `
-                    $x.pair, $x.intervals, $x.pairs_in_range, $m, $lo, $hi, $ds, $op)
-            }
-        } else { Say "[答え合わせ Merkl] まだ比べられる記録がありません（2時間ごとに増えます）" }
-        if ($mc -and @($mc.errors).Count -gt 0) {
-            Write-Host ("   注意: 答え合わせを計算できなかったキャンペーン {0} 件（そのキャンペーンだけ外しました）: {1}" -f @($mc.errors).Count, (@($mc.errors)[0].error)) -ForegroundColor Yellow
-        }
-    } catch {
-        Write-Host "   注意: 試すための記録の数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
-    }
+    # 試すの記録・さかのぼり・試すの結果・最終判断の準備は、時間がかかる（1つ最大15分）ので、ふだんは更新の確かめから外す
+    # （2026-10-08 指示書: 更新を短く。計算と記録は裏で続く。-Full をつけたときだけ、前と同じように全部読む）
+    foreach ($x in $n6Show) { Say $x }
+    foreach ($x in $v1Show) { Say $x }
 
-    # N5b: さかのぼりの計算（今の版の写しで、見込みと実際を比べる。最初の1回は数十秒〜数分かかる）
-    try {
-        Step '9/9 の続き: さかのぼりの計算（数分かかることがあります）'
-        $bk = Invoke-RestMethod "$NewApi/api/trial/backtest" -TimeoutSec 900
-        if (-not $bk.present) { Say "[さかのぼり] $($bk.text)" } else {
-            $r = $bk.result
-            $dd = @($r.days)
-            Say "[さかのぼり] プール $($r.pools) / プールと日の組 $($r.pool_days) / 日 $($dd.Count)（$($dd[0]) 〜 $($dd[-1])）"
-            function BtPct($x, $d = 2) { if ($null -eq $x) { '-' } else { [math]::Round([double]$x * 100, $d) } }
-            function BtNum($x, $d = 2) { if ($null -eq $x) { '-' } else { [math]::Round([double]$x, $d) } }
-            foreach ($g in @($r.ranges.all)) {
-                Say ("   幅 ±{0}%（プールと日 {1}件）: 置き直し {2}/{3} 回/日（合 {4}%） 幅の中 {5}/{6}% 値動きの損 {7}/{8}%（実際の値動きで式 {9}%。合 {10}%） 費用 {11}/{12}%" -f `
-                    $g.r_pct, $g.days, (BtNum $g.rebalances.pred), (BtNum $g.rebalances.real), (BtPct $g.rebalances.ok_share 0), `
-                    (BtPct $g.in_range.pred 1), (BtPct $g.in_range.real 1), (BtPct $g.gamma.pred 3), (BtPct $g.gamma.real 3), (BtPct $g.gamma.formula_real_sigma 3), `
-                    (BtPct $g.gamma.ok_share 0), (BtPct $g.cost.pred 3), (BtPct $g.cost.real 3))
-            }
-            # 合 = 差が見込みの30%以内（ごく小さい率は 1日 0.002% まで）。前の数え方（資金の0.1%まで）は「前」（2026-10-04 オーナーの質問3）
-            foreach ($x in @($r.funding)) { Say ("   資金調達 {0}（{1}日）: 見込み {2}/実際 {3} %/日（合 {4}%。前の数え方 {5}%）" -f $x.perp, $x.days, (BtPct $x.pred 4), (BtPct $x.real 4), (BtPct $x.ok_share 0), (BtPct $x.ok_share_loose 0)) }
-            foreach ($x in @($r.margins)) { Say ("   預け金 {0}: いちばんの上げ {1}%（{2}日の記録。耐える {3}%）/ 15分の飛び {4}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 1), $x.withstand_pct, (BtNum $x.jump_up_pct 1)) }
-            # Lighter の値段の過去（最大90日の1時間の足）で見た預け金（2026-10-04 オーナーの質問4）。上げの大きい順
-            $ml = @($r.margins_long | Sort-Object { -[double]$_.rise_pct })
-            if ($ml.Count -gt 0) {
-                Say "[さかのぼり 預け金 90日] 市場 $($ml.Count) / 耐える $($ml[0].withstand_pct)% を超えた市場 $(@($ml | Where-Object { -not $_.enough }).Count)"
-                # 耐える幅を超えた市場は全部、ほかは上げの大きい順に、合わせて8つまで
-                $over = @($ml | Where-Object { -not $_.enough })
-                foreach ($x in @($over + @($ml | Where-Object { $_.enough } | Select-Object -First ([math]::Max(0, 8 - $over.Count))))) {
-                    Say ("   {0}: 14日以内のいちばんの上げ {1}%（{2}日の記録）/ 1時間でいちばんの上げ {3}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 0), (BtNum $x.jump_up_pct 1))
+    if ($Full) {
+        # N5a: 試すための記録（Merkl の配った額・DefiLlama と Lighter の過去・影の記録・Aero の住所）
+        try {
+            $t = Invoke-RestMethod "$NewApi/api/trial/records" -TimeoutSec 60
+            $f = $t.feeds
+            Say "[試す] Merkl の配った額: キャンペーン $(N0 $f.merkl_rewards.campaigns) / 行 $(N0 $f.merkl_rewards.rows)"
+            Say "[試す] DefiLlama の毎日の記録: プール $(N0 $f.llama_history.pools) / 行 $(N0 $f.llama_history.rows)（$($f.llama_history.from) 〜 $($f.llama_history.to)）"
+            Say "[試す] Lighter の資金調達率の過去: 銘柄 $(N0 $f.lighter_history.markets) / 行 $(N0 $f.lighter_history.rows)"
+            Say "[試す] Lighter の値段の過去: 銘柄 $(N0 $f.lighter_prices.markets) / 行 $(N0 $f.lighter_prices.rows)（1日1回。最初は90日分）"
+            Say "[試す] 影の記録: $(N0 $f.shadow.hours) 回 / 入れる先 $(N0 $f.shadow.opportunities) / 行 $(N0 $f.shadow.rows)"
+            Say "[試す] Aero の住所のファイル: $((@($f.aero_addresses) | ForEach-Object { $_.name }) -join ', ')"
+            # Lighter の Robinhood Chain 版（2026-10-04 オーナー決定 ②A。読むだけ。本物のお金は動かさない）
+            $rh = $f.lighter_rh
+            if ($rh) {
+                Say "[Lighter RH版] 市場 $(N0 $rh.markets) / 保険に使う市場のうち、この版にあるもの $(N0 $rh.hedge_markets)（読んだ時刻 $($rh.updated_at)）"
+                foreach ($x in @($rh.rows)) {
+                    $fr = if ($null -eq $x.funding_daily_rh) { '-' } else { [math]::Round([double]$x.funding_daily_rh * 365 * 100, 1) }
+                    $fm = if ($null -eq $x.funding_daily_main) { '-' } else { [math]::Round([double]$x.funding_daily_main * 365 * 100, 1) }
+                    Say ("   {0}: 値段 RH {1} / 本体 {2}・維持の割合 RH {3}% / 本体 {4}%・売りの資金調達料（年、7日。プラス = 払う）RH {5}% / 本体 {6}%・過去 値段 {7} 点 / 資金調達率 {8} 点" -f `
+                        $x.symbol, $x.price_rh, $x.price_main, $x.mmf_rh_pct, $x.mmf_main_pct, $fr, $fm, $x.price_points, $x.funding_points)
                 }
-                # その市場を保険に使う入れる先が、今の一覧に何行あるか（2026-10-04 オーナーの質問2。$1,000・控えめの見込み）
-                foreach ($x in $over) {
-                    $rows = @($o.items | Where-Object { @($_.hedge_markets | Where-Object { [string]$_.market_id -eq [string]$x.market_id }).Count -gt 0 })
-                    $ls = @($rows | Where-Object { -not $_.excluded })
-                    $hd = @($ls | Where-Object { $_.best -and $_.best.hedge })
-                    $rc = @($ls | Where-Object { $_.recommended })
-                    $top = @($ls | Where-Object { $_.best } | Sort-Object { -[double]$_.best.apr_pct } | Select-Object -First 1)
-                    $tx = if ($top.Count -gt 0) { "$($top[0].name) $([math]::Round([double]$top[0].best.apr_pct, 1))%（$(if ($top[0].best.hedge) { '保険あり' } else { '保険なし' })）" } else { '-' }
-                    Say ("   {0} を保険に使う入れる先: 全部 {1} 行 / 一覧に出る {2} / うち保険ありがよい {3} / おすすめ {4} / 年利のいちばん高い行 {5}" -f $x.symbol, $rows.Count, $ls.Count, $hd.Count, $rc.Count, $tx)
+                # 探すの見込みで、どちらの Lighter の数字を使ったか（Robinhood Chain のプールで RH版にある市場は RH版）
+                if ($o) {
+                    $hm = @($o.items | ForEach-Object { @($_.hedge_markets) } | Where-Object { $_ })
+                    $nr = @($hm | Where-Object { $_.book -eq 'rh' }).Count
+                    Say ("[Lighter RH版] 探すの保険の見込み: RH版の数字 {0} 件 / 本体の数字 {1} 件" -f $nr, ($hm.Count - $nr))
                 }
-            } else { Say "[さかのぼり 預け金 90日] まだ値段の過去がありません（1日1回の読み取りのあとに出ます）" }
-            # 値段が動いていないプール（取引がほとんどない）は、見込みと実際を比べるのから外した（2026-10-04 オーナーの質問3）
-            $st = @($r.still_pools)
-            Say ("[さかのぼり 値段が動いていないプール] {0} 個（となりの記録と同じ値段が {1}% 以上。比べるのから外しました）" -f $st.Count, (BtPct $r.still_share_line 0))
-            # 同じ名前のプールが複数あるので、プールの住所と手数料の段・最初と最後の値段も出す（2026-10-04 オーナーの質問1）
-            # 空欄なら、とっておいた古い計算の結果を読んでいる（2026-10-04。VERSION の上げ忘れ。今はファイルの中身の印もキーに入れた）
-            # 手数料の段は、今の版が15分ごとにチェーンから読んだ値（2026-10-04: up. の工場の記録には手数料がないので、前は「不明」だった）。
-            # 手数料が動くプールは、記録の中の最小〜最大も出す
-            function FeeText($f) {
-                if ($null -eq $f.fee_pct) { return '不明' }
-                $t = "$($f.fee_pct)%"
-                if ($null -ne $f.fee_min_pct -and $f.fee_min_pct -ne $f.fee_max_pct) { $t += "（記録の中で $($f.fee_min_pct)〜$($f.fee_max_pct)%）" }
-                return $t
-            }
-            foreach ($x in $st) {
-                $edge = ''
-                if ($x.at_edge -eq 'max' -or $x.at_edge -eq 'min') {
-                    $edge = " ※プールが空（流動性 0）で、値段が仕組みの{0}の端にあります（本当のコインの値段ではありません）" -f $(if ($x.at_edge -eq 'max') { '上' } else { '下' })
-                } elseif ($x.empty) { $edge = ' ※プールが空（流動性 0）' }
-                Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}{8}" -f $x.pair, $x.pool_id, (FeeText $x), `
-                    (BtPct $x.still_share 1), $x.points, $x.distinct_prices, (BtNum $x.first_price 6), (BtNum $x.last_price 6), $edge)
-                foreach ($o in @($x.same_pair)) {
-                    Say ("      同じ組のほかのプール: {0}（手数料の段 {1}・記録 {2} 点・{3}）" -f $o.pool_id, (FeeText $o), $o.points, $(if ($o.still) { '値段が動いていない' } else { '値段が動いている' }))
+            } else { Say "[Lighter RH版] まだ読めていません" }
+            # N5c: Merkl の答え合わせ（実際に配った額 ÷ 探すの見込み。1 に近いほど見込みどおり。読むだけ）
+            $mp = $f.merkl_positions
+            if ($mp) { Say "[答え合わせ Merkl] 幅と量を読んだ預け方 $(N0 $mp.positions)（読めた回 $(N0 $mp.ok) / 読めなかった回 $(N0 $mp.errors)・最後 $($mp.last)）" }
+            $mc = $f.merkl_check
+            if ($mc -and @($mc.campaigns).Count -gt 0) {
+                $med = if ($null -eq $mc.ratio_median) { '-' } else { [math]::Round([double]$mc.ratio_median, 2) }
+                $dsh = if ($null -eq $mc.denominator_share_median) { '-' } else { "$([math]::Round([double]$mc.denominator_share_median * 100))%" }
+                Say "[答え合わせ Merkl] 比べた組 $(N0 $mc.pairs_in_range)・実際 ÷ 見込み（まん中）$med（1 より大きい = 見込みは控えめ）"
+                Say "[答え合わせ Merkl] コインの分の分母は、預かり額の $dsh に見える（100% に近い = 全員が分母。小さい = 幅の中の預け方だけに近い）"
+                foreach ($x in @($mc.campaigns | Select-Object -First 8)) {
+                    $m = if ($null -eq $x.ratio_median) { '-' } else { [math]::Round([double]$x.ratio_median, 2) }
+                    $lo = if ($null -eq $x.ratio_p25) { '-' } else { [math]::Round([double]$x.ratio_p25, 2) }
+                    $hi = if ($null -eq $x.ratio_p75) { '-' } else { [math]::Round([double]$x.ratio_p75, 2) }
+                    $op = if ($null -eq $x.out_of_range_paid_share) { '-' } else { "$([math]::Round([double]$x.out_of_range_paid_share * 100))%" }
+                    $ds = if ($null -eq $x.denominator_share_median) { '-' } else { "$([math]::Round([double]$x.denominator_share_median * 100))%" }
+                    Say ("   {0}: 区切り {1} / 幅の中の組 {2} / 実際 ÷ 見込み {3}（{4} 〜 {5}）/ 分母 {6} / 幅の外でももらえた組 {7}" -f `
+                        $x.pair, $x.intervals, $x.pairs_in_range, $m, $lo, $hi, $ds, $op)
                 }
+            } else { Say "[答え合わせ Merkl] まだ比べられる記録がありません（2時間ごとに増えます）" }
+            if ($mc -and @($mc.errors).Count -gt 0) {
+                Write-Host ("   注意: 答え合わせを計算できなかったキャンペーン {0} 件（そのキャンペーンだけ外しました）: {1}" -f @($mc.errors).Count, (@($mc.errors)[0].error)) -ForegroundColor Yellow
             }
-            # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ
-            $kn = @{ kind_stock = '株'; kind_stable = 'ステーブル'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン' }
-            Say "[さかのぼり 種類] 株 $($r.kinds.stock) / ステーブル $($r.kinds.stable) / ふつうのコイン $($r.kinds.coin) / ボーナスのコイン $($r.kinds.bonus)（プールの数）"
-            foreach ($k in @('kind_stock', 'kind_stable', 'kind_coin', 'kind_bonus')) {
-                foreach ($g in @($r.ranges.$k | Where-Object { @(0.5, 2, 15) -contains [double]$_.r_pct })) {
-                    Say ("   {0} ±{1}%（{2}件）: 置き直し 中央値 {3}/{4} 回/日 / 値動きの損 中央値 {5}/{6}% / 値動き σ 中央値 {7}/{8}%" -f `
-                        $kn[$k], $g.r_pct, $g.days, (BtNum $g.rebalances.pred_median), (BtNum $g.rebalances.real_median), `
-                        (BtPct $g.gamma.pred_median 3), (BtPct $g.gamma.real_median 3), (BtPct $g.sigma.pred_median 1), (BtPct $g.sigma.real_median 1))
+        } catch {
+            Write-Host "   注意: 試すための記録の数を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+        }
+
+        # N5b: さかのぼりの計算（今の版の写しで、見込みと実際を比べる。最初の1回は数十秒〜数分かかる）
+        try {
+            Step '9/9 の続き: さかのぼりの計算（数分かかることがあります）'
+            $bk = Invoke-RestMethod "$NewApi/api/trial/backtest" -TimeoutSec 900
+            if (-not $bk.present) { Say "[さかのぼり] $($bk.text)" } else {
+                $r = $bk.result
+                $dd = @($r.days)
+                Say "[さかのぼり] プール $($r.pools) / プールと日の組 $($r.pool_days) / 日 $($dd.Count)（$($dd[0]) 〜 $($dd[-1])）"
+                function BtPct($x, $d = 2) { if ($null -eq $x) { '-' } else { [math]::Round([double]$x * 100, $d) } }
+                function BtNum($x, $d = 2) { if ($null -eq $x) { '-' } else { [math]::Round([double]$x, $d) } }
+                foreach ($g in @($r.ranges.all)) {
+                    Say ("   幅 ±{0}%（プールと日 {1}件）: 置き直し {2}/{3} 回/日（合 {4}%） 幅の中 {5}/{6}% 値動きの損 {7}/{8}%（実際の値動きで式 {9}%。合 {10}%） 費用 {11}/{12}%" -f `
+                        $g.r_pct, $g.days, (BtNum $g.rebalances.pred), (BtNum $g.rebalances.real), (BtPct $g.rebalances.ok_share 0), `
+                        (BtPct $g.in_range.pred 1), (BtPct $g.in_range.real 1), (BtPct $g.gamma.pred 3), (BtPct $g.gamma.real 3), (BtPct $g.gamma.formula_real_sigma 3), `
+                        (BtPct $g.gamma.ok_share 0), (BtPct $g.cost.pred 3), (BtPct $g.cost.real 3))
                 }
-            }
-            # 1日の損（値動きの損 + 置き直しの費用）の見込みと実際の差（ドル）の大きい順（2026-10-04 オーナーの質問5）
-            foreach ($x in @($r.misses | Select-Object -First 5)) {
-                Say ("   ずれの大きいプール {0}（{1}・±{2}%）: 1日の損 見込み `${3}/実際 `${4}（差 `${5}）/ 値動き σ {6}/{7}% / 置き直し {8}/{9} 回/日" -f $x.pair, $kn["kind_$($x.kind)"], $x.r_pct, `
-                    (BtNum $x.loss_pred_usd_day), (BtNum $x.loss_real_usd_day), (BtNum $x.gap_usd_day), (BtPct $x.sigma_pred 1), (BtPct $x.sigma_real 1), `
-                    (BtNum $x.rebalances_pred), (BtNum $x.rebalances_real))
-            }
-            foreach ($x in @($r.spy)) {
-                Say ("   SPY {0}（±{1}%）: 値動き σ {2}/{3}% / 値動きの損 {4}/{5}% / 置き直し {6}/{7} 回/日" -f $x.pair, $x.r_pct, `
-                    (BtPct $x.sigma_pred 1), (BtPct $x.sigma_real 1), (BtPct $x.gamma_pred 3), (BtPct $x.gamma_real 3), (BtNum $x.rebalances_pred), (BtNum $x.rebalances_real))
-            }
-            $c1 = $r.stage1.counts
-            $c1b = $r.stage1.counts_big_pools
-            Say "[さかのぼり 段階1] プールのお金 1時間で -20%: $($c1.'20') 回 / -30%: $($c1.'30') 回 / -40%: $($c1.'40') 回 / -50%: $($c1.'50') 回"
-            Say "   うち 5万ドル以上のプール: -20%: $($c1b.'20') / -30%: $($c1b.'30') / -40%: $($c1b.'40') / -50%: $($c1b.'50')"
-            $bd = $r.stage1.breakdown
-            Say "   -$($r.stage1.threshold_pct)% の $($bd.total) 回の中身（重なりあり）: 小さいプール $($bd.small) / 6時間以内に戻った $($bd.recovered_6h) / そのあと24時間でコインが -20% 以上 $($bd.big_drop) / どれでもない $($bd.none)"
-            # 5万ドル以上のプールだけの中身と1回ずつ（2026-10-04 オーナーの追加2）
-            $bb = $r.stage1.breakdown_big_pools
-            Say "   5万ドル以上のプールの $($bb.total) 回: 6時間以内に戻った $($bb.recovered_6h) / そのあと24時間でコインが -20% 以上 $($bb.big_drop) / どれでもない $($bb.none)"
-            foreach ($x in @($r.stage1.big_pool_events)) {
-                $at = [DateTimeOffset]::FromUnixTimeSeconds([long]$x.at).ToOffset([TimeSpan]::FromHours(9)).ToString('MM/dd HH:mm')
-                Say ("     {0}（{1}）{2} 日本時間: プールのお金 {3}%（前 `${4}）/ 6時間以内に戻った {5} / そのあと24時間のコインの最低 {6}%" -f $x.pair, $kn["kind_$($x.kind)"], $at, `
-                    (BtNum $x.change_pct 1), (BtNum $x.funds_before_usd 0), $(if ($x.recovered_6h) { 'はい' } else { 'いいえ' }), (BtNum $x.coin_min_24h_pct 1))
-            }
-            foreach ($x in @($r.stage2_reward.tokens)) {
-                $e = $x.events
-                Say "[さかのぼり 段階2] $($x.symbol) 24時間で -10%: $(@($e.'-10').Count) 回 / -15%: $(@($e.'-15').Count) 回 / -20%: $(@($e.'-20').Count) 回 / -25%: $(@($e.'-25').Count) 回"
-            }
-            Say "[さかのぼり 投げ売り] 合図が出たコイン: $(@($r.stage2_dump.tokens).Count)（1時間で $($r.stage2_dump.threshold_1h_pct)% 以下、または24時間で $($r.stage2_dump.threshold_24h_pct)% 以下）"
-            # コインごとの回数と、最初の合図のあと24時間（2026-10-04 オーナーの質問3）
-            foreach ($x in @($r.stage2_dump.tokens)) {
-                $ev = @(@($x.events_1h) + @($x.events_24h) | Sort-Object { [long]$_.at })
-                $f = $ev[0]
-                $at = [DateTimeOffset]::FromUnixTimeSeconds([long]$f.at).ToOffset([TimeSpan]::FromHours(9)).ToString('MM/dd HH:mm')
-                Say ("   {0}: 1時間の合図 {1} 回 / 24時間の合図 {2} 回 / 最初 {3} 日本時間 {4}% → そのあと24時間の最低 {5}%・24時間後 {6}%" -f $x.symbol, `
-                    @($x.events_1h).Count, @($x.events_24h).Count, $at, (BtNum $f.change_pct 1), (BtNum $f.min_24h_pct 1), (BtNum $f.after_24h_pct 1))
-            }
-            # N5c: 比べる相手（年あたり、建玉のお金あたり。収入は今の版の見込み × 実際に幅の中にいた割合、損は実際の値段で計算）
-            $bl = $r.baselines
-            if ($bl -and $bl.all.days -gt 0) {
-                Say ("[さかのぼり 比べる相手] 貸し出し = {0}（出典 {1}、確認 {2}）/ 広い幅 = ±{3}% で置きっぱなし" -f $bl.lending.name, $bl.lending.source, $bl.lending.checked, $bl.wide_r_pct)
-                # 2026-10-04 オーナー: 「（231日）」は暦の日数ではなく、プールと日の組の数だった。年は短い期間を引きのばした参考値と書く
-                Say ("[さかのぼり 比べる相手] 実際の期間 {0} 日（{1} 〜 {2}）。「年」は、この短い期間の1日あたりの平均を 365 倍した参考値です。1年間の見込みではありません" -f $bl.all.calendar_days, $bl.all.first_day, $bl.all.last_day)
-                foreach ($k in @('all', 'kind_stock', 'kind_coin', 'kind_bonus', 'kind_stable')) {
-                    $g = $bl.$k
-                    if (-not $g -or $g.days -eq 0) { continue }
-                    $nm = @{ all = 'ぜんぶ'; kind_stock = '株'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン'; kind_stable = 'ステーブル' }[$k]
-                    Say ("   {0}（比べた組 {1} 件・実際の期間 {2} 日）: 年に引きのばした参考値 今のやり方 {3}%（収入だけ {4}%）/ 広い幅で置きっぱなし {5}% / 貸し出し {6}%（比べた組 {7} 件）/ 何もしない 0% ・今のやり方が勝った組の割合: 広い幅に {8}% / 貸し出しに {9}% / 何もしないに {10}%" -f `
-                        $nm, $g.days, $g.calendar_days, (BtNum $g.now_year_pct 1), (BtNum $g.now_income_year_pct 1), (BtNum $g.wide_year_pct 1), (BtNum $g.lend_year_pct 1), $g.lend_days, `
-                        (BtPct $g.beat_wide_share 0), (BtPct $g.beat_lend_share 0), (BtPct $g.beat_nothing_share 0))
+                # 合 = 差が見込みの30%以内（ごく小さい率は 1日 0.002% まで）。前の数え方（資金の0.1%まで）は「前」（2026-10-04 オーナーの質問3）
+                foreach ($x in @($r.funding)) { Say ("   資金調達 {0}（{1}日）: 見込み {2}/実際 {3} %/日（合 {4}%。前の数え方 {5}%）" -f $x.perp, $x.days, (BtPct $x.pred 4), (BtPct $x.real 4), (BtPct $x.ok_share 0), (BtPct $x.ok_share_loose 0)) }
+                foreach ($x in @($r.margins)) { Say ("   預け金 {0}: いちばんの上げ {1}%（{2}日の記録。耐える {3}%）/ 15分の飛び {4}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 1), $x.withstand_pct, (BtNum $x.jump_up_pct 1)) }
+                # Lighter の値段の過去（最大90日の1時間の足）で見た預け金（2026-10-04 オーナーの質問4）。上げの大きい順
+                $ml = @($r.margins_long | Sort-Object { -[double]$_.rise_pct })
+                if ($ml.Count -gt 0) {
+                    Say "[さかのぼり 預け金 90日] 市場 $($ml.Count) / 耐える $($ml[0].withstand_pct)% を超えた市場 $(@($ml | Where-Object { -not $_.enough }).Count)"
+                    # 耐える幅を超えた市場は全部、ほかは上げの大きい順に、合わせて8つまで
+                    $over = @($ml | Where-Object { -not $_.enough })
+                    foreach ($x in @($over + @($ml | Where-Object { $_.enough } | Select-Object -First ([math]::Max(0, 8 - $over.Count))))) {
+                        Say ("   {0}: 14日以内のいちばんの上げ {1}%（{2}日の記録）/ 1時間でいちばんの上げ {3}%" -f $x.symbol, (BtNum $x.rise_pct 1), (BtNum $x.span_days 0), (BtNum $x.jump_up_pct 1))
+                    }
+                    # その市場を保険に使う入れる先が、今の一覧に何行あるか（2026-10-04 オーナーの質問2。$1,000・控えめの見込み）
+                    foreach ($x in $over) {
+                        $rows = @($o.items | Where-Object { @($_.hedge_markets | Where-Object { [string]$_.market_id -eq [string]$x.market_id }).Count -gt 0 })
+                        $ls = @($rows | Where-Object { -not $_.excluded })
+                        $hd = @($ls | Where-Object { $_.best -and $_.best.hedge })
+                        $rc = @($ls | Where-Object { $_.recommended })
+                        $top = @($ls | Where-Object { $_.best } | Sort-Object { -[double]$_.best.apr_pct } | Select-Object -First 1)
+                        $tx = if ($top.Count -gt 0) { "$($top[0].name) $([math]::Round([double]$top[0].best.apr_pct, 1))%（$(if ($top[0].best.hedge) { '保険あり' } else { '保険なし' })）" } else { '-' }
+                        Say ("   {0} を保険に使う入れる先: 全部 {1} 行 / 一覧に出る {2} / うち保険ありがよい {3} / おすすめ {4} / 年利のいちばん高い行 {5}" -f $x.symbol, $rows.Count, $ls.Count, $hd.Count, $rc.Count, $tx)
+                    }
+                } else { Say "[さかのぼり 預け金 90日] まだ値段の過去がありません（1日1回の読み取りのあとに出ます）" }
+                # 値段が動いていないプール（取引がほとんどない）は、見込みと実際を比べるのから外した（2026-10-04 オーナーの質問3）
+                $st = @($r.still_pools)
+                Say ("[さかのぼり 値段が動いていないプール] {0} 個（となりの記録と同じ値段が {1}% 以上。比べるのから外しました）" -f $st.Count, (BtPct $r.still_share_line 0))
+                # 同じ名前のプールが複数あるので、プールの住所と手数料の段・最初と最後の値段も出す（2026-10-04 オーナーの質問1）
+                # 空欄なら、とっておいた古い計算の結果を読んでいる（2026-10-04。VERSION の上げ忘れ。今はファイルの中身の印もキーに入れた）
+                # 手数料の段は、今の版が15分ごとにチェーンから読んだ値（2026-10-04: up. の工場の記録には手数料がないので、前は「不明」だった）。
+                # 手数料が動くプールは、記録の中の最小〜最大も出す
+                function FeeText($f) {
+                    if ($null -eq $f.fee_pct) { return '不明' }
+                    $t = "$($f.fee_pct)%"
+                    if ($null -ne $f.fee_min_pct -and $f.fee_min_pct -ne $f.fee_max_pct) { $t += "（記録の中で $($f.fee_min_pct)〜$($f.fee_max_pct)%）" }
+                    return $t
                 }
-            } else { Say "[さかのぼり 比べる相手] まだ比べられません（スコアの幅ごとの収入か、貸し出しの毎日の記録がありません）" }
-        }
-    } catch {
-        Write-Host "   注意: さかのぼりの計算を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
-    }
-
-    # N5d: 試すの結果のまとめ（6つの項目の判定。確認できた・要注意・記録中）
-    try {
-        $ts = Invoke-RestMethod "$NewApi/api/trial/summary" -TimeoutSec 900
-        $sts = @($ts.sections.bonus.state, $ts.sections.rebalance.state, $ts.sections.price_loss.state) + `
-            @($ts.sections.costs.items | ForEach-Object { $_.state }) + @($ts.sections.hedge.funding_main.state, $ts.sections.hedge.margins.state) + `
-            @($ts.sections.early_exit.rows | ForEach-Object { $_.state })
-        $cnt = @{ ok = 0; warn = 0; rec = 0 }
-        foreach ($x in $sts) { if ($x) { $cnt[$x.code]++ } }
-        Say ("[試すの結果] 確認できた {0} / 要注意 {1} / 記録中 {2}（画面: http://localhost:18001/learn/trial）" -f $cnt.ok, $cnt.warn, $cnt.rec)
-        Say ("[試すの結果] ① Merkl: {0}  ② 置き直し: {1}" -f $ts.sections.bonus.state.why, $ts.sections.rebalance.state.why)
-    } catch {
-        Write-Host "   注意: 試すの結果のまとめを読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
-    }
-
-    # N5 最終判断の準備（10項目の状態。判断できる・記録待ち・材料不足。ここでは決めない）
-    try {
-        $fp = Invoke-RestMethod "$NewApi/api/trial/final" -TimeoutSec 900
-        Say ("[最終判断の準備] 判断できる {0} / 記録待ち {1} / 材料不足 {2}（画面: 試すの結果のいちばん下）" -f $fp.counts.ready, $fp.counts.wait, $fp.counts.lack)
-        # Merkl の分母 A/B の検証（チェーンの記録の読み取りは、更新のあと数回に分けて進む。1回 150 回まで）
-        Say ("[Merkl の分母] {0}" -f $fp.merkl.state.why)
-    } catch {
-        Write-Host "   注意: 最終判断の準備を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
-    }
-
-    # N6「仮想のお金で渡る」（2026-10-07 指示書）: 1回目の見回りで、アプリ任せの $1,000 / $10,000 が始まったか。
-    # 新しい版の更新は終わっているので、うまくいかなくても戻さずに注意だけ出す（次の15分ごとの回でやり直す）
-    $n6Ready = 'いいえ'
-    $n6Lines = @{}
-    try {
-        $n6 = Invoke-RestMethod "$NewApi/api/n6" -TimeoutSec 120
-        if (-not $n6.last_tick) {
-            $notes += 'N6 の見回りがまだ1回も記録されていません（15分ごとの回でやり直します）'
-        } elseif (-not $n6.last_tick.ok) {
-            $notes += "N6 の見回りが失敗しました: $($n6.last_tick.error)"
-        } else {
-            $n6Ready = 'はい'
-        }
-        foreach ($size in @(1000, 10000)) {
-            $pf = @($n6.portfolios | Where-Object { $_.id -eq "app_$size" })[0]
-            $label = '$' + ('{0:N0}' -f $size)
-            if (-not $pf) {
-                $n6Lines[$size] = "$label アプリ任せの練習: 始まっていません"
-                if ($n6Ready -eq 'はい') { $notes += "N6 の $label アプリ任せの練習がありません" }
-            } elseif (@($pf.open).Count -gt 0) {
-                $n6Lines[$size] = ('{0} アプリ任せの練習: 始まりました（建玉 {1} つ・置いた ${2:N0}・置いていない ${3:N0}）' -f $label, @($pf.open).Count, [double]$pf.placed_usd, [double]$pf.cash_usd)
-            } else {
-                $n6Lines[$size] = ('{0} アプリ任せの練習: 始まりました（今は入れる先を待っています: {1}）' -f $label, $pf.waiting)
-            }
-        }
-        Say "[N6] 最後の見回り: $($n6.last_tick.ts) / ok: $($n6.last_tick.ok) / 練習のまとまり: $(@($n6.portfolios | ForEach-Object { $_.id }) -join ', ')"
-        # 2026-10-08 指示書: 15分ごとの回の内訳（なぜ入らなかったか）といちばん惜しかった候補
-        foreach ($pf in @($n6.portfolios | Where-Object { $_.picker -eq 'app' })) {
-            $f = $pf.funnel
-            $label = '$' + ('{0:N0}' -f [double]$pf.total_usd)
-            if (-not $f) {
-                Say "[N6] $label アプリ任せ: 内訳はまだありません（次の15分ごとの回から記録します）"
-            } elseif ($f.error) {
-                $notes += "N6 の $label の内訳を記録できませんでした: $($f.error)"
-            } else {
-                Say ('[N6] {0} アプリ任せ: 候補 {1}・使える {2}・年{3}%以上 {4}・入れる {5}／理由: {6}' -f $label, $f.total, $f.usable, $f.target, $f.reach, $f.final, $f.reason)
-                if ($f.best_miss) {
-                    Say ('[N6] {0} いちばん惜しかった候補: {1}（{2}・{3}）/ {4:N1}% / 危なさ {5} / 狙いまであと {6:N1}pt' -f $label, $f.best_miss.name, $f.best_miss.venue, $f.best_miss.chain_name, [double]$f.best_miss.apr_pct, $f.best_miss.danger_label, [double]$f.best_miss.gap_pt)
+                foreach ($x in $st) {
+                    $edge = ''
+                    if ($x.at_edge -eq 'max' -or $x.at_edge -eq 'min') {
+                        $edge = " ※プールが空（流動性 0）で、値段が仕組みの{0}の端にあります（本当のコインの値段ではありません）" -f $(if ($x.at_edge -eq 'max') { '上' } else { '下' })
+                    } elseif ($x.empty) { $edge = ' ※プールが空（流動性 0）' }
+                    Say ("   {0}（{1}・手数料の段 {2}）: 同じ値段の割合 {3}%（記録 {4} 点・違う値段 {5} 個）/ 最初 {6} / 最後 {7}{8}" -f $x.pair, $x.pool_id, (FeeText $x), `
+                        (BtPct $x.still_share 1), $x.points, $x.distinct_prices, (BtNum $x.first_price 6), (BtNum $x.last_price 6), $edge)
+                    foreach ($o in @($x.same_pair)) {
+                        Say ("      同じ組のほかのプール: {0}（手数料の段 {1}・記録 {2} 点・{3}）" -f $o.pool_id, (FeeText $o), $o.points, $(if ($o.still) { '値段が動いていない' } else { '値段が動いている' }))
+                    }
                 }
+                # 中央値と種類ごと（2026-10-03 オーナーの質問3）。幅 ±0.5%・±2%・±15% だけ
+                $kn = @{ kind_stock = '株'; kind_stable = 'ステーブル'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン' }
+                Say "[さかのぼり 種類] 株 $($r.kinds.stock) / ステーブル $($r.kinds.stable) / ふつうのコイン $($r.kinds.coin) / ボーナスのコイン $($r.kinds.bonus)（プールの数）"
+                foreach ($k in @('kind_stock', 'kind_stable', 'kind_coin', 'kind_bonus')) {
+                    foreach ($g in @($r.ranges.$k | Where-Object { @(0.5, 2, 15) -contains [double]$_.r_pct })) {
+                        Say ("   {0} ±{1}%（{2}件）: 置き直し 中央値 {3}/{4} 回/日 / 値動きの損 中央値 {5}/{6}% / 値動き σ 中央値 {7}/{8}%" -f `
+                            $kn[$k], $g.r_pct, $g.days, (BtNum $g.rebalances.pred_median), (BtNum $g.rebalances.real_median), `
+                            (BtPct $g.gamma.pred_median 3), (BtPct $g.gamma.real_median 3), (BtPct $g.sigma.pred_median 1), (BtPct $g.sigma.real_median 1))
+                    }
+                }
+                # 1日の損（値動きの損 + 置き直しの費用）の見込みと実際の差（ドル）の大きい順（2026-10-04 オーナーの質問5）
+                foreach ($x in @($r.misses | Select-Object -First 5)) {
+                    Say ("   ずれの大きいプール {0}（{1}・±{2}%）: 1日の損 見込み `${3}/実際 `${4}（差 `${5}）/ 値動き σ {6}/{7}% / 置き直し {8}/{9} 回/日" -f $x.pair, $kn["kind_$($x.kind)"], $x.r_pct, `
+                        (BtNum $x.loss_pred_usd_day), (BtNum $x.loss_real_usd_day), (BtNum $x.gap_usd_day), (BtPct $x.sigma_pred 1), (BtPct $x.sigma_real 1), `
+                        (BtNum $x.rebalances_pred), (BtNum $x.rebalances_real))
+                }
+                foreach ($x in @($r.spy)) {
+                    Say ("   SPY {0}（±{1}%）: 値動き σ {2}/{3}% / 値動きの損 {4}/{5}% / 置き直し {6}/{7} 回/日" -f $x.pair, $x.r_pct, `
+                        (BtPct $x.sigma_pred 1), (BtPct $x.sigma_real 1), (BtPct $x.gamma_pred 3), (BtPct $x.gamma_real 3), (BtNum $x.rebalances_pred), (BtNum $x.rebalances_real))
+                }
+                $c1 = $r.stage1.counts
+                $c1b = $r.stage1.counts_big_pools
+                Say "[さかのぼり 段階1] プールのお金 1時間で -20%: $($c1.'20') 回 / -30%: $($c1.'30') 回 / -40%: $($c1.'40') 回 / -50%: $($c1.'50') 回"
+                Say "   うち 5万ドル以上のプール: -20%: $($c1b.'20') / -30%: $($c1b.'30') / -40%: $($c1b.'40') / -50%: $($c1b.'50')"
+                $bd = $r.stage1.breakdown
+                Say "   -$($r.stage1.threshold_pct)% の $($bd.total) 回の中身（重なりあり）: 小さいプール $($bd.small) / 6時間以内に戻った $($bd.recovered_6h) / そのあと24時間でコインが -20% 以上 $($bd.big_drop) / どれでもない $($bd.none)"
+                # 5万ドル以上のプールだけの中身と1回ずつ（2026-10-04 オーナーの追加2）
+                $bb = $r.stage1.breakdown_big_pools
+                Say "   5万ドル以上のプールの $($bb.total) 回: 6時間以内に戻った $($bb.recovered_6h) / そのあと24時間でコインが -20% 以上 $($bb.big_drop) / どれでもない $($bb.none)"
+                foreach ($x in @($r.stage1.big_pool_events)) {
+                    $at = [DateTimeOffset]::FromUnixTimeSeconds([long]$x.at).ToOffset([TimeSpan]::FromHours(9)).ToString('MM/dd HH:mm')
+                    Say ("     {0}（{1}）{2} 日本時間: プールのお金 {3}%（前 `${4}）/ 6時間以内に戻った {5} / そのあと24時間のコインの最低 {6}%" -f $x.pair, $kn["kind_$($x.kind)"], $at, `
+                        (BtNum $x.change_pct 1), (BtNum $x.funds_before_usd 0), $(if ($x.recovered_6h) { 'はい' } else { 'いいえ' }), (BtNum $x.coin_min_24h_pct 1))
+                }
+                foreach ($x in @($r.stage2_reward.tokens)) {
+                    $e = $x.events
+                    Say "[さかのぼり 段階2] $($x.symbol) 24時間で -10%: $(@($e.'-10').Count) 回 / -15%: $(@($e.'-15').Count) 回 / -20%: $(@($e.'-20').Count) 回 / -25%: $(@($e.'-25').Count) 回"
+                }
+                Say "[さかのぼり 投げ売り] 合図が出たコイン: $(@($r.stage2_dump.tokens).Count)（1時間で $($r.stage2_dump.threshold_1h_pct)% 以下、または24時間で $($r.stage2_dump.threshold_24h_pct)% 以下）"
+                # コインごとの回数と、最初の合図のあと24時間（2026-10-04 オーナーの質問3）
+                foreach ($x in @($r.stage2_dump.tokens)) {
+                    $ev = @(@($x.events_1h) + @($x.events_24h) | Sort-Object { [long]$_.at })
+                    $f = $ev[0]
+                    $at = [DateTimeOffset]::FromUnixTimeSeconds([long]$f.at).ToOffset([TimeSpan]::FromHours(9)).ToString('MM/dd HH:mm')
+                    Say ("   {0}: 1時間の合図 {1} 回 / 24時間の合図 {2} 回 / 最初 {3} 日本時間 {4}% → そのあと24時間の最低 {5}%・24時間後 {6}%" -f $x.symbol, `
+                        @($x.events_1h).Count, @($x.events_24h).Count, $at, (BtNum $f.change_pct 1), (BtNum $f.min_24h_pct 1), (BtNum $f.after_24h_pct 1))
+                }
+                # N5c: 比べる相手（年あたり、建玉のお金あたり。収入は今の版の見込み × 実際に幅の中にいた割合、損は実際の値段で計算）
+                $bl = $r.baselines
+                if ($bl -and $bl.all.days -gt 0) {
+                    Say ("[さかのぼり 比べる相手] 貸し出し = {0}（出典 {1}、確認 {2}）/ 広い幅 = ±{3}% で置きっぱなし" -f $bl.lending.name, $bl.lending.source, $bl.lending.checked, $bl.wide_r_pct)
+                    # 2026-10-04 オーナー: 「（231日）」は暦の日数ではなく、プールと日の組の数だった。年は短い期間を引きのばした参考値と書く
+                    Say ("[さかのぼり 比べる相手] 実際の期間 {0} 日（{1} 〜 {2}）。「年」は、この短い期間の1日あたりの平均を 365 倍した参考値です。1年間の見込みではありません" -f $bl.all.calendar_days, $bl.all.first_day, $bl.all.last_day)
+                    foreach ($k in @('all', 'kind_stock', 'kind_coin', 'kind_bonus', 'kind_stable')) {
+                        $g = $bl.$k
+                        if (-not $g -or $g.days -eq 0) { continue }
+                        $nm = @{ all = 'ぜんぶ'; kind_stock = '株'; kind_coin = 'ふつうのコイン'; kind_bonus = 'ボーナスのコイン'; kind_stable = 'ステーブル' }[$k]
+                        Say ("   {0}（比べた組 {1} 件・実際の期間 {2} 日）: 年に引きのばした参考値 今のやり方 {3}%（収入だけ {4}%）/ 広い幅で置きっぱなし {5}% / 貸し出し {6}%（比べた組 {7} 件）/ 何もしない 0% ・今のやり方が勝った組の割合: 広い幅に {8}% / 貸し出しに {9}% / 何もしないに {10}%" -f `
+                            $nm, $g.days, $g.calendar_days, (BtNum $g.now_year_pct 1), (BtNum $g.now_income_year_pct 1), (BtNum $g.wide_year_pct 1), (BtNum $g.lend_year_pct 1), $g.lend_days, `
+                            (BtPct $g.beat_wide_share 0), (BtPct $g.beat_lend_share 0), (BtPct $g.beat_nothing_share 0))
+                    }
+                } else { Say "[さかのぼり 比べる相手] まだ比べられません（スコアの幅ごとの収入か、貸し出しの毎日の記録がありません）" }
             }
+        } catch {
+            Write-Host "   注意: さかのぼりの計算を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
         }
-    } catch {
-        $notes += "N6 の練習の状態を読めませんでした（$($_.Exception.Message)）"
-        $n6Lines[1000] = '$1,000 アプリ任せの練習: 確かめられませんでした'
-        $n6Lines[10000] = '$10,000 アプリ任せの練習: 確かめられませんでした'
+
+        # N5d: 試すの結果のまとめ（6つの項目の判定。確認できた・要注意・記録中）
+        try {
+            $ts = Invoke-RestMethod "$NewApi/api/trial/summary" -TimeoutSec 900
+            $sts = @($ts.sections.bonus.state, $ts.sections.rebalance.state, $ts.sections.price_loss.state) + `
+                @($ts.sections.costs.items | ForEach-Object { $_.state }) + @($ts.sections.hedge.funding_main.state, $ts.sections.hedge.margins.state) + `
+                @($ts.sections.early_exit.rows | ForEach-Object { $_.state })
+            $cnt = @{ ok = 0; warn = 0; rec = 0 }
+            foreach ($x in $sts) { if ($x) { $cnt[$x.code]++ } }
+            Say ("[試すの結果] 確認できた {0} / 要注意 {1} / 記録中 {2}（画面: http://localhost:18001/learn/trial）" -f $cnt.ok, $cnt.warn, $cnt.rec)
+            Say ("[試すの結果] ① Merkl: {0}  ② 置き直し: {1}" -f $ts.sections.bonus.state.why, $ts.sections.rebalance.state.why)
+        } catch {
+            Write-Host "   注意: 試すの結果のまとめを読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+        }
+
+        # N5 最終判断の準備（10項目の状態。判断できる・記録待ち・材料不足。ここでは決めない）
+        try {
+            $fp = Invoke-RestMethod "$NewApi/api/trial/final" -TimeoutSec 900
+            Say ("[最終判断の準備] 判断できる {0} / 記録待ち {1} / 材料不足 {2}（画面: 試すの結果のいちばん下）" -f $fp.counts.ready, $fp.counts.wait, $fp.counts.lack)
+            # Merkl の分母 A/B の検証（チェーンの記録の読み取りは、更新のあと数回に分けて進む。1回 150 回まで）
+            Say ("[Merkl の分母] {0}" -f $fp.merkl.state.why)
+        } catch {
+            Write-Host "   注意: 最終判断の準備を読めませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
+        }
+    } else {
+        Say '[試す・さかのぼり・最終判断の準備] 時間がかかるので、更新の確かめからは外しました。記録と計算は裏で続いています（画面: http://localhost:18001/learn/trial）'
     }
 
-    # N6 の異常のチェック（2026-10-08 指示書 13）。異常があっても戻さずに知らせるだけ
-    $n6Health = '確かめられませんでした'
-    try {
-        $h = Invoke-RestMethod "$NewApi/api/n6/health" -TimeoutSec 120
-        if ($h.ok) {
-            $n6Health = "なし（見回り $($h.ticks) 回）"
-        } else {
-            $n6Health = "あり $(@($h.problems).Count) 件: $(@($h.problems) -join ' / ')"
-            $notes += "N6 の異常: $(@($h.problems) -join ' / ')"
-        }
-    } catch {
-        $notes += "N6 の異常のチェックを読めませんでした（$($_.Exception.Message)）"
-    }
-
-    # 新しい版の更新はもう終わっているので、ここでうまくいかなくても止めずに注意だけ出す
-    Say "[今の版] 前: eval: $($before.eval) / open: $($before.open) / last_ok_at: $($before.last)"
-    $v1 = 'そのまま動いています（前と同じ）'
-    try {
-        $after = OldState
-        Say "[今の版] 後: eval: $($after.eval) / open: $($after.open) / stale: $($after.stale) / last_ok_at: $($after.last)"
-        if ($after.eval -ne $before.eval -or $after.open -ne $before.open -or $after.stale -eq 'True') {
-            Write-Host '   注意: 今の版の状態が前と違います。このまとめを送ってください。' -ForegroundColor Yellow
-            $v1 = '注意: 状態が前と違います'
-            $notes += '今の版（18000）の状態が前と違います'
-        } else {
-            Ok '今の版はそのまま動いています。'
-        }
-    } catch {
-        Write-Host "   注意: 今の版の状態を読めませんでした（$($_.Exception.Message)）。新しい版の更新は終わっています。このまとめを送ってください。" -ForegroundColor Yellow
-        $v1 = '注意: 状態を読めませんでした'
-        $notes += '今の版（18000）の状態を読めませんでした'
-    }
-
-    # --- いちばん下: 成功か失敗かを一目で（2026-10-04 指示書） ----------------------------------------------
+    # --- いちばん下: 成功か失敗かを一目で（2026-10-04 指示書。2026-10-08 指示書: N6 を中心に） -------------------
     $tone = if ($notes.Count -eq 0) { 'Green' } else { 'Yellow' }
     Write-Host ''
     Write-Host '==================== 結果 ====================' -ForegroundColor $tone
     Write-Host ("[結果] 更新: {0}" -f $(if ($notes.Count -eq 0) { '成功' } else { '成功（注意あり。下の「注意」を見てください）' })) -ForegroundColor $tone
-    Say "[結果] 今の版（18000）: $v1。フォルダーとデータには触っていません"
     Say "[結果] N6準備完了: $n6Ready"
     Say "[結果] N6の異常: $n6Health"
     Say "[結果] $($n6Lines[1000])"
     Say "[結果] $($n6Lines[10000])"
     Say '[結果] 本物のお金: 動いていません（N6 は 100% 仮想。送金・両替・署名・秘密鍵を使うコードはありません）'
-    $over = if ([int](N0 $ms.over_page) -gt 0) { "100 行をこえるキャンペーン $($ms.over_page) 個も最後のページまで読めました（いちばん多い $($ms.max_rows) 行）" } else { "今は 100 行をこえるキャンペーンはありません（いちばん多い $(N0 $ms.max_rows) 行）" }
+    Say "[結果] 今の版（18000）: $v1。フォルダーとデータには触っていません"
     if ($mStarted) {
-        Say "[結果] Merkl の全部のページの記録: 始まりました。complete=1 の記録 $(N0 $ms.complete) 件（キャンペーン $(N0 $ms.complete_campaigns)）。$over"
+        $over = if ([int](N0 $ms.over_page) -gt 0) { "100 行をこえるキャンペーン $($ms.over_page) 個も最後のページまで読めました（いちばん多い $($ms.max_rows) 行）" } else { "今は 100 行をこえるキャンペーンはありません（いちばん多い $(N0 $ms.max_rows) 行）" }
+        Say "[結果] Merkl の全部のページの記録: 続いています。complete=1 の記録 $(N0 $ms.complete) 件（キャンペーン $(N0 $ms.complete_campaigns)）。$over"
+    } elseif (-not $trOk) {
+        Say '[結果] Merkl の全部のページの記録: 今回は数を確かめませんでした（確認APIが読めなかったため）。記録処理そのものは続いています'
     } else {
-        Say '[結果] Merkl の全部のページの記録: まだです（回数制限のため。15分後に自動でやり直します）'
+        Say "[結果] Merkl の全部のページの記録: まだです（状態 $($mrs.status)。15分ごとに自動でやり直します）"
     }
-    Say ("[結果] 預け方の歴史: 対象 {0} プール / この回 {1} 回読んで記録 {2} 件 / 読み終わり {3}・途中 {4}・まだ {5}・読まないプール {6} / 続きから読める {7}" -f `
-        (N0 $lr.targets), (N0 $lr.calls), (N0 $lr.events), (N0 $ph.done), (N0 $ph.partial), (N0 $ph.not_started), $skipPools.Count, `
-        $(if ([int](N0 $ph.resumable) -eq [int](N0 $ph.partial)) { 'はい（読めたところを保存しています）' } else { 'いいえ' }))
-    if ($lr.stopped) { Say "         この回は「$($lr.stopped)」で区切りました。約30分ごとに続きを読みます（全部読み終わるまで数時間かかっても正常です）" }
+    if ($ph) {
+        Say ("[結果] 預け方の歴史: 対象 {0} プール / この回 {1} 回読んで記録 {2} 件 / 読み終わり {3}・途中 {4}・まだ {5}・読まないプール {6} / 続きから読める {7}" -f `
+            (N0 $lr.targets), (N0 $lr.calls), (N0 $lr.events), (N0 $ph.done), (N0 $ph.partial), (N0 $ph.not_started), $skipPools.Count, `
+            $(if ([int](N0 $ph.resumable) -eq [int](N0 $ph.partial)) { 'はい（読めたところを保存しています）' } else { 'いいえ' }))
+        if ($lr.stopped) { Say "         この回は「$($lr.stopped)」で区切りました。約30分ごとに続きを読みます（全部読み終わるまで数時間かかっても正常です）" }
+    } else {
+        Say "[結果] 預け方の歴史: 今回は進み具合を確かめませんでした（状態 $($phs.status)）。読み取りそのものは続いています"
+    }
     if ($notes.Count -eq 0) { Write-Host '[結果] エラー: なし' -ForegroundColor Green } else { foreach ($n in $notes) { Write-Host "[結果] 注意: $n" -ForegroundColor Yellow } }
     Write-Host '==============================================' -ForegroundColor $tone
     Write-Host ''
