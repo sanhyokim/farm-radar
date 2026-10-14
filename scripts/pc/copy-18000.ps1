@@ -21,7 +21,10 @@ param(
     [string]$NewApi = 'http://localhost:18001',
     [string]$Python = '',
     [int]$Tries = 3,
-    [int]$WaitMinutes = 20
+    [int]$WaitMinutes = 20,
+    # 新しい版で写しを読めるかの確かめ（/api/trial/records。記録が増えると重い）をしない。
+    # 2026-10-14 n5-1014.ps1 から使う（そちらは、このあとのさかのぼりの計算で、取り直した写しが使われたかを確かめる）
+    [switch]$NoNewCheck
 )
 
 $ErrorActionPreference = 'Stop'
@@ -209,13 +212,15 @@ try {
     Write-Host '[写し] integrity: ok / 今の版の答えと照合: OK / 表の数: ' -NoNewline
     Write-Host @($m.tables.PSObject.Properties).Count
     # 新しい版が写しを読めるか（読むだけ）。読めなくても写しはできているので、注意だけ出す
-    try {
+    if ($NoNewCheck) {
+        Write-Host '[写し] 新しい版で読めるかは、このあとのさかのぼりの計算で確かめます（重い確かめのAPIは呼びません）。'
+    } else { try {
         $r = Invoke-RestMethod "$NewApi/api/trial/records" -TimeoutSec 60
         $ps = $r.old_copy.tables.pool_snapshots
         Write-Host "[写し] 新しい版で読めた: $($r.old_copy.checked) / pool_snapshots $($ps.rows) 件（$($ps.from) 〜 $($ps.to)）"
     } catch {
         Write-Host "   注意: 新しい版で写しを読めるか確かめられませんでした（$($_.Exception.Message)）。" -ForegroundColor Yellow
-    }
+    } }
     Write-Host '写しが終わりました。' -ForegroundColor Green
 } catch {
     Write-Host ''
